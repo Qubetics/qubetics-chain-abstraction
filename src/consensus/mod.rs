@@ -272,7 +272,7 @@ impl ConsensusNode {
         let mut all_same_frequency = true;
         let mut first_frequency = None;
 
-        for (node, frequency) in &node_frequencies {
+        for (_node, frequency) in &node_frequencies {
             if first_frequency.is_none() {
                 first_frequency = Some(*frequency);
             } else if first_frequency.unwrap() != *frequency {

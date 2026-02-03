@@ -1660,6 +1660,12 @@ impl MpcNetworkLayer {
                     node_id, round, intent_hashes.len()
                 );
 
+                // Keep sliding window in sync on all nodes so when any node becomes final it excludes last N batches
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.record_tics_user_to_vault_batch(&intent_hashes);
+                }
+
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
                     for intent_hash in intent_hashes.iter() {
@@ -1848,6 +1854,12 @@ impl MpcNetworkLayer {
                     "📦 [BTC_UTV_BATCH] Received BTC UserToVault intent batch from node {} (round {}, {} intents)",
                     node_id, round, intent_hashes.len()
                 );
+
+                // Keep sliding window in sync on all nodes so when any node becomes final it excludes last N batches
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.record_btc_user_to_vault_batch(&intent_hashes);
+                }
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches

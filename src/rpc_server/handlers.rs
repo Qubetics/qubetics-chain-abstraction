@@ -20,7 +20,8 @@ use crate::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
             GetSolverRewardsResponse, HeartbeatResponse, IntentsSolvedCountResponse, NodeIdResponse,
-            PendingClaimRewardRequest, PendingWithdrawRequest, RequestContext,
+            PendingClaimRewardRequest, PendingIntentsCountResponse, PendingWithdrawRequest,
+            RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse,
             UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
@@ -1152,6 +1153,22 @@ pub(crate) async fn handle_get_intents_solved_count(
     let count = intents.len() as u64;
     info!("📊 HTTP: intents_solved_count = {}", count);
     Ok(warp::reply::json(&IntentsSolvedCountResponse { count }))
+}
+
+/// Returns the count of intents with status Pending or Batched (treated as pending intents).
+/// GET /pending_intents_count
+pub(crate) async fn handle_get_pending_intents_count(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let pending = user_intent_manager
+        .get_intents_by_status_global(IntentStatus::Pending)
+        .await;
+    let batched = user_intent_manager
+        .get_intents_by_status_global(IntentStatus::Batched)
+        .await;
+    let count = (pending.len() + batched.len()) as u64;
+    info!("📊 HTTP: pending_intents_count = {} (Pending: {}, Batched: {})", count, pending.len(), batched.len());
+    Ok(warp::reply::json(&PendingIntentsCountResponse { count }))
 }
 
 pub(crate) async fn handle_get_dkg_status(

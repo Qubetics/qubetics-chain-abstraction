@@ -10,9 +10,9 @@ use num_bigint::BigUint;
 use num_traits::identities::One;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
@@ -48,6 +48,9 @@ use crate::types::{
 use crate::user_intent_manager::UserIntentManager;
 use num_traits::Zero;
 
+/// Number of recent UserToVault batches to exclude from the next pick (sliding window).
+const LAST_N_USER_TO_VAULT_BATCHES: usize = 4;
+
 /// Slot type for per-slot aggregation (TICS vs BTC UserToVault batch).
 #[derive(Clone, Debug)]
 pub enum SlotKind {
@@ -77,6 +80,10 @@ pub struct SigningNode {
     broadcast_policy: BroadcastPolicy,
     /// Self-reference for spawning non-blocking aggregation tasks (set after wrapping in Arc<Mutex<SigningNode>>).
     self_ref: Option<Arc<Mutex<SigningNode>>>,
+    /// Last N batches of intent hashes picked for TICS UserToVault (sliding window); intents in these sets are excluded from the next pick.
+    last_tics_user_to_vault_batch_hashes: Arc<RwLock<VecDeque<HashSet<String>>>>,
+    /// Last N batches of intent hashes picked for BTC UserToVault (sliding window); intents in these sets are excluded from the next pick.
+    last_btc_user_to_vault_batch_hashes: Arc<RwLock<VecDeque<HashSet<String>>>>,
 }
 
 impl SigningNode {
@@ -114,12 +121,42 @@ impl SigningNode {
             dkg_storage: None,         // Will be set later via set_database (for HRW candidates)
             broadcast_policy: environment.broadcast_policy,
             self_ref: None,            // Set via set_self_arc after wrapping in Arc<Mutex<SigningNode>>
+            last_tics_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
+            last_btc_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
     /// Set self-reference so the node can spawn aggregation tasks. Call after wrapping in Arc<Mutex<SigningNode>>.
     pub fn set_self_arc(&mut self, arc: Arc<Mutex<SigningNode>>) {
         self.self_ref = Some(arc);
+    }
+
+    /// Record a TICS UserToVault batch (by intent hashes) so it is excluded from the next N picks on this node.
+    /// Call this on every node when a batch is received (gossip) so the sliding window is consistent across the network.
+    pub fn record_tics_user_to_vault_batch(&self, intent_hashes: &[String]) {
+        if intent_hashes.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.last_tics_user_to_vault_batch_hashes.write() {
+            guard.push_back(intent_hashes.iter().cloned().collect());
+            while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                guard.pop_front();
+            }
+        }
+    }
+
+    /// Record a BTC UserToVault batch (by intent hashes) so it is excluded from the next N picks on this node.
+    /// Call this on every node when a batch is received (gossip) so the sliding window is consistent across the network.
+    pub fn record_btc_user_to_vault_batch(&self, intent_hashes: &[String]) {
+        if intent_hashes.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.last_btc_user_to_vault_batch_hashes.write() {
+            guard.push_back(intent_hashes.iter().cloned().collect());
+            while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                guard.pop_front();
+            }
+        }
     }
 }
 
@@ -1460,6 +1497,9 @@ impl SigningNode {
                                 round, e
                             );
                         }
+
+                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending) for TICS
+                       
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
                     } else if operation_type.as_deref() == Some("btc_intent_manager_update") {
@@ -1782,6 +1822,7 @@ impl SigningNode {
     /// Pick a batch of pending TICS-source intents (UserToVault not yet done) and broadcast
     /// TicsUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_1).
     /// When `batched_only` is `Some(true)`, only Batched intents that don't have a user_to_vault tx-id are picked.
+    /// Last-4-batches exclusion is always applied (both Pending and Batched-only picks).
     async fn process_tics_user_to_vault_intent_batch_for_round(
         &self,
         round: u64,
@@ -1797,8 +1838,17 @@ impl SigningNode {
             .and_then(|val| val.parse::<usize>().ok())
             .unwrap_or(20);
 
+        let exclusion_set: HashSet<String> = {
+            let guard = self.last_tics_user_to_vault_batch_hashes.read().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+            guard.iter().flat_map(|set| set.iter().cloned()).collect()
+        };
         let pending = user_intent_manager
-            .get_pending_user_to_vault_intents_by_source_chain("tics", max_per_batch, batched_only)
+            .get_pending_user_to_vault_intents_by_source_chain(
+                "tics",
+                max_per_batch,
+                batched_only,
+                Some(&exclusion_set),
+            )
             .await;
 
         if pending.is_empty() {
@@ -1813,6 +1863,14 @@ impl SigningNode {
             .iter()
             .map(|(hash, _, _)| hash.clone())
             .collect();
+
+        {
+            let mut guard = self.last_tics_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+            guard.push_back(intent_hashes.iter().cloned().collect());
+            while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                guard.pop_front();
+            }
+        }
 
         let batch_timestamp = chrono::Utc::now().to_rfc3339();
         info!(
@@ -1843,6 +1901,7 @@ impl SigningNode {
     /// Pick a batch of pending BTC-source intents (UserToVault not yet done) and broadcast
     /// BtcUserToVaultIntentBatch so all nodes sign each intent with the respective user key (epoch_2).
     /// When `batched_only` is `Some(true)`, only Batched intents that don't have a user_to_vault tx-id are picked.
+    /// Last-4-batches exclusion is always applied (both Pending and Batched-only picks).
     async fn process_btc_user_to_vault_intent_batch_for_round(
         &self,
         round: u64,
@@ -1858,8 +1917,17 @@ impl SigningNode {
             .and_then(|val| val.parse::<usize>().ok())
             .unwrap_or(10);
 
+        let exclusion_set: HashSet<String> = {
+            let guard = self.last_btc_user_to_vault_batch_hashes.read().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+            guard.iter().flat_map(|set| set.iter().cloned()).collect()
+        };
         let pending = user_intent_manager
-            .get_pending_user_to_vault_intents_by_source_chain("bitcoin", max_per_batch, batched_only)
+            .get_pending_user_to_vault_intents_by_source_chain(
+                "bitcoin",
+                max_per_batch,
+                batched_only,
+                Some(&exclusion_set),
+            )
             .await;
 
         if pending.is_empty() {
@@ -1874,6 +1942,14 @@ impl SigningNode {
             .iter()
             .map(|(hash, _, _)| hash.clone())
             .collect();
+
+        {
+            let mut guard = self.last_btc_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+            guard.push_back(intent_hashes.iter().cloned().collect());
+            while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                guard.pop_front();
+            }
+        }
 
         let batch_timestamp = chrono::Utc::now().to_rfc3339();
         info!(

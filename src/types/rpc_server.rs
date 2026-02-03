@@ -329,3 +329,9 @@ pub struct AddressInfo {
 pub struct IntentsSolvedCountResponse {
     pub count: u64,
 }
+
+/// Response for GET /pending_intents_count (count of Pending + Batched intents)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingIntentsCountResponse {
+    pub count: u64,
+}

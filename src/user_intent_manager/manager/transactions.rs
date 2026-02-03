@@ -272,11 +272,13 @@ impl UserIntentManager {
     /// registered user are included.
     /// - `batched_only`: None or Some(false) → only intents with status Pending are included.
     /// - `batched_only`: Some(true) → only intents with status Batched and no user_to_network_tx_id are included.
+    /// - `excluded_intent_hashes`: when provided, intents whose hash is in this set are skipped (e.g. intents from last N batches).
     pub async fn get_pending_user_to_vault_intents_by_source_chain(
         &self,
         source_chain: &str,
         limit: usize,
         batched_only: Option<bool>,
+        excluded_intent_hashes: Option<&std::collections::HashSet<String>>,
     ) -> Vec<(String, DepositIntent, String)> {
         let pending = self.get_pending_transaction_intents().await;
         let source_lower = source_chain.to_lowercase();
@@ -284,6 +286,9 @@ impl UserIntentManager {
         for (intent_hash, intent, tx_ids) in pending {
             if out.len() >= limit {
                 break;
+            }
+            if excluded_intent_hashes.map_or(false, |ex| ex.contains(&intent_hash)) {
+                continue;
             }
             let no_user_tx = tx_ids
                 .as_ref()

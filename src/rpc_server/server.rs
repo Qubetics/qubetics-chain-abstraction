@@ -19,6 +19,7 @@ use super::{
     handlers::{
         handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
         handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
+        handle_get_pending_intents_count,
         handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
         handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
         handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
@@ -231,6 +232,11 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_intents_solved_count);
 
+    let get_pending_intents_count = warp::path("pending_intents_count")
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_pending_intents_count);
+
     // Upgrade endpoints
     let validate_upgrade = warp::path("validate-upgrade")
         .and(warp::post())
@@ -290,6 +296,7 @@ pub async fn start_http_server(
         .or(log_partial_pubkeys)
         .or(get_network_addresses)
         .or(get_intents_solved_count)
+        .or(get_pending_intents_count)
         .or(validate_upgrade)
         .or(upgrade)
         .or(upgrade_status)
