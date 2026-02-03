@@ -1686,6 +1686,11 @@ impl MpcNetworkLayer {
                             batch_intents.len()
                         );
 
+                        // Deterministic order: sort by intent_hash so all nodes build identical calldata
+                        // and the same digest for verification (avoids "signature failed verification"
+                        // when final node's tx_bytes differ from signer's due to different iteration order).
+                        batch_intents.sort_by(|a, b| a.0.cmp(&b.0));
+
                         // Prepare BatchIntentInput array for processBatchIntents contract call
                         let mut batch_intent_inputs = Vec::new();
 

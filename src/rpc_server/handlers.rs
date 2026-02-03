@@ -1267,6 +1267,76 @@ async fn fetch_solver_liquidity_from_contract(
     Ok((liquidity_btc, liquidity_tics))
 }
 
+/// Returns (reward_btc, reward_tics) from the SolverManager contract (unclaimed amounts).
+async fn fetch_solver_rewards_from_contract(
+    normalized_address: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+    let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse::<u64>()
+        .unwrap_or(1);
+
+    if contract_address == "0x0000000000000000000000000000000000000000" {
+        return Err("Solver contract address not configured".to_string());
+    }
+
+    let contract_addr = contract_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver contract address: {e}"))?;
+
+    let config = ContractConfig {
+        rpc_url: rpc_url.clone(),
+        contract_address: contract_addr,
+        chain_id,
+    };
+
+    let client =
+        ContractClient::new(config.clone()).map_err(|e| format!("Failed to create contract client: {e}"))?;
+
+    let solver_contract = SolverManagerContract::new(&config, client.provider())
+        .map_err(|e| format!("Failed to create solver contract interface: {e}"))?;
+
+    let solver_addr = normalized_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver EVM address {normalized_address}: {e}"))?;
+
+    let solver_id = solver_contract
+        .get_solver_id(solver_addr)
+        .await
+        .map_err(|e| format!("Failed to get solver ID: {e}"))?;
+
+    if solver_id.trim().is_empty() {
+        return Err("Address is not a registered solver on the contract".to_string());
+    }
+
+    let rewards = solver_contract
+        .get_solvers_unclaimed_rewards(vec![solver_id])
+        .await
+        .map_err(|e| format!("Failed to get solver unclaimed rewards: {e}"))?;
+
+    let (_, btc, tics) = rewards
+        .into_iter()
+        .next()
+        .unwrap_or((String::new(), U256::zero(), U256::zero()));
+
+    let reward_btc = if btc.is_zero() {
+        None
+    } else {
+        Some(btc.to_string())
+    };
+    let reward_tics = if tics.is_zero() {
+        None
+    } else {
+        Some(tics.to_string())
+    };
+
+    Ok((reward_btc, reward_tics))
+}
+
 pub(crate) async fn handle_get_solver_liquidity(
     req: SolverLiquidityRequest,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -1347,7 +1417,8 @@ pub(crate) async fn handle_get_solver_liquidity(
     }))
 }
 
-/// Return unclaimed rewards for a solver (pending claim-reward requests: Pending, Batched; not Completed).
+/// Return unclaimed rewards for a solver: on-chain amounts from the contract (reward_btc, reward_tics)
+/// plus pending claim-reward requests from DB (Pending, Batched; not Completed).
 pub(crate) async fn handle_get_solver_rewards(
     req: GetSolverRewardsRequest,
     user_intent_manager: Arc<UserIntentManager>,
@@ -1361,6 +1432,8 @@ pub(crate) async fn handle_get_solver_rewards(
         return Ok(warp::reply::json(&GetSolverRewardsResponse {
             status: "error".to_string(),
             solver_address: req.solver_address,
+            reward_btc: None,
+            reward_tics: None,
             unclaimed_rewards: vec![],
             message: "Solver address is required".to_string(),
             error_message: Some("solver_address cannot be empty".to_string()),
@@ -1374,10 +1447,21 @@ pub(crate) async fn handle_get_solver_rewards(
             return Ok(warp::reply::json(&GetSolverRewardsResponse {
                 status: "error".to_string(),
                 solver_address: req.solver_address,
+                reward_btc: None,
+                reward_tics: None,
                 unclaimed_rewards: vec![],
                 message: "Invalid solver address format".to_string(),
                 error_message: Some(format!("Invalid address format: {e}")),
             }));
+        }
+    };
+
+    // Fetch on-chain unclaimed reward amounts from the SolverManager contract
+    let (reward_btc, reward_tics) = match fetch_solver_rewards_from_contract(&normalized_address).await {
+        Ok((btc, tics)) => (btc, tics),
+        Err(e) => {
+            warn!("⚠️ [SOLVER_REWARDS] Failed to fetch contract rewards for {}: {}", normalized_address, e);
+            (None, None)
         }
     };
 
@@ -1393,6 +1477,8 @@ pub(crate) async fn handle_get_solver_rewards(
             return Ok(warp::reply::json(&GetSolverRewardsResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
+                reward_btc,
+                reward_tics,
                 unclaimed_rewards: vec![],
                 message: "Failed to load pending claim rewards".to_string(),
                 error_message: Some(e.to_string()),
@@ -1415,16 +1501,20 @@ pub(crate) async fn handle_get_solver_rewards(
 
     let count = unclaimed_rewards.len();
     info!(
-        "✅ Solver {} has {} unclaimed reward request(s)",
-        normalized_address, count
+        "✅ Solver {} - contract rewards BTC: {:?}, TICS: {:?}; {} pending claim request(s)",
+        normalized_address, reward_btc, reward_tics, count
     );
 
     Ok(warp::reply::json(&GetSolverRewardsResponse {
         status: "success".to_string(),
         solver_address: normalized_address,
+        reward_btc: reward_btc.clone(),
+        reward_tics: reward_tics.clone(),
         unclaimed_rewards,
         message: format!(
-            "{} unclaimed reward request(s) (use claim_reward to submit a new claim)",
+            "On-chain unclaimed: BTC {:?}, TICS {:?}; {} pending claim request(s) (use claim_reward to submit a new claim)",
+            reward_btc.as_deref().unwrap_or("0"),
+            reward_tics.as_deref().unwrap_or("0"),
             count
         ),
         error_message: None,

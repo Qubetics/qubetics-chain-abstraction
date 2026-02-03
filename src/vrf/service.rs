@@ -55,19 +55,22 @@ pub struct VrfService {
 
 #[derive(Clone, Copy, Debug)]
 pub enum VrfRoundSyncKind {
-    Signing
+    Signing,
+    Background, // For continuous background synchronization
 }
 
 impl VrfRoundSyncKind {
     fn to_message(self, request: VrfRoundSyncRequest) -> GossipsubMessage {
         match self {
             VrfRoundSyncKind::Signing => GossipsubMessage::VrfRoundSyncRequest(request),
+            VrfRoundSyncKind::Background => GossipsubMessage::VrfRoundSyncRequest(request),
         }
     }
 
     fn topic(self) -> &'static str {
         match self {
-            VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_SIGNING
+            VrfRoundSyncKind::Signing => crate::network::transport::types::TOPIC_SIGNING,
+            VrfRoundSyncKind::Background => crate::network::transport::types::TOPIC_SIGNING,
         }
     }
 }
@@ -630,6 +633,34 @@ impl VrfService {
         self.sync_rounds(VrfRoundSyncKind::Signing).await
     }
 
+    /// Start background round synchronization task
+    /// This runs continuously in the background to keep nodes synchronized
+    /// without blocking the critical path (signing operations)
+    pub async fn start_background_round_sync(self: Arc<Self>) {
+        const SYNC_INTERVAL_SECS: u64 = 5;
+
+        info!(
+            "🔄 [BACKGROUND_SYNC][{}] Starting background round sync (interval: {}s)",
+            self.context, SYNC_INTERVAL_SECS
+        );
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
+
+            match self.sync_rounds(VrfRoundSyncKind::Background).await {
+                Ok(round) => {
+                    info!(
+                        "✅ [BACKGROUND_SYNC][{}] Synced to round {}",
+                        self.context, round
+                    );
+                }
+                Err(e) => {
+                    warn!("⚠️ [BACKGROUND_SYNC][{}] Sync failed: {}", self.context, e);
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn sync_rounds_with_mocked_peers(&self, peer_rounds: Vec<u64>) -> u64 {
         let _guard = self.round_update_lock.lock().await;
@@ -662,7 +693,6 @@ impl VrfService {
 
         synchronized_round
     }
-
 
     pub fn context(&self) -> &str {
         &self.context

@@ -1449,8 +1449,15 @@ impl SigningNode {
 
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
+        // Get VRF round for validation (single source of truth) BEFORE mutable borrow
+        let vrf_round = if let Some(vrf_service) = self.coordination.vrf_service() {
+            vrf_service.get_current_round().await
+        } else {
+            0
+        };
+        
         if let Some(consensus_node) = self.coordination.consensus_node_mut() {
-            consensus_node.handle_message(msg).await?;
+            consensus_node.handle_message(msg, vrf_round).await?;
         }
         Ok(())
     }
@@ -1794,11 +1801,7 @@ impl SigningNode {
             return Ok(());
         }
 
-        // Sync rounds before getting next round
-        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
-            warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to sync rounds: {}", e);
-        }
-
+        // Background sync keeps rounds synchronized - no need to sync here
         // Get next round for contract update (separate from batch transfer round)
         let contract_update_round = vrf_service.get_next_round().await;
 
@@ -2439,11 +2442,7 @@ impl SigningNode {
             return Ok(());
         }
 
-        // Sync rounds before getting next round
-        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
-            warn!("⚠️ [BTC_INTENT_MANAGER] Failed to sync rounds: {}", e);
-        }
-
+        // Background sync keeps rounds synchronized - no need to sync here
         // Get next round
         let update_round = vrf_service.get_next_round().await;
 
@@ -2708,6 +2707,24 @@ impl SigningNode {
             .verify_signature_for_round(&from, &signature, round)
             .await
         {
+            let err_str = e.to_string();
+            // Race: signature can arrive before transaction data. Buffer and process when tx data arrives.
+            if err_str.contains("No pending transaction found") {
+                let mut awaiting = self.signatures.signatures_awaiting_tx.write().await;
+                let list = awaiting.entry(round).or_default();
+                if list.len() < crate::signing::state::MAX_SIGNATURES_AWAITING_TX_PER_ROUND {
+                    list.push((from.clone(), signature.clone()));
+                    info!(
+                        "⏳ [SIGNING] Buffered signature from {} for round {} (tx data not yet received; will verify when tx data arrives)",
+                        from, round
+                    );
+                    return Ok(());
+                }
+                warn!(
+                    "⚠️ [SIGNING] Dropping signature from {} for round {} (buffer full and no pending tx)",
+                    from, round
+                );
+            }
             error!(
                 "❌ [SIGNING] Signature verification failed for peer {} in round {}: {}",
                 from, round, e
@@ -3903,23 +3920,43 @@ impl SigningNode {
         };
         let chain_tx = crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx);
 
-        let mut pending = self.pending.pending_transactions.write().await;
-        pending.insert(
-            round,
-            (
-                chain_tx,
-                tx_bytes,
-                intent_hash.clone(),
-                parsed_tx_type,
-                request_id, // Store request_id from received data
-                None, // No original_request available in this context
-            ),
-        );
+        {
+            let mut pending = self.pending.pending_transactions.write().await;
+            pending.insert(
+                round,
+                (
+                    chain_tx,
+                    tx_bytes,
+                    intent_hash.clone(),
+                    parsed_tx_type,
+                    request_id, // Store request_id from received data
+                    None,      // No original_request available in this context
+                ),
+            );
+        }
 
         info!(
             "✅ [SIGNING] Stored transaction data for round {} - final node can now reconstruct when signatures arrive",
             round
         );
+
+        // Process any signatures that arrived before we had transaction data (race fix)
+        let buffered = {
+            let mut awaiting = self.signatures.signatures_awaiting_tx.write().await;
+            awaiting.remove(&round).unwrap_or_default()
+        };
+        for (from, sig) in buffered {
+            info!(
+                "🔄 [SIGNING] Processing buffered signature from {} for round {} (tx data now available)",
+                from, round
+            );
+            if let Err(e) = self.handle_signature_for_round(from.clone(), sig, round).await {
+                warn!(
+                    "⚠️ [SIGNING] Buffered signature from {} for round {} failed verification: {}",
+                    from, round, e
+                );
+            }
+        }
 
         Ok(())
     }

@@ -184,4 +184,36 @@ impl VrfStorage {
         );
         Ok(())
     }
+
+    /// Store selected nodes for a specific round
+    /// This allows recovery of selected_nodes after node restarts
+    pub fn store_selected_nodes(
+        &self,
+        round: u64,
+        nodes: &[crate::types::p2p::SerializablePeerId],
+    ) -> Result<()> {
+        let key = format!("{}selected_nodes:{}", self.prefix, round);
+        let nodes_json = serde_json::to_string(nodes)?;
+        self.db.put_string(&key, &nodes_json)?;
+        debug!(
+            "💾 [VRF_STORAGE:{}] Stored {} selected nodes for round {}",
+            self.prefix,
+            nodes.len(),
+            round
+        );
+        Ok(())
+    }
+
+    /// Get selected nodes for a specific round
+    pub fn get_selected_nodes(
+        &self,
+        round: u64,
+    ) -> Result<Option<Vec<crate::types::p2p::SerializablePeerId>>> {
+        let key = format!("{}selected_nodes:{}", self.prefix, round);
+        let json_str_opt: Option<String> = self.db.get_string(&key)?;
+        match json_str_opt {
+            Some(json_str) => Ok(Some(serde_json::from_str(&json_str)?)),
+            None => Ok(None),
+        }
+    }
 }

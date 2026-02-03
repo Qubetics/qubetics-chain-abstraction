@@ -27,6 +27,10 @@ pub type PendingValue = (
     Option<BtcRoundExtras>, // <-- NEW
 );
 
+/// Signatures received before the final node had transaction data for that round.
+/// Processed when transaction data arrives via handle_transaction_data_for_final_node.
+pub const MAX_SIGNATURES_AWAITING_TX_PER_ROUND: usize = 16;
+
 #[derive(Clone)]
 pub struct SignatureStore {
     pub public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
@@ -34,6 +38,8 @@ pub struct SignatureStore {
     pub signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
     pub final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pub aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // Track rounds that have been aggregated
+    /// Signatures buffered when verification failed due to missing pending tx (race: signature arrived before tx data).
+    pub signatures_awaiting_tx: Arc<RwLock<HashMap<u64, Vec<(String, ECDSASignature)>>>>,
 }
 
 impl Default for SignatureStore {
@@ -50,6 +56,7 @@ impl SignatureStore {
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
+            signatures_awaiting_tx: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

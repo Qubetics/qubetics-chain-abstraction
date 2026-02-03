@@ -485,10 +485,10 @@ impl RetryManager {
                 };
                 let delay_with_jitter = base_delay + Duration::from_millis(jitter_ms);
 
-                info!(
-                        "⏳ [RETRY] {} waiting {:?} (base: {:?} + jitter: {}ms) before retry {} for {:?}",
-                        msg_type_str, delay_with_jitter, base_delay, jitter_ms, retry_attempt + 2, message_id
-                    );
+                debug!(
+                    "⏳ [RETRY] {} waiting {:?} (base: {:?} + jitter: {}ms) before retry {} for {:?}",
+                    msg_type_str, delay_with_jitter, base_delay, jitter_ms, retry_attempt + 2, message_id
+                );
                 tokio::time::sleep(delay_with_jitter).await;
             }
         }

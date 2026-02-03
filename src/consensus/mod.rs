@@ -9,7 +9,6 @@ pub use db_consensus::DatabaseConsensusNode;
 
 #[derive(Clone)]
 pub struct ConsensusNode {
-    current_round: u64,
     selected_nodes_by_round: HashMap<u64, Vec<SerializablePeerId>>,
     consensus_results: HashMap<u64, ConsensusResult>,
     /// Consensus results that arrived before we had selected_nodes for that round
@@ -27,7 +26,6 @@ impl Default for ConsensusNode {
 impl ConsensusNode {
     pub fn new() -> Self {
         Self {
-            current_round: 0,
             selected_nodes_by_round: HashMap::new(),
             consensus_results: HashMap::new(),
             pending_results: HashMap::new(),
@@ -49,7 +47,6 @@ impl ConsensusNode {
             match self.validate_consensus_result_with_selected(round, &pending) {
                 Ok(_) => {
                     self.consensus_results.insert(round, pending.clone());
-                    self.current_round = self.current_round.max(round);
                     info!(
                         "✅ [CONSENSUS] Pending consensus result for round {} validated and stored after selected_nodes arrived (final_node={:?})",
                         round, pending.final_node
@@ -76,7 +73,6 @@ impl ConsensusNode {
         let result = Self::calculate_consensus_result(selected_nodes, round)?;
 
         self.consensus_results.insert(round, result.clone());
-        self.current_round = round;
 
         info!(
             "✅ [CONSENSUS] Consensus completed for round {}: final node = {:?}",
@@ -102,19 +98,16 @@ impl ConsensusNode {
         self.pending_results.contains_key(&round)
     }
 
-    /// Get the current round
-    pub fn get_current_round(&self) -> u64 {
-        self.current_round
-    }
-
-    /// Advance to the next round
-    pub fn advance_round(&mut self) {
-        self.current_round += 1;
-        debug!("🔄 [CONSENSUS] Advanced to round {}", self.current_round);
-    }
-
     /// Handle consensus messages
-    pub async fn handle_message(&mut self, msg: ConsensusMessage) -> Result<()> {
+    ///
+    /// # Arguments
+    /// * `msg` - The consensus message to handle
+    /// * `vrf_current_round` - Current VRF round for validation (single source of truth)
+    pub async fn handle_message(
+        &mut self,
+        msg: ConsensusMessage,
+        vrf_current_round: u64,
+    ) -> Result<()> {
         match msg {
             ConsensusMessage::FinalNodeResult { result, round } => {
                 info!(
@@ -131,14 +124,26 @@ impl ConsensusNode {
                     ));
                 }
 
-                // SECURITY CHECK 2: Validate round is reasonable (not too far in future/past)
-                // Allow rounds up to 1000 in the future (for network delays) and any past round
-                const MAX_FUTURE_ROUND_OFFSET: u64 = 1000;
-                if round > self.current_round.saturating_add(MAX_FUTURE_ROUND_OFFSET) {
+                // SECURITY CHECK 2: Validate round against VRF round (single source of truth)
+                // Reduced offset from 1000 to 10 for tighter validation
+                const MAX_FUTURE_ROUND_OFFSET: u64 = 10;
+
+                // Check if too far in future
+                if round > vrf_current_round.saturating_add(MAX_FUTURE_ROUND_OFFSET) {
                     return Err(anyhow::anyhow!(
-                        "Invalid consensus round {}: too far in future (current_round={}, max_offset={})",
+                        "Invalid consensus round {}: too far ahead of VRF round {} (max_offset={})",
                         round,
-                        self.current_round,
+                        vrf_current_round,
+                        MAX_FUTURE_ROUND_OFFSET
+                    ));
+                }
+
+                // Check if too far in past
+                if round < vrf_current_round.saturating_sub(MAX_FUTURE_ROUND_OFFSET) {
+                    return Err(anyhow::anyhow!(
+                        "Invalid consensus round {}: too far behind VRF round {} (max_offset={})",
+                        round,
+                        vrf_current_round,
                         MAX_FUTURE_ROUND_OFFSET
                     ));
                 }
@@ -147,7 +152,6 @@ impl ConsensusNode {
                 match self.validate_consensus_result_with_selected(round, &result) {
                     Ok(_) => {
                         self.consensus_results.insert(round, result);
-                        self.current_round = self.current_round.max(round);
                     }
                     Err(e) if e.to_string().contains("no selected nodes available") => {
                         warn!(
@@ -537,10 +541,13 @@ mod tests {
         receiver.add_selected_nodes(round, nodes.clone());
 
         receiver
-            .handle_message(ConsensusMessage::FinalNodeResult {
-                result: result.clone(),
-                round,
-            })
+            .handle_message(
+                ConsensusMessage::FinalNodeResult {
+                    result: result.clone(),
+                    round,
+                },
+                round, // vrf_current_round
+            )
             .await
             .expect("valid consensus message should be accepted");
 
@@ -567,7 +574,10 @@ mod tests {
         receiver.add_selected_nodes(round, nodes.clone());
 
         let err = receiver
-            .handle_message(ConsensusMessage::FinalNodeResult { result, round })
+            .handle_message(
+                ConsensusMessage::FinalNodeResult { result, round },
+                round, // vrf_current_round
+            )
             .await
             .expect_err("tampered consensus result should be rejected");
 

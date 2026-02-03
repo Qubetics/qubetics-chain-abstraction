@@ -502,9 +502,8 @@ impl SigningNode {
             user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
         };
 
-        // Synchronize VRF rounds before advancing and acquiring the signing round
+        // Background sync keeps rounds synchronized - no need to sync here
         let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
             vrf_service.get_next_round().await
         } else {
             0
@@ -764,9 +763,8 @@ impl SigningNode {
             user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
         };
 
-        // Synchronize VRF rounds before advancing and acquiring the signing round
+        // Background sync keeps rounds synchronized - no need to sync here
         let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
             vrf_service.get_next_round().await
         } else {
             0

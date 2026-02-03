@@ -152,9 +152,7 @@ impl MpcNetworkLayer {
                             "❌ [CRITICAL-UNICAST] Failed to handle delivered message: {}",
                             e
                         );
-                        RPCResponse::Error(format!(
-                            "Failed to handle critical message: {e}"
-                        ))
+                        RPCResponse::Error(format!("Failed to handle critical message: {e}"))
                     }
                 }
             }
@@ -255,12 +253,26 @@ impl MpcNetworkLayer {
     }
 
     fn is_vrf_round_within_range(reference_round: Option<u64>, candidate_round: u64) -> bool {
-        reference_round
-            .map(|reference| {
-                candidate_round >= reference.saturating_sub(MAX_VRF_ROUND_SKEW)
-                    && candidate_round <= reference.saturating_add(MAX_VRF_ROUND_SKEW)
-            })
-            .unwrap_or(true)
+        let Some(reference) = reference_round else {
+            warn!(
+                "⚠️ [VRF_SYNC] No reference round available, rejecting candidate round {}",
+                candidate_round
+            );
+            return false; // Reject if no reference
+        };
+
+        let lower_bound = reference.saturating_sub(MAX_VRF_ROUND_SKEW);
+        let upper_bound = reference.saturating_add(MAX_VRF_ROUND_SKEW);
+        let in_range = candidate_round >= lower_bound && candidate_round <= upper_bound;
+
+        if !in_range {
+            warn!(
+                "⚠️ [VRF_SYNC] Round {} outside valid range [{}, {}] (reference: {})",
+                candidate_round, lower_bound, upper_bound, reference
+            );
+        }
+
+        in_range
     }
 
     pub(crate) fn store_peer_round_if_valid(
@@ -320,7 +332,6 @@ impl MpcNetworkLayer {
         _peer: PeerId,
         swarm: &libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
-
         // Gather everyone we know
         let peers: Vec<SerializablePeerId> = self
             .node_manager
@@ -333,10 +344,10 @@ impl MpcNetworkLayer {
         // This ensures peer_indices stays in sync with the database
         for SerializablePeerId(pid) in &peers {
             if !self.peer_discovery.peer_indices.contains_key(pid) {
-            // Load from database if not in peer_indices
-            if let Some(db_idx) = self.get_index_from_db_async(pid).await {
-                self.peer_discovery.peer_indices.insert(*pid, db_idx);
-            }
+                // Load from database if not in peer_indices
+                if let Some(db_idx) = self.get_index_from_db_async(pid).await {
+                    self.peer_discovery.peer_indices.insert(*pid, db_idx);
+                }
             }
         }
 
@@ -500,14 +511,12 @@ impl MpcNetworkLayer {
             )
             .await
         {
-            Ok(true) => {
-                RPCResponse::DKGShareReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    share_index,
-                    success: true,
-                }
-            }
+            Ok(true) => RPCResponse::DKGShareReceived {
+                from_node_id,
+                receiver_node_id,
+                share_index,
+                success: true,
+            },
             Ok(false) => {
                 warn!(
                     "❌ [DKG-SECURE] Share index {} from {} was rejected",
@@ -559,14 +568,12 @@ impl MpcNetworkLayer {
             )
             .await
         {
-            Ok(true) => {
-                RPCResponse::RefreshShareReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    share_index,
-                    success: true,
-                }
-            }
+            Ok(true) => RPCResponse::RefreshShareReceived {
+                from_node_id,
+                receiver_node_id,
+                share_index,
+                success: true,
+            },
             Ok(false) => {
                 warn!(
                     "❌ [REFRESH-SECURE] Refresh share index {} from {} was rejected",
@@ -668,14 +675,12 @@ impl MpcNetworkLayer {
         };
 
         match result {
-            Ok(_) => {
-                RPCResponse::ECDSASignatureReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    round,
-                    success: true,
-                }
-            }
+            Ok(_) => RPCResponse::ECDSASignatureReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: true,
+            },
             Err(e) => {
                 warn!(
                     "❌ [SIGNING-SECURE] Failed to process ECDSA signature for round {}: {}",
@@ -770,14 +775,12 @@ impl MpcNetworkLayer {
         };
 
         match result {
-            Ok(_) => {
-                RPCResponse::BtcSignaturesReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    round,
-                    success: true,
-                }
-            }
+            Ok(_) => RPCResponse::BtcSignaturesReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: true,
+            },
             Err(e) => {
                 warn!(
                     "❌ [SIGNING-SECURE] Failed to process BTC signatures for round {}: {}",
@@ -1105,10 +1108,7 @@ impl MpcNetworkLayer {
                 };
 
                 if let Some(retry_mgr) = &self.retry_manager {
-                    match retry_mgr
-                        .record_acknowledgment(&message_id_obj, peer)
-                        .await
-                    {
+                    match retry_mgr.record_acknowledgment(&message_id_obj, peer).await {
                         Ok(true) => {}
                         Ok(false) => {}
                         Err(e) => {
@@ -1258,80 +1258,77 @@ impl MpcNetworkLayer {
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
-        let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) =
-            &mut self.dkg_node
-        {
-            let total = self.node_manager.get_total_nodes();
-            let threshold = self.node_manager.get_threshold();
+        let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) =
+            if let Some(dkg_node) = &mut self.dkg_node {
+                let total = self.node_manager.get_total_nodes();
+                let threshold = self.node_manager.get_threshold();
 
-            // Update DKG node parameters with current network size
-            dkg_node.update_node_params(total, threshold)?;
+                // Update DKG node parameters with current network size
+                dkg_node.update_node_params(total, threshold)?;
 
-            let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+                let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
 
-            // Check if peer list includes nodes with assigned indices (indicates established network)
-            let _peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
-            let _max_peer_index = self
-                .peer_discovery
-                .peer_indices
-                .values()
-                .max()
-                .cloned()
-                .unwrap_or(0);
+                // Check if peer list includes nodes with assigned indices (indicates established network)
+                let _peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
+                let _max_peer_index = self
+                    .peer_discovery
+                    .peer_indices
+                    .values()
+                    .max()
+                    .cloned()
+                    .unwrap_or(0);
 
-            // Count connected peers (not including self)
-            let _connected_peer_count = swarm.connected_peers().count();
+                // Count connected peers (not including self)
+                let _connected_peer_count = swarm.connected_peers().count();
 
+                // NEW NODE DETECTION (more robust):
+                // A node is a "new node joining established network" if:
+                // 1. It has NO DKG data (no secret share)
+                // 2. AND the network has 4+ total nodes (meaning 3 existing + this new one)
+                //
+                // IMPORTANT: We use `total >= 4` (not connected_peer_count) because:
+                // - When we receive PeerList, we've already added those peers to node_manager
+                // - But we might not be CONNECTED to all of them yet (dialing happens after)
+                // - Initial 3-node DKG happens at EXACTLY total==3 (handled in swarm_events.rs)
+                // - So if total >= 4 and we have no DKG data, we're definitely a new node joining
+                let is_new_node_joining = !has_dkg_data && total >= 4;
 
-            // NEW NODE DETECTION (more robust):
-            // A node is a "new node joining established network" if:
-            // 1. It has NO DKG data (no secret share)
-            // 2. AND the network has 4+ total nodes (meaning 3 existing + this new one)
-            //
-            // IMPORTANT: We use `total >= 4` (not connected_peer_count) because:
-            // - When we receive PeerList, we've already added those peers to node_manager
-            // - But we might not be CONNECTED to all of them yet (dialing happens after)
-            // - Initial 3-node DKG happens at EXACTLY total==3 (handled in swarm_events.rs)
-            // - So if total >= 4 and we have no DKG data, we're definitely a new node joining
-            let is_new_node_joining = !has_dkg_data && total >= 4;
+                if is_new_node_joining {
+                    let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
 
-            if is_new_node_joining {
+                    // Find first connected peer for sync (excluding ourselves)
+                    let sync_peer = connected_peers
+                        .iter()
+                        .find(|pid| **pid != self.local_peer_id)
+                        .cloned();
 
-                let connected_peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                    let should_proceed = sync_peer.is_some();
 
-                // Find first connected peer for sync (excluding ourselves)
-                let sync_peer = connected_peers
-                    .iter()
-                    .find(|pid| **pid != self.local_peer_id)
-                    .cloned();
+                    // CRITICAL: Check if this is a REJOINING node or a truly NEW node
+                    let new_node_index = if let Some(existing_index) =
+                        self.get_index_from_db_async(&self.local_peer_id).await
+                    {
+                        existing_index
+                    } else {
+                        // This is a truly NEW node - assign max_index + 1
+                        let all_assigned_indices: Vec<usize> =
+                            self.peer_discovery.peer_indices.values().cloned().collect();
+                        let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
+                        max_index + 1
+                    };
 
-                let should_proceed = sync_peer.is_some();
-
-                // CRITICAL: Check if this is a REJOINING node or a truly NEW node
-                let new_node_index = if let Some(existing_index) =
-                    self.get_index_from_db_async(&self.local_peer_id).await
-                {
-                    existing_index
+                    (
+                        should_proceed,
+                        sync_peer,
+                        Some(new_node_index),
+                        !should_proceed,
+                    )
                 } else {
-                    // This is a truly NEW node - assign max_index + 1
-                    let all_assigned_indices: Vec<usize> =
-                        self.peer_discovery.peer_indices.values().cloned().collect();
-                    let max_index = all_assigned_indices.iter().max().cloned().unwrap_or(0);
-                    max_index + 1
-                };
-
-                (
-                    should_proceed,
-                    sync_peer,
-                    Some(new_node_index),
-                    !should_proceed,
-                )
+                    (false, None, None, false)
+                }
             } else {
                 (false, None, None, false)
-            }
-        } else {
-            (false, None, None, false)
-        };
+            };
 
         if needs_retry {
             self.needs_database_sync = true;

@@ -152,6 +152,9 @@ pub struct UnclaimedRewardEntry {
 pub struct GetSolverRewardsResponse {
     pub status: String,
     pub solver_address: String,
+    /// On-chain unclaimed reward amounts from the SolverManager contract (BTC satoshis, TICS wei).
+    pub reward_btc: Option<String>,
+    pub reward_tics: Option<String>,
     pub unclaimed_rewards: Vec<UnclaimedRewardEntry>,
     pub message: String,
     pub error_message: Option<String>,

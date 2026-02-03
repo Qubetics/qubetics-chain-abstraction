@@ -283,8 +283,8 @@ impl SigningNode {
 
         // ===== Select round via VRF =====
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
+        // Background sync keeps rounds synchronized - no need to sync here
         let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
             let round = vrf_service.get_next_round().await;
             let _ = vrf_service
                 .perform_node_selection(

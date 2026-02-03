@@ -57,14 +57,23 @@ impl Coordination {
         database: Arc<crate::database::Database>,
     ) -> Self {
         let vrf_storage = VrfStorage::new(database.as_ref().clone());
-        let vrf_service = VrfService::new_with_storage_and_context(
+        let vrf_service = Arc::new(VrfService::new_with_storage_and_context(
             peer_id,
             message_tx.clone(),
             vrf_storage.clone(),
             "signing_contract",
-        );
+        ));
+
+        // Spawn background sync task
+        tokio::spawn({
+            let vrf_service = vrf_service.clone();
+            async move {
+                vrf_service.start_background_round_sync().await;
+            }
+        });
+
         Self {
-            vrf_service: Some(vrf_service),
+            vrf_service: Some(Arc::try_unwrap(vrf_service).unwrap_or_else(|arc| (*arc).clone())),
             consensus_node: Some(ConsensusNode::new()),
             available_nodes: None,
             vrf_storage: Some(vrf_storage),
@@ -161,6 +170,16 @@ impl Coordination {
             vrf_service.set_current_round(round).await;
         }
 
-        self.vrf_service = Some(vrf_service);
+        // Spawn background sync task
+        let vrf_service_arc = Arc::new(vrf_service);
+        tokio::spawn({
+            let vrf_service = vrf_service_arc.clone();
+            async move {
+                vrf_service.start_background_round_sync().await;
+            }
+        });
+
+        self.vrf_service =
+            Some(Arc::try_unwrap(vrf_service_arc).unwrap_or_else(|arc| (*arc).clone()));
     }
 }
