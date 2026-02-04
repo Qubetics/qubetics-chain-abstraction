@@ -1950,11 +1950,11 @@ impl MpcNetworkLayer {
                         Option<k256::Scalar>,
                     )> = Vec::new();
                     for (intent_hash, intent, user_eth_addr) in &batch_intents {
-                        let target_amount = user_intent_manager
-                            .get_intent_target_amount(intent_hash)
-                            .await
-                            .unwrap_or_else(|| intent.amount.parse().unwrap_or(0u128));
-                        let amount = target_amount + (target_amount / 20);
+                        // For Bitcoin UserToVault, amount must be in satoshis (source chain).
+                        // intent.amount is in source-chain smallest units = satoshis for Bitcoin.
+                        // Do NOT use get_intent_target_amount — that is in target-chain units (e.g. wei for BTC->TICS).
+                        let amount_sats: u128 = intent.amount.parse().unwrap_or(0);
+                        let amount = amount_sats + (amount_sats / 20); // 5% buffer for fees
 
                         let user = match user_intent_manager.get_user_by_address(user_eth_addr).await {
                             Some(u) => u,

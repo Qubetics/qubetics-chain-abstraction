@@ -2967,8 +2967,19 @@ impl MpcNetworkLayer {
                 .await;
 
             // For BTC contract update:
-            // - withdraw_tx_hash = network_to_target_tx_id (the BTC transaction that was already executed)
+            // - withdraw_tx_hash = user_to_network_tx_id (the UserToVault / user deposit tx)
             // - deposit_tx_hash = btc_txid (the BTC batch transaction ID, if available, otherwise use network_to_target_tx_id)
+            let user_to_network_tx_id = tx_ids
+                .as_ref()
+                .and_then(|ids| ids.user_to_network_tx_id.clone())
+                .unwrap_or_else(|| {
+                    warn!(
+                        "⚠️ [BTC_INTENT_MANAGER] Intent {} missing user_to_network_tx_id",
+                        intent_hash
+                    );
+                    "N/A".to_string()
+                });
+
             let network_to_target_tx_id = tx_ids
                 .as_ref()
                 .and_then(|ids| ids.network_to_target_tx_id.clone())
@@ -2998,7 +3009,7 @@ impl MpcNetworkLayer {
                 source_token: intent.source_token.clone(),
                 target_token: intent.target_token.clone(),
                 intent_id: intent_hash.clone(),
-                withdraw_tx_hash: network_to_target_tx_id.clone(), // The BTC transaction that fulfilled the intent
+                withdraw_tx_hash: user_to_network_tx_id, // UserToVault / user-to-network tx ID
                 deposit_tx_hash, // The BTC batch transaction ID (or network_to_target_tx_id if batch not finalized yet)
             };
 
