@@ -1927,11 +1927,20 @@ impl MpcNetworkLayer {
                         round
                     );
 
-                    let liquidity_operator_eth_addr = user_intent_manager
-                        .get_database()
-                        .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
-                        .ok()
-                        .flatten();
+                    // UserToVault on Bitcoin: from user derived_btc -> to network BTC address (where network BTC is held)
+                    let network_btc_addr = match &self.dkg_node {
+                        Some(dkg_node) => match dkg_node.get_final_public_key().await {
+                            Some(group_key) => Some(crate::utils::get_btc_address_from_group_key(group_key)),
+                            None => {
+                                warn!("❌ [BTC_UTV_BATCH] Network group key not available; cannot derive network BTC address");
+                                return Ok(());
+                            }
+                        },
+                        None => {
+                            warn!("❌ [BTC_UTV_BATCH] DKG node not available");
+                            return Ok(());
+                        }
+                    };
 
                     let mut batch: Vec<(
                         String,
@@ -1964,8 +1973,8 @@ impl MpcNetworkLayer {
                                 derived_eth_addr.as_ref(),
                                 derived_btc_addr.as_ref(),
                                 crate::types::TransactionType::UserToVault,
-                                liquidity_operator_eth_addr.as_ref(),
-                                None,
+                                None, // ETH addr not used for Bitcoin chain
+                                network_btc_addr.as_ref(),
                                 amount,
                             )
                             .await;

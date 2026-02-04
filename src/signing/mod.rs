@@ -49,7 +49,7 @@ use crate::user_intent_manager::UserIntentManager;
 use num_traits::Zero;
 
 /// Number of recent UserToVault batches to exclude from the next pick (sliding window).
-const LAST_N_USER_TO_VAULT_BATCHES: usize = 4;
+const LAST_N_USER_TO_VAULT_BATCHES: usize = 10;
 
 /// Slot type for per-slot aggregation (TICS vs BTC UserToVault batch).
 #[derive(Clone, Debug)]
