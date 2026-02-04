@@ -980,15 +980,15 @@ impl MpcNetworkLayer {
                 node_id,
             } => {
                 debug!(
-                    "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
-                    message_type, message_id, node_id
+                    "[RETRY] Received ACK from {} for message type: {}, id: {}",
+                    node_id, message_type, message_id
                 );
 
                 // Parse message type and create message ID
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
                     _ => {
-                        debug!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
+                        debug!("[RETRY] Unknown message type in ACK: {}", message_type);
                         return Ok(());
                     }
                 };
@@ -998,33 +998,21 @@ impl MpcNetworkLayer {
                     unique_id: message_id.clone(),
                 };
 
-                debug!(
-                    "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
-                    msg_type, message_id, node_id
-                );
-
                 // Record acknowledgment
                 if let Some(retry_mgr) = &self.retry_manager {
                     match retry_mgr
-                        .record_acknowledgment(&message_id_obj, node_id)
+                        .record_acknowledgment(&message_id_obj, node_id.clone())
                         .await
                     {
-                        Ok(true) => {
-                            debug!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
-                        }
-                        Ok(false) => {
-                            debug!("📝 [RETRY] ACK recorded - still waiting for more nodes");
+                        Ok(all_acked) => {
+                            if all_acked {
+                                debug!("[RETRY] All nodes acknowledged message {}", message_id);
+                            }
                         }
                         Err(e) => {
-                            debug!("❌ [RETRY] Failed to record acknowledgment: {}", e);
-                            debug!(
-                                "❌ [RETRY] This ACK from {} for message {} was NOT recorded!",
-                                node_id, message_id
-                            );
+                            warn!("[RETRY] Failed to record ACK from {} for {}: {}", node_id, message_id, e);
                         }
                     }
-                } else {
-                    debug!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
                 }
             }
             GossipsubMessage::VersionAnnouncement {
@@ -1082,10 +1070,6 @@ impl MpcNetworkLayer {
                     intent_hashes.len()
                 );
 
-                // Log the intent hashes
-                for (i, hash) in intent_hashes.iter().enumerate() {
-                    info!("  📋 [BATCH] Intent {}: {}", i + 1, hash);
-                }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
                 let mut intent_data = Vec::new();

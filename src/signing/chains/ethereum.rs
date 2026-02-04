@@ -21,7 +21,7 @@ use sha3::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Convenience wrapper for Ethereum-focused signing flows.
 pub struct EthereumSigner<'a> {
@@ -390,21 +390,10 @@ impl SigningNode {
             }
         };
 
-        // Log signing key for testing/debugging
-        let signing_key_hex = hex::encode(signing_key.secret_bytes());
-        info!(
-            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}",
-            self.id, signing_key_hex
+        debug!(
+            "[SIGNING] Node {} signing ETH transaction: to={}, value={}, nonce={}",
+            self.id, transaction.to, transaction.value, transaction.nonce
         );
-
-        // Calculate and log DKG index for this node
-        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-        info!(
-            "🔢 [SIGNING-DEBUG] Node {} DKG index: {}",
-            self.id, dkg_index
-        );
-
-        info!("📝 [SIGNING] Node {} starting to sign transaction", self.id);
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
         let chain_transaction =
@@ -428,7 +417,7 @@ impl SigningNode {
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(tx_hash));
+        debug!("[SIGNING] Transaction hash: 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
@@ -537,28 +526,6 @@ impl SigningNode {
                 .entry(round)
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
-
-            // Calculate and log this node's DKG index
-            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-
-            info!(
-                "💾 [SIGNING] Node {} stored signature for {} round {}",
-                self.id,
-                self.chain_handler.chain_type(),
-                round
-            );
-            info!(
-                "💾 [SIGNING-DEBUG] Stored signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
-                hex::encode(&signature_bytes[0..32]),
-                hex::encode(&signature_bytes[32..64]),
-                recovery_id.to_i32()
-            );
-            info!(
-                "💾 [INDEX-PEER-DEBUG] Stored signature for Index {} => PeerId {} (s-share: 0x{})",
-                my_dkg_index,
-                self.id,
-                hex::encode(&signature_bytes[32..64])
-            );
         }
 
         // Store original transaction for reconstruction after aggregation
@@ -641,7 +608,7 @@ impl SigningNode {
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
-        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
+        _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -676,25 +643,9 @@ impl SigningNode {
             }
         };
 
-        // Log signing key for testing/debugging
-        let signing_key_hex = hex::encode(signing_key.secret_bytes());
-        info!(
-            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{} (chain: {})",
-            self.id,
-            signing_key_hex,
-            chain_handler.chain_type()
-        );
-
-        // Calculate and log DKG index for this node
-        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-        info!(
-            "🔢 [SIGNING-DEBUG] Node {} DKG index: {}",
-            self.id, dkg_index
-        );
-
-        info!(
-            "📝 [SIGNING] Node {} starting to sign contract transaction",
-            self.id
+        debug!(
+            "[SIGNING] Node {} signing contract tx: to={}, value={}, data_len={}",
+            self.id, transaction.to, transaction.value, transaction.data.len()
         );
 
         // Create chain transaction from contract transaction
@@ -711,12 +662,6 @@ impl SigningNode {
             .map_err(|e| anyhow!("Invalid hex data in contract transaction: {}", e))?
         };
 
-        info!(
-            "🔍 [SIGNING] Contract transaction data: '{}' -> {} bytes",
-            transaction.data,
-            data_bytes.len()
-        );
-
         let chain_transaction =
             ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
@@ -732,17 +677,14 @@ impl SigningNode {
         let tx_bytes = self
             .contract_chain_handler
             .create_transaction_bytes_contract(&chain_transaction)?;
-        info!(
-            "🔐 [SIGNING] Contract transaction bytes: 0x{}",
-            hex::encode(&tx_bytes)
-        );
+
+        debug!("[SIGNING] Contract tx bytes length: {}", tx_bytes.len());
 
         // Hash the transaction bytes
         let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> =
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(tx_hash));
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
 
@@ -800,25 +742,6 @@ impl SigningNode {
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
 
-            // Calculate and log this node's DKG index
-            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-
-            info!(
-                "💾 [SIGNING] Node {} stored contract signature for round {}",
-                self.id, round
-            );
-            info!(
-                "💾 [SIGNING-DEBUG] Stored contract signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
-                hex::encode(&signature_bytes[0..32]),
-                hex::encode(&signature_bytes[32..64]),
-                recovery_id.to_i32()
-            );
-            info!(
-                "💾 [INDEX-PEER-DEBUG] Stored contract signature for Index {} => PeerId {} (s-share: 0x{})",
-                my_dkg_index,
-                self.id,
-                hex::encode(&signature_bytes[32..64])
-            );
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)

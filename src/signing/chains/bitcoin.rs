@@ -269,13 +269,6 @@ impl<'a> BitcoinSigner<'a> {
                     signature: ecdsa_sig,
                 });
 
-                info!(
-                    "🔐 [BTC_UTV_BATCH] Node {} slot {} input {} digest: 0x{}",
-                    self.node.id,
-                    intent_hash,
-                    idx,
-                    hex::encode(&digest)
-                );
             }
 
             // Store signatures in btc_utv_state: (round, slot_id) → input_index → peer → sig
@@ -289,13 +282,6 @@ impl<'a> BitcoinSigner<'a> {
                 }
             }
 
-            info!(
-                "💾 [BTC_UTV_BATCH] Stored {} input signatures for slot {} round {}",
-                btc_sigs.len(),
-                intent_hash,
-                round
-            );
-
             // Broadcast BtcUtvSignaturesMessage (NOT ECDSASignature with slot_id)
             let signature_msg = SigningMessage::BtcUtvSignaturesMessage {
                 from: self.node.id.clone(),
@@ -308,13 +294,6 @@ impl<'a> BitcoinSigner<'a> {
             let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
             let signature_data = serde_json::to_vec(&gossipsub_msg)?;
             self.node.broadcast("signing", &signature_data).await?;
-
-            info!(
-                "✅ [BTC_UTV_BATCH] Broadcasting {} input signatures for slot {} (round {})",
-                btc_tx.inputs.len(),
-                intent_hash,
-                round
-            );
 
             // Add to batch storage with extras
             batch_storage.push((
@@ -622,24 +601,7 @@ impl SigningNode {
             for btc_sig in &btc_sigs {
                 let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
                 imap.insert(self.id.clone(), btc_sig.signature.clone());
-                info!(
-                "💾 [BTC-SIGNING-DEBUG] Stored BTC signature for input {} - r: 0x{}, s: 0x{}, recovery_id: {}",
-                btc_sig.input_index,
-                hex::encode(&btc_sig.signature.signature[0..32]),
-                hex::encode(&btc_sig.signature.signature[32..64]),
-                btc_sig.signature.recovery_id
-            );
-                info!(
-                "💾 [INDEX-PEER-DEBUG] BTC: Stored signature for Index {} => PeerId {} input {} (s-share: 0x{})",
-                dkg_index, self.id, btc_sig.input_index,
-                hex::encode(&btc_sig.signature.signature[32..64])
-            );
             }
-            info!(
-                "💾 [SIGNING] Stored {} Bitcoin input signatures for round {}",
-                btc_sigs.len(),
-                current_round
-            );
         }
 
         // ===== Stash BTC extras alongside the unsigned tx for the finalizer =====

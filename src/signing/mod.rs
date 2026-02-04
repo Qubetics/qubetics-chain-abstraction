@@ -642,81 +642,27 @@ impl SigningNode {
         let agg_r = first_compact[0..32].to_vec();
 
         // ─── 2) Build the (index, s_bytes) list ──────────────────────────────────────
-        info!("🔍 [SIGNING] === SIGNATURE INDEX ASSIGNMENT ===");
-        info!(
-            "🔍 [SIGNING] Number of signatures to process: {}",
-            signatures.len()
+        debug!(
+            "[SIGNING] Aggregating {} signatures with peer-to-index mapping: {:?}",
+            signatures.len(),
+            peer_to_dkg_index.iter().map(|(p, i)| format!("{}->{}", p, i)).collect::<Vec<_>>()
         );
-
-        // Log the DKG indices provided for aggregation
-        info!(
-            "🧮 [SIGNING] peer_to_dkg_index used for aggregation: {:?}",
-            peer_to_dkg_index
-                .iter()
-                .map(|(p, i)| format!("{p}->{i}"))
-                .collect::<Vec<_>>()
-        );
-
-        // Log index => peerId mapping explicitly
-        info!("🔢 [INDEX-PEER-DEBUG] Index => PeerId mapping:");
-        for (peer_id, dkg_index) in &peer_to_dkg_index {
-            info!(
-                "🔢 [INDEX-PEER-DEBUG]   Index {} => PeerId {}",
-                dkg_index, peer_id
-            );
-        }
 
         // Use DKG indices for signature aggregation
         let s_shares: Vec<(u32, Vec<u8>)> = signatures
             .into_iter()
             .zip(peer_to_dkg_index.iter())
-            .map(|(sig, (peer_id, dkg_index))| {
+            .map(|(sig, (_peer_id, dkg_index))| {
                 let (_recid, compact) = sig.serialize_compact();
                 let s_bytes = compact[32..64].to_vec();
-                info!(
-                    "🔍 [SIGNING] Peer {} using DKG index: {} for aggregation",
-                    peer_id, dkg_index
-                );
-                info!(
-                    "🔍 [SIGNING-DEBUG] Index {} => PeerId {} => s-share: 0x{}",
-                    dkg_index,
-                    peer_id,
-                    hex::encode(&s_bytes)
-                );
                 (*dkg_index, s_bytes)
             })
             .collect();
 
-        info!(
-            "🔍 [SIGNING] Final s_shares with indices: {:?}",
+        debug!(
+            "[SIGNING] Built s_shares with indices: {:?}",
             s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
         );
-        info!(
-            "🔍 [SIGNING-DEBUG] Complete s_shares (index -> s-value): {:?}",
-            s_shares
-                .iter()
-                .map(|(idx, s)| format!("{} -> 0x{}", idx, hex::encode(s)))
-                .collect::<Vec<_>>()
-        );
-
-        // Build reverse mapping for clarity
-        let index_to_peer: std::collections::HashMap<u32, String> = peer_to_dkg_index
-            .iter()
-            .map(|(p, i)| (*i, p.clone()))
-            .collect();
-        info!("🔢 [INDEX-PEER-DEBUG] Complete Index => PeerId => Share mapping:");
-        for (idx, s_val) in &s_shares {
-            if let Some(peer) = index_to_peer.get(idx) {
-                info!(
-                    "🔢 [INDEX-PEER-DEBUG]   Index {} => {} => 0x{}",
-                    idx,
-                    peer,
-                    hex::encode(s_val)
-                );
-            }
-        }
-
-        info!("🔍 [SIGNING] === END SIGNATURE INDEX ASSIGNMENT ===");
 
         // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
         let mut agg_s = self.lagrange_interpolate(&s_shares)?;
@@ -883,37 +829,28 @@ impl SigningNode {
         from: String,
         signed_message: SignedMessage,
     ) -> Result<()> {
-        info!(
-            "✅ [SIGNING] Node {} received signed message from {}",
-            self.id, from
+        debug!(
+            "[SIGNING] Node {} received signed message from {} with {} signers",
+            self.id, from, signed_message.signer_ids.len()
         );
-        info!("📄 [SIGNING] Message: {:?}", signed_message.message);
-
-        info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
-        info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
 
         // Verify the aggregated ECDSA signature
         let is_valid = self.verify_aggregated_signature(&signed_message).await?;
         if is_valid {
-            info!("✅ [SIGNING] ECDSA signature verification successful!");
+            debug!("[SIGNING] Node {} - signature verification successful", self.id);
         } else {
-            warn!("❌ [SIGNING] ECDSA signature verification failed!");
+            warn!("[SIGNING] Node {} - ECDSA signature verification failed from {}", self.id, from);
         }
 
         Ok(())
     }
 
     async fn verify_aggregated_signature(&self, signed_message: &SignedMessage) -> Result<bool> {
-        info!(
-            "🔍 [SIGNING] Node {} verifying aggregated signature",
-            self.id
+        debug!(
+            "[SIGNING] Verifying aggregated signature: {} signers, sig_len={}",
+            signed_message.signer_ids.len(),
+            signed_message.aggregated_signature.len()
         );
-        info!(
-            "✍️ [SIGNING] Aggregated signature: {:?}",
-            signed_message.aggregated_signature
-        );
-        info!("👥 [SIGNING] Signers: {:?}", signed_message.signer_ids);
-        info!("🕒 [SIGNING] Timestamp: {}", signed_message.timestamp);
 
         let public_keys = self.signatures.public_keys.read().await;
 
@@ -3232,15 +3169,6 @@ impl SigningNode {
                         .map(|(peer, idx)| format!("{peer}->{idx}"))
                         .collect::<Vec<_>>()
                 );
-
-                // Log index => peerId mapping for this round
-                info!(
-                    "🔢 [INDEX-PEER-DEBUG] Round {} - Index => PeerId mapping for aggregation:",
-                    round
-                );
-                for (peer_id, dkg_index) in &peer_to_dkg_index {
-                    info!("🔢 [INDEX-PEER-DEBUG]   Index {} => {}", dkg_index, peer_id);
-                }
 
                 // Get chain_id from environment variable for v calculation
                 let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
