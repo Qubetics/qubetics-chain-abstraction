@@ -65,6 +65,16 @@ pub enum SigningMessage {
         timestamp: u128,
         user_eth_address: Option<String>,
     },
+    /// BTC UserToVault batch: per-slot multi-input signatures.
+    /// Each slot (intent) can have multiple inputs (UTXOs).
+    BtcUtvSignaturesMessage {
+        from: String,
+        signatures: Vec<BtcIndexedSignature>, // Multiple sigs (one per input)
+        round: u64,
+        slot_id: String, // intent_hash - identifies which slot in the batch
+        timestamp: u128,
+        user_eth_address: Option<String>,
+    },
     SignedMessage {
         from: String,
         signed_message: SignedMessage,

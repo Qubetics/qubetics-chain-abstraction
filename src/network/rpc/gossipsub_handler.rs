@@ -117,6 +117,19 @@ impl MpcNetworkLayer {
                                 signature.signer_id
                             );
                         }
+                        SigningMessage::BtcUtvSignaturesMessage {
+                            from,
+                            signatures,
+                            round,
+                            slot_id,
+                            timestamp: _timestamp,
+                            user_eth_address: _,
+                        } => {
+                            info!(
+                                "📥 [NETWORK] Received BTC UTV batch signatures from {} for slot {} round {} ({} inputs)",
+                                from, slot_id, round, signatures.len()
+                            );
+                        }
                         _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;

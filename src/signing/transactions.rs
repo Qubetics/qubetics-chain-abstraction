@@ -589,17 +589,23 @@ impl SigningNode {
                         (None, None, None)
                     }
                 } else {
-                    let pending_transactions_btc =
-                        self.pending.pending_transactions_btc.read().await;
-                    if let Some((_tx, _tx_bytes, intent_hashes, transaction_type, _extras)) =
-                        pending_transactions_btc.get(&round)
-                    {
-                        let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
-                        info!("[store_transaction_id_for_round] [BTC][Non-Reward] Found pending_transactions_btc entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
-                        (intent_hash, transaction_type.clone(), None)
+                    // BTC UserToVault batch: use intent_hash_override when set (same pattern as TICS)
+                    if let Some(ref intent_hash) = intent_hash_override {
+                        info!("[store_transaction_id_for_round] [BTC][UserToVault] Using intent_hash_override for round {}: intent_hash={}", round, intent_hash);
+                        (Some(intent_hash.clone()), Some(TransactionType::UserToVault), None)
                     } else {
-                        warn!("[store_transaction_id_for_round] [BTC][Non-Reward] No entry in pending_transactions_btc for round {}", round);
-                        (None, None, None)
+                        let pending_transactions_btc =
+                            self.pending.pending_transactions_btc.read().await;
+                        if let Some((_tx, _tx_bytes, intent_hashes, transaction_type, _extras)) =
+                            pending_transactions_btc.get(&round)
+                        {
+                            let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                            info!("[store_transaction_id_for_round] [BTC][Non-Reward] Found pending_transactions_btc entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
+                            (intent_hash, transaction_type.clone(), None)
+                        } else {
+                            warn!("[store_transaction_id_for_round] [BTC][Non-Reward] No entry in pending_transactions_btc for round {}", round);
+                            (None, None, None)
+                        }
                     }
                 }
             }

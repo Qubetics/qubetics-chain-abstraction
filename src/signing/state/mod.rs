@@ -135,16 +135,18 @@ pub struct PendingStore {
             >,
         >,
     >,
-    /// BTC UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
+    /// BTC UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes, extras)].
+    /// Same round, multiple txs (up to 30 slots). Each slot can have multiple inputs.
     pub user_to_vault_btc_batch: Arc<
         RwLock<
             HashMap<
                 u64,
                 Vec<(
-                    String,           // intent_hash
-                    String,           // user_eth_address
-                    ChainTransaction,
-                    Vec<u8>,          // tx_bytes
+                    String,              // intent_hash (slot_id)
+                    String,              // user_eth_address
+                    ChainTransaction,    // Bitcoin tx with potentially multiple inputs
+                    Vec<u8>,             // tx_bytes (serialized unsigned tx)
+                    Option<BtcRoundExtras>, // BTC extras (pubkey33, signer_h160, from_kind, is_testnet)
                 )>,
             >,
         >,
@@ -279,6 +281,41 @@ impl BtcAggregationState {
             btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+/// BTC UserToVault batch aggregation state.
+/// Hybrid of TICS UTV (slot-based) and N2T (multi-input).
+/// Key: (round, slot_id) where slot_id is the intent_hash.
+/// Each slot can have multiple inputs (UTXOs).
+#[derive(Clone)]
+pub struct BtcUtvAggregationState {
+    /// 4-level storage: (round, slot_id) → input_index → peer_id → signature
+    pub btc_utv_sigs_by_round_slot:
+        Arc<RwLock<HashMap<RoundSlotKey, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
+    /// Aggregated sigs per slot: (round, slot_id) → input_index → aggregated_sig
+    pub btc_utv_agg_by_round_slot:
+        Arc<RwLock<HashMap<RoundSlotKey, HashMap<usize, RecoverableSignature>>>>,
+    /// Track completed inputs per slot: (round, slot_id) → set of done input indices
+    pub btc_utv_done_inputs_by_round_slot: Arc<RwLock<HashMap<RoundSlotKey, HashSet<usize>>>>,
+    /// Track fully completed slots (all inputs done + broadcast)
+    pub btc_utv_completed_slots: Arc<RwLock<HashSet<RoundSlotKey>>>,
+}
+
+impl Default for BtcUtvAggregationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BtcUtvAggregationState {
+    pub fn new() -> Self {
+        Self {
+            btc_utv_sigs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_agg_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_done_inputs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_completed_slots: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }

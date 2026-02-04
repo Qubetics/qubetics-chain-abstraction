@@ -31,8 +31,8 @@ pub use coordination::Coordination;
 pub use db_signing::DatabaseSigningNode;
 pub use key::KeyStore;
 pub use state::{
-    BroadcastPolicy, BtcAggregationState, BtcRoundExtras, PendingStore, PendingValue,
-    RoundSlotKey, SignatureStore, SigningEnvironmentBuilder,
+    BroadcastPolicy, BtcAggregationState, BtcRoundExtras, BtcUtvAggregationState, PendingStore,
+    PendingValue, RoundSlotKey, SignatureStore, SigningEnvironmentBuilder,
 };
 
 use num_bigint::{BigInt, ToBigInt};
@@ -70,6 +70,8 @@ pub struct SigningNode {
     contract_chain_handler: Arc<dyn ChainHandler>, // Chain handler specifically for contract transactions
     pending: PendingStore,
     btc_state: BtcAggregationState,
+    /// BTC UserToVault batch aggregation state (multi-input per slot)
+    btc_utv_state: BtcUtvAggregationState,
     // User registry for storing transaction IDs
     user_intent_manager: Option<Arc<UserIntentManager>>,
     // Database for storing solver amounts
@@ -116,6 +118,7 @@ impl SigningNode {
             contract_chain_handler: environment.contract_chain_handler,
             pending: PendingStore::new(),
             btc_state: BtcAggregationState::new(),
+            btc_utv_state: BtcUtvAggregationState::new(),
             user_intent_manager: None, // Will be set later via set_user_intent_manager
             database: None,            // Will be set later via set_database
             dkg_storage: None,         // Will be set later via set_database (for HRW candidates)
@@ -533,8 +536,27 @@ impl SigningNode {
                 timestamp: _timestamp,
                 user_eth_address: _user_eth_address,
             } => {
-                // Final node picks BTC signatures from broadcast (gossipsub) for aggregation
+                // Final node picks BTC signatures from broadcast (gossipsub) for N2T aggregation
                 self.handle_btc_signatures_to_final_node(from, signatures, round)
+                    .await?;
+            }
+            SigningMessage::BtcUtvSignaturesMessage {
+                from,
+                signatures,
+                round,
+                slot_id,
+                timestamp: _timestamp,
+                user_eth_address: _user_eth_address,
+            } => {
+                // BTC UserToVault batch: multi-input per-slot aggregation (NOT routed to TICS path)
+                info!(
+                    "📥 [BTC_UTV] Received {} signatures from {} for slot {} round {}",
+                    signatures.len(),
+                    from,
+                    slot_id,
+                    round
+                );
+                self.handle_btc_utv_signatures_to_final_node(from, signatures, round, slot_id)
                     .await?;
             }
             SigningMessage::SignedMessage {
@@ -2818,7 +2840,7 @@ impl SigningNode {
                     .read()
                     .await
                     .get(&round)
-                    .map(|entries| entries.iter().map(|(h, _, _, _)| h.clone()).collect())
+                    .map(|entries| entries.iter().map(|(h, _, _, _, _)| h.clone()).collect())
                     .unwrap_or_default()
             }
         };
@@ -3487,7 +3509,9 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Per-slot aggregation + broadcast (run in a spawned task). Call with owned data after threshold is reached.
+    /// TICS UserToVault per-slot aggregation + broadcast (run in a spawned task).
+    /// Call with owned data after threshold is reached.
+    /// NOTE: BTC UserToVault now uses finalize_btc_utv_slot with multi-input support.
     pub async fn do_aggregate_and_broadcast_for_slot(
         &mut self,
         round: u64,
@@ -3496,6 +3520,16 @@ impl SigningNode {
         chain_id: u64,
         slot_kind: SlotKind,
     ) -> Result<()> {
+        // BTC UTV should not reach here - it uses finalize_btc_utv_slot
+        if matches!(slot_kind, SlotKind::BtcUserToVault) {
+            warn!(
+                "⚠️ [SIGNING] BTC UserToVault slot {} should use finalize_btc_utv_slot, not this function",
+                slot_id
+            );
+            return Err(anyhow!(
+                "BTC UserToVault should use dedicated multi-input handler"
+            ));
+        }
 
         let threshold = self.threshold;
         let mut sorted: Vec<_> = round_slot_signatures.into_iter().collect();
@@ -3539,91 +3573,62 @@ impl SigningNode {
         canonical_signature_bytes[32..64].copy_from_slice(&s);
         let recid_u8 = recovery_id.to_i32() as u8;
 
-        match slot_kind {
-            SlotKind::TicsUserToVault => {
-                if let Ok(Some(signed_tx_hex)) = self
-                    .reconstruct_signed_ethereum_transaction_for_batch_slot(
-                        round,
-                        &slot_id,
-                        &canonical_signature_bytes,
-                        recid_u8,
-                    )
-                    .await
-                {
+        // TICS UserToVault only
+        if let Ok(Some(signed_tx_hex)) = self
+            .reconstruct_signed_ethereum_transaction_for_batch_slot(
+                round,
+                &slot_id,
+                &canonical_signature_bytes,
+                recid_u8,
+            )
+            .await
+        {
+            info!(
+                "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
+                slot_id, round
+            );
+            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+                Ok(Some(tx_hash)) => {
                     info!(
-                        "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
-                        slot_id, round
-                    );
-                    match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
-                        Ok(Some(tx_hash)) => {
-                            info!(
-                                "✅ [SIGNING] Batch slot {} broadcasted: {}",
-                                slot_id, tx_hash
-                            );
-                            self.store_transaction_id_for_round(
-                                round,
-                                &tx_hash,
-                                crate::types::TransactionNetwork::TICS,
-                                Some(slot_id.clone()),
-                            )
-                            .await;
-                        }
-                        Ok(None) => {
-                            warn!("⚠️ [SIGNING] Batch slot {} broadcasted but no tx_hash", slot_id);
-                        }
-                        Err(e) => {
-                            error!(
-                                "❌ [SIGNING] Failed to broadcast batch slot {}: {}",
-                                slot_id, e
-                            );
-                            self.store_transaction_error_for_round(
-                                round,
-                                &e.to_string(),
-                                crate::types::TransactionNetwork::TICS,
-                            )
-                            .await;
-                        }
-                    }
-                } else {
-                    return Err(anyhow!(
-                        "Failed to reconstruct TICS signed tx for slot {} round {}",
-                        slot_id, round
-                    ));
-                }
-            }
-            SlotKind::BtcUserToVault => {
-                if let Ok(Some(txid_hex)) = self
-                    .reconstruct_signed_bitcoin_transaction_for_batch_slot(
-                        round,
-                        &slot_id,
-                        &canonical_signature_bytes,
-                        recid_u8,
-                    )
-                    .await
-                {
-                    info!(
-                        "🎉 [SIGNING] BTC UserToVault batch slot {} (round {}) ready, broadcasting",
-                        slot_id, round
+                        "✅ [SIGNING] Batch slot {} broadcasted: {}",
+                        slot_id, tx_hash
                     );
                     self.store_transaction_id_for_round(
                         round,
-                        &txid_hex,
-                        crate::types::TransactionNetwork::BTC,
+                        &tx_hash,
+                        crate::types::TransactionNetwork::TICS,
                         Some(slot_id.clone()),
                     )
                     .await;
-                } else {
-                    return Err(anyhow!(
-                        "Failed to reconstruct/broadcast BTC signed tx for slot {} round {}",
-                        slot_id, round
-                    ));
+                }
+                Ok(None) => {
+                    warn!("⚠️ [SIGNING] Batch slot {} broadcasted but no tx_hash", slot_id);
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [SIGNING] Failed to broadcast batch slot {}: {}",
+                        slot_id, e
+                    );
+                    self.store_transaction_error_for_round(
+                        round,
+                        &e.to_string(),
+                        crate::types::TransactionNetwork::TICS,
+                    )
+                    .await;
                 }
             }
+        } else {
+            return Err(anyhow!(
+                "Failed to reconstruct TICS signed tx for slot {} round {}",
+                slot_id, round
+            ));
         }
         Ok(())
     }
 
-    /// TICS UserToVault batch: handle one partial for (round, slot_id). Aggregate when threshold reached.
+    /// TICS UserToVault batch ONLY: handle one partial for (round, slot_id). Aggregate when threshold reached.
+    /// NOTE: BTC UserToVault now uses handle_btc_utv_signature_for_round_slot with multi-input support.
+    /// This function should NOT be used for BTC UTV - it only handles single-signature TICS transactions.
     async fn handle_signature_for_round_slot(
         &mut self,
         from: String,
@@ -3696,18 +3701,8 @@ impl SigningNode {
             agg.insert(slot_key.clone());
         }
 
-        let slot_kind = {
-            let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
-            let is_btc = btc_batch
-                .get(&round)
-                .map(|e| e.iter().any(|(h, ..)| h == &slot_id))
-                .unwrap_or(false);
-            if is_btc {
-                SlotKind::BtcUserToVault
-            } else {
-                SlotKind::TicsUserToVault
-            }
-        };
+        // TICS UserToVault only - BTC UTV uses dedicated handler with multi-input support
+        let slot_kind = SlotKind::TicsUserToVault;
 
         let chain_id = std::env::var("MPC_ETHEREUM_CHAIN_ID")
             .ok()
@@ -3746,6 +3741,608 @@ impl SigningNode {
                 }
             }
         });
+
+        Ok(())
+    }
+
+    /// BTC UserToVault batch: handle multi-input signatures for one slot.
+    /// This is the hybrid of TICS UTV (slot-based) and N2T (multi-input).
+    /// Key: (round, slot_id) where slot_id is the intent_hash.
+    /// Each slot can have multiple inputs (UTXOs).
+    ///
+    /// Flow (mirrors N2T per-input logic but keyed by slot):
+    /// 1) Skip if slot already completed
+    /// 2) Load tx data for this slot from user_to_vault_btc_batch
+    /// 3) Verify and store each signature per input
+    /// 4) Sweep: aggregate each input that hit threshold
+    /// 5) If ALL inputs for this slot are aggregated, finalize and broadcast
+    pub async fn handle_btc_utv_signature_for_round_slot(
+        &mut self,
+        from: String,
+        signatures: Vec<BtcIndexedSignature>,
+        round: u64,
+        slot_id: String,
+    ) -> Result<()> {
+        use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+        use std::collections::HashMap;
+
+        let slot_key: RoundSlotKey = (round, slot_id.clone());
+
+        // 1. Skip if slot already completed
+        {
+            let completed = self.btc_utv_state.btc_utv_completed_slots.read().await;
+            if completed.contains(&slot_key) {
+                info!(
+                    "⏭️ [BTC_UTV] Slot {} for round {} already completed, ignoring signatures from {}",
+                    slot_id, round, from
+                );
+                return Ok(());
+            }
+        }
+
+        // 2. Get tx data for this slot from user_to_vault_btc_batch
+        let (_unsigned_tx, _extras, total_inputs) = {
+            let batch = self.pending.user_to_vault_btc_batch.read().await;
+            let entries = batch.get(&round).ok_or_else(|| {
+                anyhow!(
+                    "[BTC_UTV] No user_to_vault_btc_batch for round {} (slot {})",
+                    round,
+                    slot_id
+                )
+            })?;
+            let (_, _user_eth, chain_tx, _, extras_opt) = entries
+                .iter()
+                .find(|(h, ..)| h == &slot_id)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "[BTC_UTV] No slot {} in user_to_vault_btc_batch for round {}",
+                        slot_id,
+                        round
+                    )
+                })?;
+
+            let btc_tx = match chain_tx {
+                ChainTransaction::Bitcoin(t) => t.clone(),
+                _ => {
+                    return Err(anyhow!(
+                        "[BTC_UTV] Slot {} round {} is not a Bitcoin transaction",
+                        slot_id,
+                        round
+                    ))
+                }
+            };
+
+            let extras = extras_opt.clone().ok_or_else(|| {
+                anyhow!(
+                    "[BTC_UTV] Missing BtcRoundExtras for slot {} round {}",
+                    slot_id,
+                    round
+                )
+            })?;
+
+            (btc_tx.clone(), extras, btc_tx.inputs.len())
+        };
+
+        info!(
+            "📥 [BTC_UTV] Received {} signatures from {} for slot {} round {} (expecting {} inputs)",
+            signatures.len(),
+            from,
+            slot_id,
+            round,
+            total_inputs
+        );
+
+        // 3. Verify and store each signature per input
+        let mut verified_count = 0;
+        for sig in &signatures {
+            if sig.input_index >= total_inputs {
+                warn!(
+                    "⚠️ [BTC_UTV] Signature from {} has invalid input_index {} (slot {} has {} inputs)",
+                    from, sig.input_index, slot_id, total_inputs
+                );
+                continue;
+            }
+
+            // Verify signature against correct digest for this input
+            match self
+                .verify_btc_utv_signature_for_slot(
+                    &from,
+                    &sig.signature,
+                    round,
+                    &slot_id,
+                    sig.input_index,
+                )
+                .await
+            {
+                Ok(_) => {
+                    info!(
+                        "✅ [BTC_UTV] Verified signature from {} for slot {} round {} input {}",
+                        from, slot_id, round, sig.input_index
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "❌ [BTC_UTV] Signature verification failed for {} slot {} round {} input {}: {}",
+                        from, slot_id, round, sig.input_index, e
+                    );
+                    continue;
+                }
+            }
+
+            // Store: (round, slot_id) → input_index → peer → signature
+            {
+                let mut by_slot = self
+                    .btc_utv_state
+                    .btc_utv_sigs_by_round_slot
+                    .write()
+                    .await;
+                let slot_map = by_slot.entry(slot_key.clone()).or_default();
+                let input_map = slot_map.entry(sig.input_index).or_default();
+                input_map.insert(from.clone(), sig.signature.clone());
+            }
+            verified_count += 1;
+        }
+
+        info!(
+            "💾 [BTC_UTV] Stored {}/{} verified signatures from {} for slot {} round {}",
+            verified_count,
+            signatures.len(),
+            from,
+            slot_id,
+            round
+        );
+
+        // 4. Sweep: aggregate each input that hit threshold
+        for idx in 0..total_inputs {
+            // Skip if already aggregated for this input
+            {
+                let done = self
+                    .btc_utv_state
+                    .btc_utv_done_inputs_by_round_slot
+                    .read()
+                    .await;
+                if done.get(&slot_key).is_some_and(|s| s.contains(&idx)) {
+                    continue;
+                }
+            }
+
+            // Get peer sigs for this input
+            let peer_map: Option<HashMap<String, ECDSASignature>> = {
+                let by_slot = self
+                    .btc_utv_state
+                    .btc_utv_sigs_by_round_slot
+                    .read()
+                    .await;
+                by_slot
+                    .get(&slot_key)
+                    .and_then(|s| s.get(&idx))
+                    .cloned()
+            };
+            let Some(peer_map) = peer_map else {
+                continue;
+            };
+
+            // Check threshold
+            if peer_map.len() < self.threshold {
+                info!(
+                    "⏳ [BTC_UTV] Slot {} input {} has {}/{} signatures",
+                    slot_id,
+                    idx,
+                    peer_map.len(),
+                    self.threshold
+                );
+                continue;
+            }
+
+            // Sort deterministically, take threshold
+            let mut chosen: Vec<(String, ECDSASignature)> = peer_map.into_iter().collect();
+            chosen.sort_by(|a, b| a.0.cmp(&b.0));
+            let chosen: Vec<(String, ECDSASignature)> =
+                chosen.into_iter().take(self.threshold).collect();
+
+            // Verify all chosen sigs share the same r value and are 64 bytes
+            let r0 = &chosen[0].1.signature[0..32];
+            let mut r_mismatch = false;
+            for (peer, s) in &chosen {
+                if s.signature.len() != 64 {
+                    error!(
+                        "❌ [BTC_UTV] Slot {} input {}: bad sig length from {} (got {})",
+                        slot_id,
+                        idx,
+                        peer,
+                        s.signature.len()
+                    );
+                    r_mismatch = true;
+                    break;
+                }
+                if &s.signature[0..32] != r0 {
+                    error!(
+                        "❌ [BTC_UTV] Slot {} input {}: r mismatch from {}",
+                        slot_id, idx, peer
+                    );
+                    r_mismatch = true;
+                    break;
+                }
+            }
+            if r_mismatch {
+                continue;
+            }
+
+            // Build inputs for MPC aggregation
+            let mut sigs: Vec<RecoverableSignature> = Vec::with_capacity(self.threshold);
+            let mut peer_to_dkg_index: Vec<(String, u32)> = Vec::with_capacity(self.threshold);
+            for (peer, ecsig) in chosen {
+                let rid = RecoveryId::from_i32(ecsig.recovery_id as i32)?;
+                let rs = RecoverableSignature::from_compact(&ecsig.signature, rid)?;
+                sigs.push(rs);
+                let dkg_idx = self.calculate_dkg_index_for_peer_sync(&peer);
+                peer_to_dkg_index.push((peer, dkg_idx));
+            }
+
+            // Aggregate this input's signatures
+            let agg = match self.aggregate_signatures(sigs, peer_to_dkg_index).await {
+                Ok(sig) => sig,
+                Err(e) => {
+                    error!(
+                        "❌ [BTC_UTV] Failed to aggregate slot {} input {}: {}",
+                        slot_id, idx, e
+                    );
+                    continue;
+                }
+            };
+
+            // Store aggregated sig for this input
+            {
+                let mut agg_map = self
+                    .btc_utv_state
+                    .btc_utv_agg_by_round_slot
+                    .write()
+                    .await;
+                agg_map
+                    .entry(slot_key.clone())
+                    .or_default()
+                    .insert(idx, agg);
+            }
+
+            // Mark input as done
+            {
+                let mut done = self
+                    .btc_utv_state
+                    .btc_utv_done_inputs_by_round_slot
+                    .write()
+                    .await;
+                done.entry(slot_key.clone()).or_default().insert(idx);
+            }
+
+            info!(
+                "✅ [BTC_UTV] Aggregated slot {} input {} for round {}",
+                slot_id, idx, round
+            );
+        }
+
+        // 5. Check if ALL inputs for this slot are aggregated
+        let all_done = {
+            let done = self
+                .btc_utv_state
+                .btc_utv_done_inputs_by_round_slot
+                .read()
+                .await;
+            done.get(&slot_key)
+                .map_or(false, |s| s.len() == total_inputs)
+        };
+
+        if all_done {
+            // Mark slot as completed immediately (prevent duplicate finalization)
+            {
+                let mut completed = self.btc_utv_state.btc_utv_completed_slots.write().await;
+                completed.insert(slot_key.clone());
+            }
+
+            info!(
+                "🎯 [BTC_UTV] All {} inputs aggregated for slot {} round {}, spawning finalization",
+                total_inputs, slot_id, round
+            );
+
+            // Spawn async finalization for this slot
+            let self_ref = self.self_ref.clone();
+            let slot_id_clone = slot_id.clone();
+            tokio::spawn(async move {
+                if let Some(arc) = self_ref {
+                    let mut node = arc.lock().await;
+                    if let Err(e) = node.finalize_btc_utv_slot(round, slot_id_clone.clone()).await {
+                        error!(
+                            "❌ [BTC_UTV] Finalization failed for slot {} round {}: {}",
+                            slot_id_clone, round, e
+                        );
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Verify a BTC UTV signature for a specific slot and input.
+    async fn verify_btc_utv_signature_for_slot(
+        &self,
+        peer_id: &str,
+        signature: &ECDSASignature,
+        round: u64,
+        slot_id: &str,
+        input_index: usize,
+    ) -> Result<()> {
+        use secp256k1::{ecdsa::RecoveryId, Message, Secp256k1};
+
+        // Get tx data for this slot
+        let (btc_tx, user_eth) = {
+            let batch = self.pending.user_to_vault_btc_batch.read().await;
+            let entries = batch.get(&round).ok_or_else(|| {
+                anyhow!(
+                    "[verify_btc_utv] No batch for round {} slot {}",
+                    round,
+                    slot_id
+                )
+            })?;
+            let (_, user_eth, chain_tx, _, _) = entries
+                .iter()
+                .find(|(h, ..)| h == slot_id)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "[verify_btc_utv] No slot {} in batch for round {}",
+                        slot_id,
+                        round
+                    )
+                })?;
+
+            let btc_tx = match chain_tx {
+                ChainTransaction::Bitcoin(t) => t.clone(),
+                _ => {
+                    return Err(anyhow!(
+                        "[verify_btc_utv] Slot {} is not Bitcoin",
+                        slot_id
+                    ))
+                }
+            };
+            (btc_tx, user_eth.clone())
+        };
+
+        // Get input and compute digest
+        let inp = btc_tx.inputs.get(input_index).ok_or_else(|| {
+            anyhow!(
+                "[verify_btc_utv] Slot {} has no input at index {}",
+                slot_id,
+                input_index
+            )
+        })?;
+        let prev_spk = inp
+            .witness_utxo
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!(
+                    "[verify_btc_utv] Slot {} input {} missing witness_utxo",
+                    slot_id,
+                    input_index
+                )
+            })?
+            .script_pubkey
+            .clone();
+
+        let digest = self.compute_legacy_sighash_all_p2pkh(&btc_tx, input_index, &prev_spk)?;
+
+        // Get peer's share pubkey for UserToVault
+        let share_pubkey = self
+            .get_share_pubkey_for_verification(
+                peer_id,
+                round,
+                &Some(TransactionType::UserToVault),
+                Some(&user_eth),
+            )
+            .await?;
+
+        // Convert k256 ProjectivePoint to compressed bytes
+        let share_pubkey_bytes = k256::EncodedPoint::from(share_pubkey.to_affine())
+            .as_bytes()
+            .to_vec();
+
+        // Verify signature
+        let msg = Message::from_digest_slice(&digest)?;
+        let secp = Secp256k1::new();
+
+        // Try all recovery IDs to find match
+        for rid in 0..4 {
+            if let Ok(test_rid) = RecoveryId::from_i32(rid) {
+                if let Ok(test_recov_sig) =
+                    secp256k1::ecdsa::RecoverableSignature::from_compact(&signature.signature, test_rid)
+                {
+                    if let Ok(recovered_pk) = secp.recover_ecdsa(&msg, &test_recov_sig) {
+                        if recovered_pk.serialize() == share_pubkey_bytes.as_slice() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: direct verification
+        let pk = secp256k1::PublicKey::from_slice(&share_pubkey_bytes)?;
+        let rid = RecoveryId::from_i32(signature.recovery_id as i32)?;
+        let recov_sig =
+            secp256k1::ecdsa::RecoverableSignature::from_compact(&signature.signature, rid)?;
+        let std_sig = recov_sig.to_standard();
+        secp.verify_ecdsa(&msg, &std_sig, &pk)?;
+
+        Ok(())
+    }
+
+    /// Finalize and broadcast a BTC UTV slot after all inputs are aggregated.
+    async fn finalize_btc_utv_slot(&mut self, round: u64, slot_id: String) -> Result<()> {
+        let slot_key: RoundSlotKey = (round, slot_id.clone());
+
+        // Get tx data, user_eth_address, and extras
+        let (unsigned_tx, user_eth_address, extras) = {
+            let batch = self.pending.user_to_vault_btc_batch.read().await;
+            let entries = batch.get(&round).ok_or_else(|| {
+                anyhow!(
+                    "[finalize_btc_utv] No batch for round {} slot {}",
+                    round,
+                    slot_id
+                )
+            })?;
+            let (_, user_eth, chain_tx, _, extras_opt) = entries
+                .iter()
+                .find(|(h, ..)| h == &slot_id)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "[finalize_btc_utv] No slot {} in batch for round {}",
+                        slot_id,
+                        round
+                    )
+                })?;
+
+            let btc_tx = match chain_tx {
+                ChainTransaction::Bitcoin(t) => t.clone(),
+                _ => return Err(anyhow!("[finalize_btc_utv] Slot {} is not Bitcoin", slot_id)),
+            };
+
+            let extras = extras_opt.clone().ok_or_else(|| {
+                anyhow!(
+                    "[finalize_btc_utv] Missing extras for slot {} round {}",
+                    slot_id,
+                    round
+                )
+            })?;
+
+            (btc_tx, user_eth.clone(), extras)
+        };
+
+        let total_inputs = unsigned_tx.inputs.len();
+
+        // Collect per-input aggregated sigs in order
+        let per_input_sigs: Vec<(usize, RecoverableSignature)> = {
+            let agg_map = self.btc_utv_state.btc_utv_agg_by_round_slot.read().await;
+            let slot_agg = agg_map.get(&slot_key).ok_or_else(|| {
+                anyhow!(
+                    "[finalize_btc_utv] No aggregated sigs for slot {} round {}",
+                    slot_id,
+                    round
+                )
+            })?;
+
+            let mut v = Vec::with_capacity(total_inputs);
+            for i in 0..total_inputs {
+                let sig = slot_agg.get(&i).ok_or_else(|| {
+                    anyhow!(
+                        "[finalize_btc_utv] Missing aggregated sig for slot {} input {}",
+                        slot_id,
+                        i
+                    )
+                })?;
+                v.push((i, *sig));
+            }
+            v
+        };
+
+        // Finalize and serialize (same as N2T)
+        let (raw, txid, _wtxid) = Self::finalize_and_serialize_tx(
+            unsigned_tx,
+            extras.from_kind,
+            &per_input_sigs,
+            &extras.pubkey33,
+        )?;
+
+        let raw_hex = hex::encode(&raw);
+        let txid_hex = hex::encode(txid);
+
+        info!(
+            "🎯 [BTC_UTV] Slot {} round {} finalized: txid={}",
+            slot_id, round, txid_hex
+        );
+
+        // Broadcast to Bitcoin network
+        match Self::broadcast_transaction(&raw_hex, extras.is_testnet).await {
+            Ok(Some(broadcast_txid)) => {
+                info!(
+                    "✅ [BTC_UTV] Slot {} broadcast successful: {}",
+                    slot_id, broadcast_txid
+                );
+
+                // Store final_solver for this intent (same pattern as TICS UTV)
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    if let Err(e) = user_intent_manager
+                        .store_final_solver(&slot_id, self.id.as_str())
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [BTC_UTV] Failed to store final solver for intent {}: {}",
+                            slot_id, e
+                        );
+                    }
+                }
+
+                // Broadcast tx_id to all nodes (via store_transaction_id_for_round -> broadcast_transaction_id)
+                // Each node will store user_to_network_tx_id for this intent
+                info!(
+                    "📡 [BTC_UTV] Broadcasting transaction ID {} for intent {} (round {}) to all nodes",
+                    broadcast_txid, slot_id, round
+                );
+                self.store_transaction_id_for_round(
+                    round,
+                    &broadcast_txid,
+                    crate::types::TransactionNetwork::BTC,
+                    Some(slot_id.clone()),
+                )
+                .await;
+            }
+            Ok(None) => {
+                warn!(
+                    "⚠️ [BTC_UTV] Slot {} broadcast completed but no txid returned, using computed txid",
+                    slot_id
+                );
+
+                // Store final_solver for this intent
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    if let Err(e) = user_intent_manager
+                        .store_final_solver(&slot_id, self.id.as_str())
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [BTC_UTV] Failed to store final solver for intent {}: {}",
+                            slot_id, e
+                        );
+                    }
+                }
+
+                // Broadcast computed tx_id to all nodes
+                info!(
+                    "📡 [BTC_UTV] Broadcasting computed transaction ID {} for intent {} (round {}) to all nodes",
+                    txid_hex, slot_id, round
+                );
+                self.store_transaction_id_for_round(
+                    round,
+                    &txid_hex,
+                    crate::types::TransactionNetwork::BTC,
+                    Some(slot_id.clone()),
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("❌ [BTC_UTV] Slot {} broadcast failed: {}", slot_id, e);
+                self.store_transaction_error_for_round(
+                    round,
+                    &e.to_string(),
+                    crate::types::TransactionNetwork::BTC,
+                )
+                .await;
+            }
+        }
+
+        // Log user_eth_address for debugging (extracted but not used in current flow)
+        if !user_eth_address.is_empty() {
+            debug!(
+                "🔗 [BTC_UTV] Slot {} was for user {}",
+                slot_id, user_eth_address
+            );
+        }
 
         Ok(())
     }
@@ -5399,7 +5996,7 @@ impl SigningNode {
             }
             let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
             if let Some(entries) = btc_batch.get(&round) {
-                if let Some((_intent_hash, user_eth, chain_tx, _)) =
+                if let Some((_intent_hash, user_eth, chain_tx, _, _)) =
                     entries.iter().find(|(h, ..)| h == slot)
                 {
                     if let crate::chain_abstraction::ChainTransaction::Bitcoin(btc_tx) = chain_tx {
