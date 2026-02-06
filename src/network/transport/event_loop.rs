@@ -290,7 +290,8 @@ impl MpcNetworkLayer {
         // Get VRF service - prefer signing_node, fall back to db_signing_node
         // This matches the pattern used in rpc_handlers.rs
         // Try signing_node first
-        if let Some(signing_node) = &mut self.signing_node {
+        if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
             // Update signing node with latest available nodes
             // This is critical for async tasks (like parallel contract update) that read from signing_node state later
             signing_node.set_available_nodes(available_nodes.clone());
@@ -314,6 +315,7 @@ impl MpcNetworkLayer {
                 );
 
                 // Perform VRF node selection (selects 1 node) - ONLY ONCE
+                // Operation type "global_clock" = external trigger for epoch-based flows
                 match vrf_service
                     .perform_node_selection(
                         &available_nodes,

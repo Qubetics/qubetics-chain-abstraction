@@ -26,7 +26,8 @@ const RPC_BASE_URL = 'http://127.0.0.1:8082';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+// const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+const TEST_PRIVKEY = '4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
 // const TEST_PRIVKEY = '1e61daf814fae3af13d9ec447f2b2da96a7d307b5c73ec85c275fb9c67ea8f1a';
 
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
@@ -47,6 +48,24 @@ const colors = {
 const oooo = 2323232
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
+}
+
+/**
+ * Serialize deposit intent for signing. Must match server's serde_json::to_string(DepositIntent):
+ * same key order (source_address, target_address, source_chain, target_chain, amount, source_token, target_token, timestamp)
+ * and amount as string so the signed message bytes match what the server hashes/verifies.
+ */
+function serializeDepositIntentForSigning(intent) {
+  return JSON.stringify({
+    source_address: intent.source_address,
+    target_address: intent.target_address,
+    source_chain: intent.source_chain,
+    target_chain: intent.target_chain,
+    amount: String(intent.amount),
+    source_token: intent.source_token,
+    target_token: intent.target_token,
+    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
+  });
 }
 
 // =========================
@@ -183,13 +202,13 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
       throw new Error('Failed to fetch user info');
     }
 
-    // Construct DepositIntent
+    // Construct DepositIntent (amount as string to match server DepositIntent.amount)
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address, // Use canonical address
+      source_address: userInfo.data.derived_eth_address,
       target_address: userInfo.data.derived_eth_address,
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount, // Use the passed amount parameter
+      amount: String(amount),
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: oooo,
@@ -205,12 +224,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     //   timestamp: oooo,
     // };
 
-    console.log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
-    // Serialize DepositIntent for signing
-    const msg = JSON.stringify(depositIntent);
-    log(`📝 Message: ${msg}`, 'cyan');
+    log(`📊 Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
+    // Sign the serialized intent (same bytes the server uses for hash/recovery)
+    const msg = serializeDepositIntentForSigning(depositIntent);
+    log(`📝 Message to sign: ${msg}`, 'cyan');
 
-    // EIP-191 personal_sign  
+    // EIP-191 personal_sign over the deposit intent JSON
     const signature = await wallet.signMessage(msg);
     log(`✍️  Signature: ${signature}`, 'cyan');
 
@@ -325,7 +344,7 @@ async function runTests() {
   // 1) DKG status
   await testDKGStatus();
 
-  // 2) Register ONLY the derived address 
+  // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr, wallet);
 
   // if (reg.success) {
@@ -336,9 +355,9 @@ async function runTests() {
   //   log(`\n⚠️ Registration failed; continuing to deposit test (is_registered may be false).`, 'yellow');
   // }
 
-  // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
-  log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = "29230000000000000000"
+  // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
+  // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
+  const amount = "25000000000000000000"
   await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = "2511"

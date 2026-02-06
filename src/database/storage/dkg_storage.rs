@@ -382,6 +382,27 @@ impl DkgStorage {
         Ok(result)
     }
 
+    /// Delete my permanent index (used when reconnecting so we get a new index from NewNode flow).
+    pub fn delete_my_permanent_index(&self) -> Result<()> {
+        self.db.delete_string(keys::DKG_MY_PERMANENT_INDEX)?;
+        tracing::info!("🗑️ [DKG_STORAGE] Deleted permanent index");
+        Ok(())
+    }
+
+    /// Store a peer's index in DB (used when a new node joins so all nodes use the canonical DKG index).
+    pub fn set_peer_index(&self, peer_id: &str, index: usize) -> Result<()> {
+        let key = format!("{}{}", keys::PEER_INDEX, peer_id);
+        self.db.put_string(&key, &index)?;
+        Ok(())
+    }
+
+    /// Delete a peer's index from DB (used when this node reconnects to remove its own stale index).
+    pub fn delete_peer_index(&self, peer_id: &str) -> Result<()> {
+        let key = format!("{}{}", keys::PEER_INDEX, peer_id);
+        self.db.delete_string(&key)?;
+        Ok(())
+    }
+
     /// Get peer indices from database for deterministic ordering
     pub async fn get_peer_indices(&self) -> Result<HashMap<String, usize>> {
         let prefix = crate::database::keys::PEER_INDEX;
@@ -794,29 +815,6 @@ impl DkgStorage {
                 x_pow *= x;
             }
             share_pubkey += *commitment * x_pow;
-        }
-
-        Ok(share_pubkey)
-    }
-
-    /// Derive share public key from commitments using polynomial evaluation
-    /// NOTE: This method is deprecated in favor of evaluate_aggregated_polynomial
-    /// which correctly aggregates all commitments first. This is kept for backward compatibility.
-    fn derive_share_pubkey_from_commitments(
-        &self,
-        commitments: &[AffinePoint],
-        dkg_index: u32,
-    ) -> Result<ProjectivePoint> {
-        use k256::Scalar;
-        let x = Scalar::from(dkg_index as u64);
-        let mut share_pubkey = ProjectivePoint::IDENTITY;
-
-        for (j, commitment) in commitments.iter().enumerate() {
-            let mut x_pow = Scalar::ONE;
-            for _ in 0..j {
-                x_pow *= x;
-            }
-            share_pubkey += ProjectivePoint::from(*commitment) * x_pow;
         }
 
         Ok(share_pubkey)

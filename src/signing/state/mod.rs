@@ -27,13 +27,20 @@ pub type PendingValue = (
     Option<BtcRoundExtras>, // <-- NEW
 );
 
+/// Per-slot partials for TICS UserToVault batch: (round, slot_id) -> node_id -> signature.
+pub type RoundSlotKey = (u64, String);
+
 #[derive(Clone)]
 pub struct SignatureStore {
     pub public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
     pub signatures: Arc<RwLock<HashMap<String, ECDSASignature>>>,
     pub signatures_by_round: Arc<RwLock<HashMap<u64, HashMap<String, ECDSASignature>>>>, // round -> node_id -> signature
+    /// TICS UserToVault batch: (round, intent_hash) -> node_id -> signature. One aggregation per slot.
+    pub signatures_by_round_slot: Arc<RwLock<HashMap<RoundSlotKey, HashMap<String, ECDSASignature>>>>,
     pub final_nodes_by_round: Arc<RwLock<HashMap<u64, String>>>, // round -> final_node_id
     pub aggregated_rounds: Arc<RwLock<HashSet<u64>>>, // Track rounds that have been aggregated
+    /// Rounds/slots that have been aggregated for TICS UserToVault batch.
+    pub aggregated_round_slots: Arc<RwLock<HashSet<RoundSlotKey>>>,
 }
 
 impl Default for SignatureStore {
@@ -48,8 +55,10 @@ impl SignatureStore {
             public_keys: Arc::new(RwLock::new(HashMap::new())),
             signatures: Arc::new(RwLock::new(HashMap::new())),
             signatures_by_round: Arc::new(RwLock::new(HashMap::new())),
+            signatures_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
+            aggregated_round_slots: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }
@@ -72,23 +81,8 @@ pub struct PendingStore {
         >,
     >,
     pub pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
-    pub reward_pending_transactions_tics: Arc<
-        RwLock<
-            HashMap<
-                u64,
-                (
-                    ChainTransaction,
-                    Vec<u8>,
-                    Option<String>,
-                    Option<TransactionType>,
-                    Option<String>, // request_id for retry tracking (contract_request removed)
-                    Option<()>,     // deprecated original_request (unused)
-                ),
-            >,
-        >,
-    >,
-    pub reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>, // round -> (original_tx, tx_bytes, solver_address, None, extras) for BTC rewards
-    pub reward_rounds: Arc<RwLock<HashSet<u64>>>, // Set of rounds that are reward transactions
+    /// TICS withdraw: (chain_tx, tx_bytes, identifiers, tx_type, request_id, original_request).
+    /// identifiers: None or Some(vec!) for single-solver; Some(vec!["request_id|solver", ...]) for batch.
     pub withdraw_pending_transactions_tics: Arc<
         RwLock<
             HashMap<
@@ -96,7 +90,7 @@ pub struct PendingStore {
                 (
                     ChainTransaction,
                     Vec<u8>,
-                    Option<String>,
+                    Option<Vec<String>>,
                     Option<TransactionType>,
                     Option<String>, // request_id for retry tracking (contract_request removed)
                     Option<()>,     // deprecated original_request (unused)
@@ -106,8 +100,57 @@ pub struct PendingStore {
     >,
     pub withdraw_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
     pub withdraw_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// BTC claim-reward batch: same shape as withdraw_pending_transactions_btc; tx-id broadcast updates PendingClaimRewardRequest (do not mark done).
+    pub claim_reward_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    /// TICS claim-reward batch: same shape as withdraw_pending_transactions_tics; tx-id broadcast stores tx_id on TICS requests and marks done; marks BTC requests done only.
+    pub claim_reward_pending_transactions_tics: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<Vec<String>>,
+                    Option<TransactionType>,
+                    Option<String>,
+                    Option<()>,
+                ),
+            >,
+        >,
+    >,
+    pub claim_reward_rounds: Arc<RwLock<HashSet<u64>>>,
     /// Per-round list of intent hashes (single intent = len 1, batch = len >1, solver-only = empty)
     pub intent_hashes_by_round: Arc<RwLock<HashMap<u64, Vec<String>>>>,
+    /// TICS UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
+    pub user_to_vault_tics_batch: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                Vec<(
+                    String,           // intent_hash
+                    String,           // user_eth_address
+                    ChainTransaction,
+                    Vec<u8>,          // tx_bytes
+                )>,
+            >,
+        >,
+    >,
+    /// BTC UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes, extras)].
+    /// Same round, multiple txs (up to 30 slots). Each slot can have multiple inputs.
+    pub user_to_vault_btc_batch: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                Vec<(
+                    String,              // intent_hash (slot_id)
+                    String,              // user_eth_address
+                    ChainTransaction,    // Bitcoin tx with potentially multiple inputs
+                    Vec<u8>,             // tx_bytes (serialized unsigned tx)
+                    Option<BtcRoundExtras>, // BTC extras (pubkey33, signer_h160, from_kind, is_testnet)
+                )>,
+            >,
+        >,
+    >,
 }
 
 impl Default for PendingStore {
@@ -121,13 +164,15 @@ impl PendingStore {
         Self {
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
             pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
-            reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
-            reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
-            reward_rounds: Arc::new(RwLock::new(HashSet::new())),
             withdraw_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             withdraw_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             withdraw_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            claim_reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
+            claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
+            user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
+            user_to_vault_btc_batch: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -236,6 +281,41 @@ impl BtcAggregationState {
             btc_sigs_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_agg_by_round: Arc::new(RwLock::new(HashMap::new())),
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+/// BTC UserToVault batch aggregation state.
+/// Hybrid of TICS UTV (slot-based) and N2T (multi-input).
+/// Key: (round, slot_id) where slot_id is the intent_hash.
+/// Each slot can have multiple inputs (UTXOs).
+#[derive(Clone)]
+pub struct BtcUtvAggregationState {
+    /// 4-level storage: (round, slot_id) → input_index → peer_id → signature
+    pub btc_utv_sigs_by_round_slot:
+        Arc<RwLock<HashMap<RoundSlotKey, HashMap<usize, HashMap<String, ECDSASignature>>>>>,
+    /// Aggregated sigs per slot: (round, slot_id) → input_index → aggregated_sig
+    pub btc_utv_agg_by_round_slot:
+        Arc<RwLock<HashMap<RoundSlotKey, HashMap<usize, RecoverableSignature>>>>,
+    /// Track completed inputs per slot: (round, slot_id) → set of done input indices
+    pub btc_utv_done_inputs_by_round_slot: Arc<RwLock<HashMap<RoundSlotKey, HashSet<usize>>>>,
+    /// Track fully completed slots (all inputs done + broadcast)
+    pub btc_utv_completed_slots: Arc<RwLock<HashSet<RoundSlotKey>>>,
+}
+
+impl Default for BtcUtvAggregationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BtcUtvAggregationState {
+    pub fn new() -> Self {
+        Self {
+            btc_utv_sigs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_agg_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_done_inputs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
+            btc_utv_completed_slots: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }

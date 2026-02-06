@@ -65,12 +65,13 @@ impl DKGNode {
 
         info!("🔑 [SHARE_PUBKEYS] Aggregated {} commitment coefficients", max_degree);
 
-        // Step 2: Evaluate aggregated polynomial at each peer's index
+        // Step 2: Evaluate aggregated polynomial at each peer's index.
+        // Only process keys that are peer IDs (in peer_indices). Skip refresh_* and disconnected peers.
         for (peer_id, _) in commitments.iter() {
-            let dkg_index = peer_indices
-                .get(peer_id)
-                .copied()
-                .ok_or_else(|| anyhow!("No DKG index found for peer {}", peer_id))?;
+            let dkg_index = match peer_indices.get(peer_id) {
+                Some(&idx) => idx,
+                None => continue, // skip refresh_* keys and peers no longer in DB (e.g. disconnected)
+            };
 
             info!("🔑 [SHARE_PUBKEYS] Processing peer: {} (DKG index: {})", peer_id, dkg_index);
 
@@ -118,29 +119,6 @@ impl DKGNode {
                 x_pow *= x;
             }
             share_pubkey += *commitment * x_pow;
-        }
-
-        Ok(share_pubkey)
-    }
-
-    /// Derive share public key from commitments using polynomial evaluation
-    /// NOTE: This method is deprecated in favor of evaluate_aggregated_polynomial
-    /// which correctly aggregates all commitments first. This is kept for backward compatibility.
-    fn derive_share_pubkey_from_commitments(
-        &self,
-        commitments: &[k256::AffinePoint],
-        dkg_index: u32,
-    ) -> Result<ProjectivePoint> {
-        use k256::Scalar;
-        let x = Scalar::from(dkg_index as u64);
-        let mut share_pubkey = ProjectivePoint::IDENTITY;
-
-        for (j, commitment) in commitments.iter().enumerate() {
-            let mut x_pow = Scalar::ONE;
-            for _ in 0..j {
-                x_pow *= x;
-            }
-            share_pubkey += ProjectivePoint::from(*commitment) * x_pow;
         }
 
         Ok(share_pubkey)

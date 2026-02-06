@@ -88,7 +88,7 @@ impl CodeHashWhitelist {
         // Hash the whitelist content
         let mut hasher = Sha256::new();
         hasher.update(&whitelist_content);
-        let hash = hasher.finalize();
+        let _hash = hasher.finalize();
 
         // For now, we'll use a simple approach: verify that signature matches expected format
         // In production, this should use proper RSA/ECDSA verification
@@ -107,7 +107,7 @@ impl CodeHashWhitelist {
         // In production, use proper signature verification
         let mut key_hasher = Sha256::new();
         key_hasher.update(public_key_pem.as_bytes());
-        let key_hash = key_hasher.finalize();
+        let _key_hash = key_hasher.finalize();
 
         // For now, accept if signature exists and has reasonable length
         // In production, replace this with actual signature verification

@@ -165,7 +165,6 @@ impl MpcNetworkLayer {
 
     // Contract call helpers for user-to-vault have been removed; contract execution is skipped for that flow.
 
-
     // ----------------------------------------------------------------------------
     // Network transaction helper functions (sequencer removed, will be replaced with pool approach)
     // ----------------------------------------------------------------------------
@@ -189,143 +188,11 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Submit a withdraw liquidity transaction (sequencer removed - stub for future pool implementation)
-    pub(crate) async fn submit_withdraw_liquidity_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        eth_address: &str,
-        amount: u128,
-        _tx_bytes: Vec<u8>,
-        _eth_tx: crate::chain_abstraction::EthereumTransaction,
-    ) -> Result<()> {
-        // Sequencer removed - will be replaced with pool approach later
-        info!(
-            "📋 [NETWORK] WithdrawLiquidity transaction helper called (sequencer removed, pool approach pending): solver={}, eth_address={}, amount={}",
-            solver_address, eth_address, amount
-        );
-        Ok(())
-    }
-
-    /// Submit a reward payout transaction (sequencer removed - stub for future pool implementation)
-    pub(crate) async fn submit_reward_payout_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        eth_address: &str,
-        amount: u128,
-        _tx_bytes: Vec<u8>,
-        _eth_tx: crate::chain_abstraction::EthereumTransaction,
-    ) -> Result<()> {
-        // Sequencer removed - will be replaced with pool approach later
-        info!(
-            "📋 [NETWORK] RewardPayout transaction helper called (sequencer removed, pool approach pending): solver={}, eth_address={}, amount={}",
-            solver_address, eth_address, amount
-        );
-        Ok(())
-    }
-
-    /// Submit a solver withdraw-liquidity contract update to the sequencer
-    pub(crate) async fn submit_solver_withdraw_liquidity_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        asset_chain_name: &str,
-        amount: u128,
-        payout_tx_hash: &str,
-    ) -> Result<()> {
-        if amount == 0 {
-            info!(
-                "⏭️ [NETWORK] Skipping withdraw-liquidity sequencing for solver {} (amount=0)",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        // Execute directly - sequencer removed
-        self.submit_solver_liquidity_contract_update(
-            solver_address,
-            asset_chain_name,
-            amount,
-            payout_tx_hash,
-            None, // No request_id
-            None, // No original_request
-        )
-        .await
-    }
-
-    /// Submit a solver claim-reward contract update to the sequencer
-    pub(crate) async fn submit_solver_claim_reward_to_sequencer(
-        &mut self,
-        solver_address: &str,
-        reward_btc: Option<u128>,
-        reward_tics: Option<u128>,
-        payout_tx_hash: &str,
-    ) -> Result<()> {
-        if reward_btc.is_none() && reward_tics.is_none() {
-            info!(
-                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are None)",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        if reward_btc.unwrap_or(0) == 0 && reward_tics.unwrap_or(0) == 0 {
-            info!(
-                "⏭️ [NETWORK] Skipping claim-reward sequencing for solver {} (both rewards are zero)",
-                solver_address
-            );
-            return Ok(());
-        }
-
-        // Execute directly - sequencer removed
-        self.submit_solver_reward_contract_update(
-            solver_address,
-            reward_btc,
-            reward_tics,
-            payout_tx_hash,
-            None, // No request_id
-            None, // No original_request
-        )
-        .await
-    }
-
-    /// Execute refund intent contract call directly (sequencer removed)
-    pub(crate) async fn submit_refund_intent_to_sequencer(
-        &mut self,
-        intent_id: &str,
-        transaction_hash: &str,
-        timestamp: &str,
-        reason: &str,
-        vault_group_key: Option<k256::ProjectivePoint>,
-    ) -> Result<()> {
-        // Execute refund intent contract call directly - sequencer removed
-        if let Some(signing_node) = &mut self.signing_node {
-            crate::utils::contract::execute_refund_intent_contract_call(
-                signing_node,
-                self.node_manager.as_ref(),
-                self.dkg_node.as_ref(),
-                intent_id,
-                transaction_hash,
-                timestamp,
-                reason,
-                vault_group_key,
-                None, // No request_id
-                None, // No original_request
-            )
-            .await
-        } else {
-            warn!("❌ [NETWORK] Signing node not available for refund intent contract call execution");
-            Ok(())
-        }
-    }
-
-
     /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
     #[allow(dead_code)]
     /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
     #[allow(dead_code)]
-    pub(crate) async fn process_contract_transaction(
-        &mut self,
-        _request: (),
-    ) -> Result<()> {
+    pub(crate) async fn process_contract_transaction(&mut self, _request: ()) -> Result<()> {
         // Contract sequencer removed - transactions are executed directly
         Ok(())
     }

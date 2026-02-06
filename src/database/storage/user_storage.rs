@@ -27,42 +27,21 @@ impl UserStorage {
     pub async fn store_user(&self, ethereum_address: &str, user: &UserRegistration) -> Result<()> {
         let key = key_utils::user_key(ethereum_address);
 
-        info!("💾 [USER_STORAGE] Starting to store user registration:");
-        info!("  📧 Address: {}", ethereum_address);
-        info!("  🆔 User ID: {}", user.user_id);
-        info!("  🏗️  Registered by node: {}", user.registered_by_node);
-        info!("  📅 Created at: {}", user.created_at);
-        info!(
-            "  🔑 Has tweaked secret share: {:?}",
-            user.tweaked_secret_share
+        debug!(
+            "[USER_STORAGE] Storing user: {}, intents: {}",
+            ethereum_address, user.intent_hashes.len()
         );
-        info!("  🔑 Has user group key: {}", user.user_group_key.is_some());
-        info!(
-            "  🏠 Has derived ETH address: {}",
-            user.derived_eth_address.is_some()
-        );
-        info!(
-            "  🪙 Has derived BTC address: {}",
-            user.derived_btc_address.is_some()
-        );
-        info!("  📋 Intent hashes count: {}", user.intent_hashes.len());
 
         match self.db.put_string(&key, user) {
             Ok(()) => {
-                info!(
-                    "✅ [USER_STORAGE] Successfully stored user registration for: {}",
-                    ethereum_address
-                );
-                info!("  🗄️  Database key: {}", key);
+                info!("[USER_STORAGE] Stored user registration: {}", ethereum_address);
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "❌ [USER_STORAGE] Failed to store user registration for: {}",
-                    ethereum_address
+                    "[USER_STORAGE] Failed to store user registration for {}: {}",
+                    ethereum_address, e
                 );
-                error!("  🗄️  Database key: {}", key);
-                error!("  💥 Error: {}", e);
                 Err(e)
             }
         }
@@ -363,6 +342,31 @@ impl IntentStorage {
             debug!("🔍 [INTENT_STORAGE] Retrieved intent: {}", intent_hash);
         }
         Ok(intent)
+    }
+
+    /// Store target chain amount (smallest units) for an intent, computed from current prices
+    pub async fn store_intent_target_amount(
+        &self,
+        intent_hash: &str,
+        target_amount: u128,
+    ) -> Result<()> {
+        let key = key_utils::intent_target_amount_key(intent_hash);
+        self.db.put_string(&key, &target_amount.to_string())?;
+        debug!(
+            "💾 [INTENT_STORAGE] Stored target amount {} for intent {}",
+            target_amount, intent_hash
+        );
+        Ok(())
+    }
+
+    /// Get target chain amount for an intent, if previously computed and stored
+    pub async fn get_intent_target_amount(
+        &self,
+        intent_hash: &str,
+    ) -> Result<Option<u128>> {
+        let key = key_utils::intent_target_amount_key(intent_hash);
+        let s: Option<String> = self.db.get_string(&key)?;
+        Ok(s.and_then(|s| s.parse::<u128>().ok()))
     }
 
     /// Get all intents

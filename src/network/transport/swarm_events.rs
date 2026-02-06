@@ -444,7 +444,7 @@ impl MpcNetworkLayer {
     /// Handle peer subscribed to topic event
     async fn handle_peer_subscribed(
         &mut self,
-        peer_id: PeerId,
+        _peer_id: PeerId,
         topic: libp2p::gossipsub::TopicHash,
     ) -> Result<()> {
         // If this is the peer discovery topic, we can now safely broadcast our presence

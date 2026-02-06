@@ -62,6 +62,12 @@ impl DKGNode {
         state.my_permanent_index = Some(index);
     }
 
+    /// Clear in-memory permanent index (used after clear_state_for_reconnect).
+    fn clear_permanent_index(&self) {
+        let mut state = self.state.write().unwrap();
+        state.my_permanent_index = None;
+    }
+
     fn increment_round(&self) {
         self.state.write().unwrap().round += 1;
     }
@@ -180,6 +186,18 @@ impl DKGNode {
             })?;
             Err(anyhow!("Failed to reset DKG node: {}", message))
         }
+    }
+
+    /// Clear DKG secret/commitment state so this node can rejoin (same flow as new node).
+    /// Does NOT delete our index: the network assigns the new index via PeerList and we overwrite
+    /// when the new-node flow completes (set_my_permanent_index).
+    pub async fn clear_state_for_reconnect(&mut self) -> Result<()> {
+        info!("🗑️ [RECONNECT] Clearing DKG secret/commitment state - index comes from network (PeerList)");
+        self.reset().await?;
+        self.storage.set_initial_dkg_complete(false).await?;
+        self.storage.set_refresh_in_progress(false).await?;
+        info!("✅ [RECONNECT] DKG state cleared - will use index assigned by network");
+        Ok(())
     }
 
     pub fn set_completion_callback(&mut self, callback: DKGCompletionCallback) {

@@ -24,11 +24,10 @@ pub struct MessageId {
 }
 
 /// Types of critical messages that need retry
-/// Reduced from 7 to 5 types - removed SELECT messages that have ACK/MISSING fallback
+/// VrfSelectedNodes is not included: used only for round sync / consensus trigger; no ACK or unicast retry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
-    VrfSelectedNodes,
 }
 
 /// State of a message retry
@@ -62,13 +61,12 @@ impl RetryManager {
     }
 
     /// Check if a message type is critical and needs retry
-    /// Reduced from 7 to 5 types - SELECT messages have ACK/MISSING fallback
+    /// VrfSelectedNodes is not critical: round sync only, no retry/ACK.
     pub fn is_critical_message(msg: &GossipsubMessage) -> Option<CriticalMessageType> {
         match msg {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
-            GossipsubMessage::VrfSelectedNodes(_) => Some(CriticalMessageType::VrfSelectedNodes),
             _ => None,
         }
     }
@@ -81,9 +79,6 @@ impl RetryManager {
         let unique_id = match msg {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
-            }
-            GossipsubMessage::VrfSelectedNodes(broadcast) => {
-                format!("vrf_{}_{}", broadcast.round, broadcast.selector_node_id.0)
             }
             _ => return Err(anyhow!("Not a critical message type")),
         };
@@ -260,11 +255,9 @@ impl RetryManager {
     }
 
     /// Helper: Check if message type is VRF-related (needs aggressive retry)
-    fn is_vrf_message(msg_type: &CriticalMessageType) -> bool {
-        matches!(
-            msg_type,
-            CriticalMessageType::VrfSelectedNodes
-        )
+    /// VrfSelectedNodes no longer tracked, so always false.
+    fn is_vrf_message(_msg_type: &CriticalMessageType) -> bool {
+        false
     }
 
     async fn remove_peer_from_retries(
@@ -355,7 +348,7 @@ impl RetryManager {
         };
 
         // Wait for initial ACKs
-        info!(
+        debug!(
             "⏰ [RETRY] Starting {} monitoring for {:?} - waiting {:?} for initial ACKs",
             msg_type_str, message_id, initial_wait
         );
@@ -435,7 +428,7 @@ impl RetryManager {
 
                     match message_tx.try_send(retry_msg) {
                         Ok(_) => {
-                            info!(
+                            debug!(
                                 "✅ [RETRY] Unicast retry sent to {} for {:?} (attempt {}/{})",
                                 peer_id,
                                 message_id,
@@ -485,10 +478,6 @@ impl RetryManager {
                 };
                 let delay_with_jitter = base_delay + Duration::from_millis(jitter_ms);
 
-                info!(
-                        "⏳ [RETRY] {} waiting {:?} (base: {:?} + jitter: {}ms) before retry {} for {:?}",
-                        msg_type_str, delay_with_jitter, base_delay, jitter_ms, retry_attempt + 2, message_id
-                    );
                 tokio::time::sleep(delay_with_jitter).await;
             }
         }
@@ -537,14 +526,14 @@ impl RetryManager {
 
                 // Log acknowledged nodes for comparison
                 let acked_nodes: Vec<_> = state.acknowledged_nodes.iter().collect();
-                info!(
+                debug!(
                     "✅ [RETRY] Successfully received ACKs from {} nodes: {:?}",
                     acked_nodes.len(),
                     acked_nodes
                 );
             } else {
                 // All nodes acknowledged - success!
-                info!(
+                debug!(
                     "🎉 [RETRY] Successfully delivered {:?} to all {} nodes in {:?}",
                     message_id,
                     state.expected_nodes.len(),

@@ -91,7 +91,7 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Remove from database as well
+        // Remove from database as well (peer index and commitments so share_pubkey recompute doesn't fail)
         let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
         if let Err(e) = self.db.delete_string(&peer_index_key) {
             warn!(
@@ -100,6 +100,17 @@ impl MpcNetworkLayer {
             );
         } else {
             info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
+        }
+
+        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
+        let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
+        if let Err(e) = self.db.delete_string(&commitment_key) {
+            warn!(
+                "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
+                peer_id, e
+            );
+        } else {
+            info!("✅ [DISCONNECT] Removed commitments for peer {} from database", peer_id);
         }
 
         // Update network parameters
@@ -120,7 +131,8 @@ impl MpcNetworkLayer {
             }
         }
 
-        if let Some(signing_node) = &mut self.signing_node {
+        if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
             signing_node.set_threshold(new_threshold);
         }
 
@@ -211,7 +223,8 @@ impl MpcNetworkLayer {
                 .map_err(|e| anyhow::anyhow!(e))?;
 
             // Update signing node threshold after adding peer
-            if let Some(signing_node) = &mut self.signing_node {
+            if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
                 let new_threshold = self.node_manager.get_threshold();
                 signing_node.set_threshold(new_threshold);
                 info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);

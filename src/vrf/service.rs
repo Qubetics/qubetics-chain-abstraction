@@ -197,19 +197,9 @@ impl VrfService {
             round,
             self.config.allow_synthetic_submissions,
         )?;
-        info!("🧐 Selection result: {:?}", selection_result);
 
         info!("⏳ Waiting 2 seconds before broadcasting selection...");
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-
-        info!(
-            "🎯 [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
-            self.node_id,
-            selection_result.selected_nodes.len(),
-            operation_type,
-            round,
-            selection_result.selected_nodes
-        );
 
         if let Some(mut broadcast_msg) = selector.create_selected_nodes_broadcast(round) {
             // The operation_type should now be set from the selector
@@ -265,15 +255,6 @@ impl VrfService {
             round,
             self.config.allow_synthetic_submissions,
         )?;
-
-        info!(
-            "✅ [VRF] Node {} selected {} nodes for {} operation round {}: {:?}",
-            self.node_id,
-            selection_result.selected_nodes.len(),
-            operation_type,
-            round,
-            selection_result.selected_nodes
-        );
 
         Ok(selection_result)
     }
@@ -663,9 +644,6 @@ impl VrfService {
         synchronized_round
     }
 
-    pub(crate) fn round_update_lock(&self) -> Arc<Mutex<()>> {
-        self.round_update_lock.clone()
-    }
 
     pub fn context(&self) -> &str {
         &self.context

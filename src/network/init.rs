@@ -84,8 +84,8 @@ impl MpcNetworkLayer {
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: network_config.discovery_seeds,
             connected_peers_cache: std::collections::HashSet::new(),
-            network_transaction_processing_lock: Arc::new(Mutex::new(())),
             // Removed: deterministic_selection field
+            // Removed: network_transaction_processing_lock field (unused)
             retry_manager: Some(RetryManager::new(tx_for_retry)),
             channel_health,
             outbound_inflight: Arc::new(Mutex::new(HashMap::new())),

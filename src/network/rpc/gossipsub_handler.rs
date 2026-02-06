@@ -3,24 +3,43 @@
 ///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ff::PrimeField;
 use libp2p::{gossipsub::Message, PeerId};
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     database::key_utils,
-    rpc_server::utils::{convert_src_smallest_to_dst_smallest, fetch_crypto_prices},
-    signing::{BitcoinSigner, EthereumSigner},
+    rpc_server::utils::{
+        convert_src_smallest_to_dst_smallest, fetch_crypto_prices, fetch_network_balance,
+    },
+    signing::EthereumSigner,
     types::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
-        ChannelMessage, GossipsubMessage,
+        ChannelMessage, GossipsubMessage, IntentStatus,
     },
 };
 
 use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
+
+/// RocksDB record for pending solver_add_liquidity requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingAddLiquidityRecord {
+    request_id: String,
+    solver_id: String,
+    solver_address: String,
+    amount: String,
+    chain_id: u64,
+    signature: String,
+    signed_payload: String,
+    timestamp_ms: i64,
+    /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
+    status: String,
+}
+
+const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -74,7 +93,8 @@ impl MpcNetworkLayer {
                 }
             }
             GossipsubMessage::Signing(signing_msg) => {
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                     // 🛡️ Error recovery for signing message processing - prevent node crashes
                     // Handle signing messages
                     match &signing_msg {
@@ -84,6 +104,7 @@ impl MpcNetworkLayer {
                             round,
                             timestamp: _timestamp,
                             user_eth_address,
+                            slot_id: _,
                         } => {
                             let tx_type = if user_eth_address.is_some() {
                                 "user-to-network"
@@ -94,6 +115,19 @@ impl MpcNetworkLayer {
                             info!(
                                 "🔍 [NETWORK] Signature details - signer_id: {}",
                                 signature.signer_id
+                            );
+                        }
+                        SigningMessage::BtcUtvSignaturesMessage {
+                            from,
+                            signatures,
+                            round,
+                            slot_id,
+                            timestamp: _timestamp,
+                            user_eth_address: _,
+                        } => {
+                            info!(
+                                "📥 [NETWORK] Received BTC UTV batch signatures from {} for slot {} round {} ({} inputs)",
+                                from, slot_id, round, signatures.len()
                             );
                         }
                         _ => {}
@@ -118,7 +152,8 @@ impl MpcNetworkLayer {
             }
             GossipsubMessage::Consensus(consensus_msg) => {
                 // Handle consensus message in signing node
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                     signing_node
                         .handle_consensus_message(consensus_msg.clone())
                         .await?;
@@ -143,7 +178,6 @@ impl MpcNetworkLayer {
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
                 let selector_node_id = broadcast_msg.selector_node_id.0;
                 let round = broadcast_msg.round;
-                let local_node_id = self.local_peer_id;
                 let sender_peer_id = match message.source {
                     Some(pid) => pid,
                     None => {
@@ -153,53 +187,14 @@ impl MpcNetworkLayer {
                 };
                 debug!(
                     "📥 [VRF] Received VRF selected nodes broadcast: round={}, from={}, received_by={}",
-                    round, selector_node_id, local_node_id
+                    round, selector_node_id, self.local_peer_id
                 );
 
-                // ALWAYS send ACK for critical messages - this is critical for retry mechanism
-                // Send acknowledgment BEFORE processing to ensure it's sent even if processing fails
-                debug!(
-                    "📤 [RETRY] Sending ACK for VrfSelectedNodes round {} from selector {} (this node: {})",
-                    round, selector_node_id, local_node_id
-                );
-
-                // Generate message ID to verify it matches what sender expects
-                let msg_id_result =
-                    crate::network::rpc::retry_manager::RetryManager::generate_message_id(
-                        crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                        &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                    );
-
-                match &msg_id_result {
-                    Ok(msg_id) => {
-                        debug!(
-                            "🔑 [RETRY] Generated message ID for ACK: {:?} (round={}, selector={})",
-                            msg_id, round, selector_node_id
-                        );
-                    }
-                    Err(e) => {
-                        debug!(
-                            "❌ [RETRY] CRITICAL: Failed to generate message ID for ACK: {}",
-                            e
-                        );
-                        debug!("❌ [RETRY] ACK will NOT be sent - this will cause retry failures!");
-                    }
-                }
-
-                // Send acknowledgment - MUST happen for all critical messages
-                // This is called BEFORE processing to ensure ACK is sent even if processing fails
-                self.send_critical_message_ack(
-                    crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
-                    &GossipsubMessage::VrfSelectedNodes(broadcast_msg.clone()),
-                )
-                .await;
-                debug!(
-                    "✅ [RETRY] send_critical_message_ack completed for round {} from selector {}",
-                    round, selector_node_id
-                );
+                // No ACK or retry for VrfSelectedNodes - used only for round sync / consensus trigger (final node is HRW)
 
                 // Store the received VRF selection in the signing node's VRF selector
-                if let Some(signing_node) = &mut self.signing_node {
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
                     let round = broadcast_msg.round;
                     signing_node.handle_vrf_selected_nodes_broadcast(
@@ -219,13 +214,16 @@ impl MpcNetworkLayer {
                     .get_local_vrf_round_for_domain(VrfDomain::Signing, Some(&sync_request.context))
                     .await;
 
-                if self.store_peer_round_if_valid(
-                    VrfDomain::Signing,
-                    &sync_request.context,
-                    peer,
-                    reference_round,
-                    sync_request.current_round,
-                ) {
+                if self
+                    .store_peer_round_if_valid(
+                        VrfDomain::Signing,
+                        &sync_request.context,
+                        peer,
+                        reference_round,
+                        sync_request.current_round,
+                    )
+                    .await
+                {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub request",
                         sync_request.current_round, peer
@@ -272,13 +270,16 @@ impl MpcNetworkLayer {
                     )
                     .await;
 
-                if self.store_peer_round_if_valid(
-                    VrfDomain::Signing,
-                    &sync_response.context,
-                    peer,
-                    reference_round,
-                    sync_response.current_round,
-                ) {
+                if self
+                    .store_peer_round_if_valid(
+                        VrfDomain::Signing,
+                        &sync_response.context,
+                        peer,
+                        reference_round,
+                        sync_response.current_round,
+                    )
+                    .await
+                {
                     info!(
                         "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
                         sync_response.current_round, peer
@@ -441,54 +442,40 @@ impl MpcNetworkLayer {
                 // Process using shared handler
                 if !intent_hashes.is_empty() {
                     for intent_hash in intent_hashes.iter() {
-                        if let Err(e) = self
-                            .handle_transaction_id_storage(
-                                intent_hash,
-                                &transaction_id,
-                                &transaction_type,
-                                &node_id,
-                                &sender_peer_id,
-                            )
-                            .await
-                        {
-                            error!(
-                                "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
-                                intent_hash, e
-                            );
+                        // Check if this is an add_liquidity request_id (starts with "addliq:")
+                        if intent_hash.starts_with("addliq:") {
+                            // This is an add_liquidity request, mark as Completed
+                            let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, intent_hash);
+                            if let Ok(Some(mut record)) = self
+                                .db
+                                .get_string_async::<PendingAddLiquidityRecord>(&key)
+                                .await
+                            {
+                                record.status = "Completed".to_string();
+                                let _ = self.db.put_string_async(&key, &record).await;
+                                info!(
+                                    "✅ [ADD_LIQUIDITY] Marked request {} as Completed (tx: {})",
+                                    intent_hash, transaction_id
+                                );
+                            }
+                        } else {
+                            // Regular intent, use existing handler
+                            if let Err(e) = self
+                                .handle_transaction_id_storage(
+                                    intent_hash,
+                                    &transaction_id,
+                                    &transaction_type,
+                                    &node_id,
+                                    &sender_peer_id,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [NETWORK] Failed to handle transaction ID storage for intent {}: {}",
+                                    intent_hash, e
+                                );
+                            }
                         }
-                    }
-                } else if let Some(solver_addr) = solver_address.as_ref() {
-                    let storage_result = match transaction_type.as_str() {
-                        "reward_txn" => {
-                            self.handle_reward_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
-                        }
-                        "withdraw_liquidity" | "withdrawLiquidity" => {
-                            self.handle_withdraw_liquidity_transaction_id_storage(
-                                solver_addr,
-                                &transaction_id,
-                                &transaction_type,
-                            )
-                            .await
-                        }
-                        _ => {
-                            warn!(
-                                "❌ [NETWORK] Unknown transaction type: {}",
-                                transaction_type
-                            );
-                            return Err(anyhow!("Unknown transaction type: {}", transaction_type));
-                        }
-                    };
-
-                    if let Err(e) = storage_result {
-                        error!(
-                            "❌ [NETWORK] Failed to handle transaction ID storage: {}",
-                            e
-                        );
                     }
                 } else {
                     warn!(
@@ -508,17 +495,40 @@ impl MpcNetworkLayer {
                     node_id
                 );
                 if !intent_hashes.is_empty() {
-                    info!("🔗 [NETWORK] Intent hashes: {} intent(s)", intent_hashes.len());
+                    info!(
+                        "🔗 [NETWORK] Intent hashes: {} intent(s)",
+                        intent_hashes.len()
+                    );
                 } else if let Some(solver) = &solver_address {
                     info!("🧩 [NETWORK] Solver address: {}", solver);
                 } else {
                     info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction error broadcast");
                 }
 
+                // Handle add_liquidity failures - no status update needed
+                // Since we only have "Pending" and "Completed", failed requests are already "Pending"
+                // They will automatically retry in the next TICS cycle
+                if !intent_hashes.is_empty() {
+                    for h in &intent_hashes {
+                        // Check if this is an add_liquidity request_id (starts with "addliq:")
+                        if h.starts_with("addliq:") {
+                            warn!(
+                                "⚠️ [ADD_LIQUIDITY] Request {} failed (error: {}), will retry in next cycle (status remains 'Pending')",
+                                h, error_message
+                            );
+                        }
+                    }
+                }
+
                 // Store the error in our local user registry (one store per intent)
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     if !intent_hashes.is_empty() {
                         for h in &intent_hashes {
+                            // Skip add_liquidity request_ids (already handled above)
+                            if h.starts_with("addliq:") {
+                                continue;
+                            }
+
                             if let Err(e) = user_intent_manager
                                 .store_transaction_error(h, &error_message, Some(&node_id))
                                 .await
@@ -542,397 +552,450 @@ impl MpcNetworkLayer {
                 intent,
                 intent_id: _intent_id,
                 user_eth_address,
-                amount,
+                amount: _,
+                signature,
             } => {
                 // user_eth_address is now mandatory (not Option)
                 let user_eth_addr = user_eth_address;
 
-                // Calculate intent hash from the intent
+                // Calculate intent hash from the intent (valid intent = same hash as RPC originator)
                 let intent_hash = match crate::utils::calculate_intent_hash(&intent) {
                     Ok(hash) => hash,
                     Err(e) => {
-                        warn!("❌ [GOSSIPSUB] Failed to calculate intent hash: {}", e);
+                        warn!(
+                            "❌ [GOSSIPSUB] Failed to calculate intent hash (invalid intent): {}",
+                            e
+                        );
                         return Ok(());
                     }
                 };
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
 
-                // CRITICAL: Reject immediately if intent_hash already exists in database
-                if let Some(user_intent_manager) = &self.user_intent_manager {
-                    if user_intent_manager.get_intent(&intent_hash).await.is_some() {
+                // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup).
+                let user_intent_manager = match &self.user_intent_manager {
+                    Some(uim) => uim,
+                    None => {
+                        warn!("❌ [GOSSIPSUB] User intent manager not available - cannot validate deposit intent");
+                        return Ok(());
+                    }
+                };
+                if user_intent_manager.get_intent(&intent_hash).await.is_some() {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - intent hash {} already exists (duplicate); no processing",
+                        intent_hash
+                    );
+                    return Ok(());
+                }
+
+                // CRITICAL (protocol): Signature is mandatory at gossip level; verify recovered signer matches claimed user.
+                let signature = match signature.as_ref() {
+                    Some(s) => s.as_str(),
+                    None => {
                         warn!(
-                            "⚠️ [GOSSIPSUB] Rejecting DepositIntent - intent hash {} already exists in database",
+                            "⚠️ [GOSSIPSUB] Rejecting DepositIntent - signature required for gossip verification (intent hash: {})",
                             intent_hash
                         );
                         return Ok(());
                     }
-
-                    // Store the intent in database
-                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
-                        if let Err(e) = user_intent_manager
-                            .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
-                            .await
-                        {
+                };
+                // Deposit intent is the message: same serialization the client signed.
+                let intent_bytes: Vec<u8> = match serde_json::to_string(&intent) {
+                    Ok(s) => s.into_bytes(),
+                    Err(e) => {
+                        warn!("❌ [GOSSIPSUB] Failed to serialize intent for signature verification: {}", e);
+                        return Ok(());
+                    }
+                };
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                let (compact, v) = match normalize_eth_signature(signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [GOSSIPSUB] Invalid signature format for DepositIntent {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                };
+                let recovered_signer = match recover_eth_address_secp(
+                    &intent_bytes,
+                    &compact,
+                    v,
+                    true,
+                ) {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(&intent_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
                             warn!(
-                                "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
+                                "⚠️ [GOSSIPSUB] Failed to recover signer for DepositIntent {}: personal_sign={}, raw={}",
+                                intent_hash, e1, e2
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
+                if recovered_signer.to_lowercase() != user_eth_addr.to_lowercase() {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - signature signer {} does not match claimed user {}",
+                        recovered_signer, user_eth_addr
+                    );
+                    return Ok(());
+                }
+
+                // CRITICAL (protocol): Only accept deposit intents for registered users.
+                if user_intent_manager
+                    .get_user_by_address(&user_eth_addr)
+                    .await
+                    .is_none()
+                {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - user {} is not registered (valid intent requires registered user)",
+                        user_eth_addr
+                    );
+                    return Ok(());
+                }
+
+                // CRITICAL: Check if user has sufficient balance on source chain before accepting intent
+                info!(
+                    "💰 [GOSSIPSUB] Checking source address balance for intent: {} (amount: {})",
+                    intent_hash, intent.amount
+                );
+
+                let source_amount = match intent.amount.parse::<u128>() {
+                    Ok(amt) => amt,
+                    Err(e) => {
+                        warn!(
+                            "❌ [GOSSIPSUB] Invalid amount format in intent {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // Determine blockchain for balance check
+                let source_blockchain = if intent.source_chain.eq_ignore_ascii_case("btc")
+                    || intent.source_chain.eq_ignore_ascii_case("bitcoin")
+                {
+                    "btc"
+                } else {
+                    "eth"
+                };
+
+                // Fetch user's source address balance
+                match fetch_network_balance(&intent.source_address, source_blockchain).await {
+                    Ok(user_balance) => {
+                        if user_balance < source_amount {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Insufficient source balance for intent {}: user has {}, needs {}",
+                                intent_hash, user_balance, source_amount
+                            );
+                            return Ok(());
+                        } else {
+                            info!(
+                                "✅ [GOSSIPSUB] Source address has sufficient balance: {} >= {}",
+                                user_balance, source_amount
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [GOSSIPSUB] Failed to fetch source address balance for {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                }
+
+                // Store the intent in database (duplicate already rejected above)
+                if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                    if let Err(e) = user_intent_manager
+                        .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
+                        .await
+                    {
+                        warn!(
+                            "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                } else {
+                    warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                    return Ok(());
+                }
+
+                // Each node: fetch prices, compute target amount; store only when network has sufficient funds
+                const MIN_BTC_INTENT_SATS: u128 = 550;
+                let parsed_amount = match intent.amount.parse::<u128>() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            "❌ [GOSSIPSUB] Invalid intent amount for {}: {}",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+                };
+                // Same-chain (TICS->TICS or BTC->BTC): use original RPC amount as target and store it by intent hash
+                let is_same_chain = {
+                    let src_tics = intent.source_chain.eq_ignore_ascii_case("tics")
+                        || intent.source_chain.eq_ignore_ascii_case("qubetics");
+                    let dst_tics = intent.target_chain.eq_ignore_ascii_case("tics")
+                        || intent.target_chain.eq_ignore_ascii_case("qubetics");
+                    let src_btc = intent.source_chain.eq_ignore_ascii_case("btc")
+                        || intent.source_chain.eq_ignore_ascii_case("bitcoin");
+                    let dst_btc = intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin");
+                    (src_tics && dst_tics) || (src_btc && dst_btc)
+                };
+                let target_amount = if is_same_chain {
+                    intent.amount.parse::<u128>().unwrap()
+                } else {
+                    let prices = match fetch_crypto_prices().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to fetch prices for target amount: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+                    match convert_src_smallest_to_dst_smallest(
+                        parsed_amount,
+                        &intent.source_chain,
+                        &intent.target_chain,
+                        &prices,
+                    ) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to convert target amount for {}: {:?}",
                                 intent_hash, e
                             );
                             return Ok(());
                         }
-                    } else {
-                        warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
-                        return Ok(());
                     }
-                } else {
-                    warn!("❌ [GOSSIPSUB] User intent manager not available to store intent");
+                };
+
+                let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
+                    || intent.source_chain.eq_ignore_ascii_case("qubetics"))
+                    && (intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
+                if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] TICS->BTC intent {} below minimum: {} satoshis (min {})",
+                        intent_hash, target_amount, MIN_BTC_INTENT_SATS
+                    );
                     return Ok(());
                 }
 
-                // UserToVault: use source_chain (user is depositing FROM this chain)
-                let chain_to_use = &intent.source_chain.to_lowercase();
-
-                // For UserToVault, use user's tweaked secret share
-                let signing_key: Option<k256::Scalar> =
-                    self.get_signing_key_for_user(Some(&user_eth_addr)).await;
-
-                if let Some(signing_node) = &mut self.signing_node {
-                    let chain_handler: Option<Arc<dyn crate::chain_abstraction::ChainHandler>> =
-                        if crate::utils::transaction::is_evm_chain(chain_to_use) {
-                            crate::utils::transaction::get_chain_id_from_name(chain_to_use)
-                                .map(|chain_id| {
-                                    let handler = crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(chain_id);
-                                    Arc::from(handler) as Arc<dyn crate::chain_abstraction::ChainHandler>
-                                })
-                        } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-                            let mut handler =
-                                crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
-                                    crate::types::network::network_type()
-                                        .bitcoin_network_label()
-                                        .to_string(),
-                                );
-
-                            // UserToVault: set user's group public key for Bitcoin
-                            if let Some(user_intent_manager) = &self.user_intent_manager {
-                                if let Some(user) = user_intent_manager
-                                    .get_user_by_address(&user_eth_addr)
-                                    .await
-                                {
-                                    if let Some(user_group_key) = &user.user_group_key {
-                                        let affine_point = user_group_key.0;
-                                        let encoded_point = k256::EncodedPoint::from(affine_point);
-                                        let compressed_bytes =
-                                            encoded_point.compress().to_bytes().to_vec();
-
-                                        if let Some(btc_handler) = handler.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>() {
-                                            btc_handler.set_group_public_key(compressed_bytes);
-                                        }
-                                    } else {
-                                        warn!("❌ [GOSSIPSUB] User {} has no group key for Bitcoin transaction", user_eth_addr);
-                                    }
-                                } else {
-                                    warn!(
-                                        "❌ [GOSSIPSUB] User {} not found for Bitcoin transaction",
-                                        user_eth_addr
-                                    );
-                                }
-                            } else {
-                                warn!("❌ [GOSSIPSUB] User registry not available for Bitcoin transaction");
-                            }
-
-                            Some(Arc::from(handler)
-                                as Arc<dyn crate::chain_abstraction::ChainHandler>)
-                        } else {
-                            error!(
-                                "❌ [GOSSIPSUB] Unsupported chain requested: {}",
-                                chain_to_use
-                            );
-                            None
-                        };
-
-                    let Some(chain_handler) = chain_handler else {
-                        return Err(anyhow!("Unsupported chain: {}", chain_to_use));
-                    };
-                    // For UserToVault, use user's derived addresses
-                    let (derived_eth_addr, derived_btc_addr) =
-                        if let Some(user_intent_manager) = &self.user_intent_manager {
-                            if let Some(user) = user_intent_manager
-                                .get_user_by_address(&user_eth_addr)
-                                .await
+                // Check network balance for target chain; store target amount only when sufficient
+                let network_address = if let Some(dkg_node) = &self.dkg_node {
+                    match dkg_node.get_final_public_key().await {
+                        Some(final_public) => {
+                            if intent.target_chain.eq_ignore_ascii_case("btc")
+                                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
                             {
-                                (
-                                    user.derived_eth_address.clone(),
-                                    user.derived_btc_address.clone(),
-                                )
+                                crate::utils::get_btc_address_from_group_key(final_public)
                             } else {
-                                warn!(
-                                    "❌ [GOSSIPSUB] User {} not found in registry",
-                                    user_eth_addr
-                                );
-                                (None, None)
+                                crate::utils::get_eth_address_from_group_key(final_public)
                             }
-                        } else {
-                            warn!("❌ [GOSSIPSUB] User registry not available");
-                            (None, None)
-                        };
+                        }
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
 
-                    let group_public_key = if let Some(dkg_node) = &self.dkg_node {
-                        dkg_node.get_final_public_key().await
+                let has_sufficient_funds = if !network_address.is_empty() {
+                    let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                    {
+                        "btc"
                     } else {
-                        None
+                        "eth"
                     };
-
-                    // Get liquidity operator addresses from database
-                    let (liquidity_operator_eth_addr, liquidity_operator_btc_addr) =
-                        if let Some(registry) = &self.user_intent_manager {
-                            let database = registry.get_database();
-                            let liquidity_operator_eth = database
-                                .get_string(
-                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS,
-                                )
-                                .ok()
-                                .flatten();
-                            let liquidity_operator_btc = database
-                                .get_string(
-                                    crate::database::keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS,
-                                )
-                                .ok()
-                                .flatten();
-                            (liquidity_operator_eth, liquidity_operator_btc)
-                        } else {
-                            return Err(anyhow::anyhow!("User registry not available"));
-                        };
-
-                    let chain_transaction_result =
-                        crate::utils::transaction::create_chain_transaction_from_deposit_intent(
-                            &intent,
-                            group_public_key,
-                            derived_eth_addr.as_ref(),
-                            derived_btc_addr.as_ref(),
-                            crate::types::TransactionType::UserToVault,
-                            liquidity_operator_eth_addr.as_ref(),
-                            liquidity_operator_btc_addr.as_ref(),
-                            amount,
-                        )
-                        .await;
-
-                    match chain_transaction_result {
-                        Ok(chain_transaction) => {
-                            info!(
-                                "📝 [GOSSIPSUB] Created {} transaction from deposit intent",
-                                chain_handler.chain_type()
-                            );
-
-                            // Set available nodes from node manager before signing
-                            let available_nodes: Vec<PeerId> =
-                                self.node_manager.get_active_nodes().into_iter().collect();
-                            signing_node.set_available_nodes(available_nodes);
-
-                            // Use the signing key we got earlier
-                            if signing_key.is_some() {
-                            } else {
-                                info!(
-                                    "❌ [GOSSIPSUB] Could not get signing key for deposit intent"
+                    match fetch_network_balance(&network_address, blockchain).await {
+                        Ok(network_balance) => {
+                            if network_balance < target_amount {
+                                warn!(
+                                    "⚠️ [GOSSIPSUB] Insufficient network balance for intent {}: have {}, need {}",
+                                    intent_hash, network_balance, target_amount
                                 );
-                                return Ok(());
+                                false
+                            } else {
+                                true
                             }
-
-                            // Create transaction bytes using the chain handler
-                            let tx_bytes = chain_handler
-                                .create_transaction_bytes(&chain_transaction)
-                                .unwrap_or_else(|e| {
-                                    warn!("Failed to create transaction bytes: {}", e);
-                                    vec![]
-                                });
-                            info!(
-                                "🔐 [GOSSIPSUB] Starting {} signing process for deposit intent: 0x{}",
-                                chain_handler.chain_type(),
-                                hex::encode(tx_bytes.clone())
-                            );
-
-                            // Handle Bitcoin and EVM differently - DummyTransaction is only for EVM!
-                            match chain_transaction {
-                                crate::chain_abstraction::ChainTransaction::Bitcoin(ref btc_tx) => {
-                                    // For Bitcoin, use direct signing with tx_bytes and original transaction
-                                    {
-                                        let mut btc_signer = BitcoinSigner::new(signing_node);
-                                        btc_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                Some(btc_tx.clone()),
-                                                Some(user_eth_addr.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(crate::types::TransactionType::UserToVault),
-                                                signing_key,
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                                crate::chain_abstraction::ChainTransaction::Ethereum(
-                                    ref eth_tx,
-                                ) => {
-                                    let tx_bytes =
-                                        crate::utils::transaction::create_transaction_for_signing(
-                                            eth_tx,
-                                        );
-                                    debug!("→ RLP payload: 0x{}", hex::encode(&tx_bytes));
-
-                                    // Use the signing_key that was already fetched earlier to avoid redundant fetching
-                                    let user_tweaked_share = signing_key;
-
-                                    {
-                                        let mut eth_signer = EthereumSigner::new(signing_node);
-                                        eth_signer
-                                            .sign_transaction(
-                                                tx_bytes.clone(),
-                                                &chain_handler,
-                                                eth_tx,
-                                                user_tweaked_share,
-                                                Some(user_eth_addr.clone()),
-                                                vec![intent_hash.clone()],
-                                                Some(crate::types::TransactionType::UserToVault),
-                                                None,
-                                                signing_key,
-                                            )
-                                            .await?;
-                                    }
-                                }
-                            }
-                            info!(
-                                "✅ [GOSSIPSUB] {} deposit intent signing completed",
-                                signing_node.get_chain_type()
-                            );
                         }
                         Err(e) => {
-                            warn!("❌ [GOSSIPSUB] Failed to create chain transaction: {}", e);
-                            return Ok(());
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to fetch network balance for {}: {}",
+                                intent_hash, e
+                            );
+                            false
                         }
                     }
                 } else {
-                    warn!(
-                        "❌ [GOSSIPSUB] Signing node not available for deposit intent processing"
-                    );
-                }
-            }
-            GossipsubMessage::ClaimReward {
-                solver_address,
-                btc_address,
-                eth_address,
-                reward_btc,
-                reward_tics,
-                transaction_type: _transaction_type,
-            } => {
-                info!(
-                    "🎁 [GOSSIPSUB] Processing claim reward received via gossipsub for solver: {}",
-                    solver_address
-                );
-                info!(
-                    "💰 [GOSSIPSUB] Reward details - BTC: {:?}, TICS: {:?}",
-                    reward_btc, reward_tics
-                );
-                info!(
-                    "📍 [GOSSIPSUB] Addresses - ETH: {:?}, BTC: {:?}",
-                    eth_address, btc_address
-                );
+                    false
+                };
 
-                let _ = self
-                    .process_payout(
-                        "claim_reward",
-                        &solver_address,
-                        &btc_address,
-                        &eth_address,
-                        &reward_btc,
-                        &reward_tics,
-                    )
-                    .await?;
-            }
-            GossipsubMessage::WithdrawLiquidity {
-                solver_address,
-                btc_address,
-                eth_address,
-                amount_btc,
-                amount_tics,
-                transaction_type: _transaction_type,
-            } => {
-                info!(
-                    "💧 [GOSSIPSUB] Received withdraw-liquidity request for solver {}",
-                    solver_address
-                );
-                info!(
-                    "💧 [GOSSIPSUB] Target addresses - ETH: {:?}, BTC: {:?}",
-                    eth_address, btc_address
-                );
-                info!(
-                    "💧 [GOSSIPSUB] Amounts - BTC: {:?}, TICS: {:?}",
-                    amount_btc, amount_tics
-                );
-
-                let (tics_payout_initiated, btc_payout_initiated) = self
-                    .process_payout(
-                        "withdraw_liquidity",
-                        &solver_address,
-                        &btc_address,
-                        &eth_address,
-                        &amount_btc,
-                        &amount_tics,
-                    )
-                    .await?;
-
-                // Apply the liquidity decrease locally only when the payout was actually initiated
-                if let Some(signing_node) = &self.signing_node {
-                    let delta_btc = if btc_payout_initiated {
-                        amount_btc
-                            .as_ref()
-                            .and_then(|v| ethers::types::U256::from_dec_str(v).ok())
-                    } else {
-                        None
-                    };
-                    let delta_tics = if tics_payout_initiated {
-                        amount_tics
-                            .as_ref()
-                            .and_then(|v| ethers::types::U256::from_dec_str(v).ok())
-                    } else {
-                        None
-                    };
-
-                    if delta_btc.is_some() || delta_tics.is_some() {
-                        match signing_node
-                            .apply_liquidity_delta(
-                                &solver_address,
-                                None,
-                                delta_btc,
-                                delta_tics,
-                                false,
-                            )
+                if has_sufficient_funds {
+                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                        if let Err(e) = user_intent_manager
+                            .store_intent_target_amount(&intent_hash, target_amount)
                             .await
                         {
-                            Ok(()) => {
-                                info!(
-                                    "✅ [GOSSIPSUB] Applied local liquidity withdraw for {}",
-                                    solver_address
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "⚠️ [GOSSIPSUB] Failed to apply local liquidity withdraw for {}: {}",
-                                    solver_address, e
-                                );
-                            }
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to store target amount for {}: {}",
+                                intent_hash, e
+                            );
+                        } else {
+                            info!(
+                                "💾 [GOSSIPSUB] Stored target amount {} for intent {} (network has sufficient funds)",
+                                target_amount, intent_hash
+                            );
                         }
-                    } else {
-                        info!(
-                            "⏭️ [GOSSIPSUB] Skipping local liquidity withdraw for {} because payout was not initiated",
-                            solver_address
-                        );
                     }
                 } else {
-                    warn!(
-                        "⚠️ [GOSSIPSUB] Signing node unavailable; cannot apply local liquidity withdraw for {}",
-                        solver_address
-                    );
+                    return Ok(());
                 }
+
+                // At this stage, the intent has been fully validated, stored, and its target
+                // amount persisted. To align with withdraw/claim flows, we *do not* immediately
+                // create or sign a UserToVault transaction here. Instead, the intent remains
+                // in Pending status and will be picked up by the dedicated processing flow.
+                info!(
+                    "⏸️ [GOSSIPSUB] Deposit intent {} marked as Pending; skipping immediate UserToVault processing",
+                    intent_hash
+                );
+
+                return Ok(());
+            }
+            GossipsubMessage::SolverAddLiquidity {
+                request_id,
+                solver_id,
+                solver_address,
+                amount,
+                chain_id,
+                signature,
+                signed_payload,
+                timestamp_ms,
+                status,
+            } => {
+                info!(
+                    "💧 [ADD_LIQUIDITY] Received solver_add_liquidity gossip: request_id={}, solver_id={}, solver_address={}, amount={}, chain_id={}",
+                    request_id, solver_id, solver_address, amount, chain_id
+                );
+
+                // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
+                if chain_id != 0 && chain_id != 9029 {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, 9029=EVM)",
+                        chain_id, request_id
+                    );
+                    return Ok(());
+                }
+
+                // Re-verify signature using VERIFICATION_ADDRESS before accepting into local queue.
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                let verification_address =
+                    std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "".to_string());
+                if verification_address.is_empty() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured; dropping request"
+                    );
+                    return Ok(());
+                }
+
+                // Validate request_id is non-empty
+                if request_id.trim().is_empty() {
+                    warn!("⚠️ [ADD_LIQUIDITY] Empty request_id in gossip, dropping",);
+                    return Ok(());
+                }
+
+                // Expect the signed_payload to be the raw message bytes that were signed.
+                let msg_bytes = signed_payload.as_bytes();
+                if msg_bytes.is_empty() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Empty signed_payload for request_id={}, dropping",
+                        request_id
+                    );
+                    return Ok(());
+                }
+
+                if amount.trim().is_empty() || amount == "0" {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Zero or empty amount for request_id={}, dropping",
+                        request_id
+                    );
+                    return Ok(());
+                }
+
+                // Fully re-verify signature: recovered signer must match VERIFICATION_ADDRESS.
+                let (compact, v) = match normalize_eth_signature(&signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [ADD_LIQUIDITY] Invalid signature format in gossip for request_id={}: {}",
+                            request_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let recovered_address = match recover_eth_address_secp(msg_bytes, &compact, v, true)
+                {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
+                            warn!(
+                                    "⚠️ [ADD_LIQUIDITY] Failed to recover signer for request_id={}: personal_sign={}, raw={}",
+                                    request_id, e1, e2
+                                );
+                            return Ok(());
+                        }
+                    },
+                };
+
+                if recovered_address.to_lowercase() != verification_address.to_lowercase() {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Gossip verification failed for request_id={}: recovered={}, expected={}",
+                        request_id, recovered_address, verification_address
+                    );
+                    return Ok(());
+                }
+
+                // Persist to RocksDB as a pending add-liquidity record.
+                // Use the status from the message (should be "Pending" for new requests).
+                let record = PendingAddLiquidityRecord {
+                    request_id: request_id.clone(),
+                    solver_id: solver_id.clone(),
+                    solver_address: solver_address.clone(),
+                    amount: amount.clone(),
+                    chain_id,
+                    signature: signature.clone(),
+                    signed_payload: signed_payload.clone(),
+                    timestamp_ms,
+                    status: status.clone(),
+                };
+
+                // Use request_id as the unique key identifier
+                let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
+
+                if let Err(e) = self.db.put_string_async(&key, &record).await {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY] Failed to persist pending record for request_id={} to RocksDB: {}",
+                        request_id, e
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [ADD_LIQUIDITY] Accepted solver_add_liquidity request into pending queue (request_id={}, status={}, ts={})",
+                    request_id, status, timestamp_ms
+                );
             }
             GossipsubMessage::PeerDiscovered {
                 peer,
@@ -971,7 +1034,8 @@ impl MpcNetworkLayer {
                         // Contract sequencer removed
 
                         // Update signing node threshold to match current network state
-                        if let Some(signing_node) = &mut self.signing_node {
+                        if let Some(arc) = &self.signing_node {
+                            let mut signing_node = arc.lock().await;
                             let new_threshold = self.node_manager.get_threshold();
                             signing_node.set_threshold(new_threshold);
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
@@ -1002,16 +1066,15 @@ impl MpcNetworkLayer {
                 node_id,
             } => {
                 debug!(
-                    "✅ [RETRY] Received ACK for message type {} (id: {}) from {}",
-                    message_type, message_id, node_id
+                    "[RETRY] Received ACK from {} for message type: {}, id: {}",
+                    node_id, message_type, message_id
                 );
 
                 // Parse message type and create message ID
                 let msg_type = match message_type.as_str() {
                     "TransactionIdBroadcast" => crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast,
-                    "VrfSelectedNodes" => crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes,
                     _ => {
-                        debug!("⚠️ [RETRY] Unknown message type in ACK: {}", message_type);
+                        debug!("[RETRY] Unknown message type in ACK: {}", message_type);
                         return Ok(());
                     }
                 };
@@ -1021,33 +1084,24 @@ impl MpcNetworkLayer {
                     unique_id: message_id.clone(),
                 };
 
-                debug!(
-                    "🔍 [RETRY] Processing ACK: type={:?}, id={}, from={}",
-                    msg_type, message_id, node_id
-                );
-
                 // Record acknowledgment
                 if let Some(retry_mgr) = &self.retry_manager {
                     match retry_mgr
-                        .record_acknowledgment(&message_id_obj, node_id)
+                        .record_acknowledgment(&message_id_obj, node_id.clone())
                         .await
                     {
-                        Ok(true) => {
-                            debug!("🎉 [RETRY] ACK recorded - all nodes have acknowledged!");
-                        }
-                        Ok(false) => {
-                            debug!("📝 [RETRY] ACK recorded - still waiting for more nodes");
+                        Ok(all_acked) => {
+                            if all_acked {
+                                debug!("[RETRY] All nodes acknowledged message {}", message_id);
+                            }
                         }
                         Err(e) => {
-                            debug!("❌ [RETRY] Failed to record acknowledgment: {}", e);
-                            debug!(
-                                "❌ [RETRY] This ACK from {} for message {} was NOT recorded!",
-                                node_id, message_id
+                            warn!(
+                                "[RETRY] Failed to record ACK from {} for {}: {}",
+                                node_id, message_id, e
                             );
                         }
                     }
-                } else {
-                    debug!("⚠️ [RETRY] Retry manager not available - ACK not recorded");
                 }
             }
             GossipsubMessage::VersionAnnouncement {
@@ -1085,6 +1139,7 @@ impl MpcNetworkLayer {
                 if let Some(request_id) = sequencer_request_id {
                     info!("📝 [TX_BROADCAST] Request ID: {}", request_id);
                 }
+                // Note: add_liquidity status tracking happens via TransactionIdBroadcast, not here
             }
             GossipsubMessage::IntentBatchBroadcast {
                 intent_hashes,
@@ -1103,11 +1158,6 @@ impl MpcNetworkLayer {
                     timestamp,
                     intent_hashes.len()
                 );
-
-                // Log the intent hashes
-                for (i, hash) in intent_hashes.iter().enumerate() {
-                    info!("  📋 [BATCH] Intent {}: {}", i + 1, hash);
-                }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
                 let mut intent_data = Vec::new();
@@ -1263,7 +1313,10 @@ impl MpcNetworkLayer {
                         {
                             Ok(utxos) => utxos,
                             Err(e) => {
-                                error!("❌ [BATCH] Failed to fetch UTXOs for network vault: {}", e);
+                                error!(
+                                    "❌ [BATCH] Failed to fetch UTXOs for liquidity operator: {}",
+                                    e
+                                );
                                 return Ok(());
                             }
                         };
@@ -1393,7 +1446,8 @@ impl MpcNetworkLayer {
                         info!("🔄 [BATCH] Converted to internal BitcoinTransaction type");
 
                         // Step 8: Trigger signing using existing flow
-                        if let Some(signing_node) = &mut self.signing_node {
+                        if let Some(arc) = &self.signing_node {
+                            let mut signing_node = arc.lock().await;
                             let mut chain_handler_box = crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
                                 crate::types::network::network_type().bitcoin_network_label().to_string()
                             );
@@ -1445,7 +1499,7 @@ impl MpcNetworkLayer {
                             );
 
                             use crate::signing::chains::BitcoinSigner;
-                            let mut btc_signer = BitcoinSigner::new(signing_node);
+                            let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                             btc_signer
                                 .sign_transaction(
                                     tx_bytes,
@@ -1474,7 +1528,7 @@ impl MpcNetworkLayer {
                         let mut batch_intent_inputs = Vec::new();
 
                         for (intent_hash, intent) in &batch_intents {
-                            let amount = match intent.amount.parse::<u128>() {
+                            let source_amount = match intent.amount.parse::<u128>() {
                                 Ok(amt) => amt,
                                 Err(e) => {
                                     warn!(
@@ -1484,6 +1538,10 @@ impl MpcNetworkLayer {
                                     continue;
                                 }
                             };
+                            let target_amount = user_intent_manager
+                                .get_intent_target_amount(intent_hash)
+                                .await
+                                .unwrap_or(source_amount);
 
                             // Get UserToVault transaction hash for this intent, if available
                             let tx_ids = user_intent_manager
@@ -1508,7 +1566,8 @@ impl MpcNetworkLayer {
                                 target_address: intent.target_address.clone(),
                                 source_chain: intent.source_chain.clone(),
                                 target_chain: intent.target_chain.clone(),
-                                amount,
+                                source_amount,
+                                target_amount,
                                 source_token: intent.source_token.clone(),
                                 target_token: intent.target_token.clone(),
                                 intent_id: intent_hash.clone(),
@@ -1524,14 +1583,13 @@ impl MpcNetworkLayer {
                             batch_intent_inputs.len()
                         );
 
-                        // Create processBatchIntents calldata
-                        let batch_timestamp = chrono::Utc::now().timestamp().to_string();
-
+                        // Create processBatchIntents calldata using timestamp from the batch broadcast
+                        // so all nodes build the same calldata and tx digest.
                         if let Some(calldata) =
                             crate::utils::transaction::encode_process_batch_intents_calldata(
                                 &batch_intent_inputs,
                                 crate::types::BatchType::TICS,
-                                &batch_timestamp,
+                                &timestamp,
                             )
                         {
                             info!(
@@ -1614,7 +1672,8 @@ impl MpcNetworkLayer {
                             };
 
                             // Start MPC signing
-                            if let Some(signing_node) = &mut self.signing_node {
+                            if let Some(arc) = &self.signing_node {
+                                let mut signing_node = arc.lock().await;
                                 let available_nodes: Vec<PeerId> =
                                     self.node_manager.get_active_nodes().into_iter().collect();
                                 signing_node.set_available_nodes(available_nodes);
@@ -1637,7 +1696,7 @@ impl MpcNetworkLayer {
                                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                                 let contract_chain_handler =
                                     signing_node.get_contract_chain_handler().clone();
-                                let mut eth_signer = EthereumSigner::new(signing_node);
+                                let mut eth_signer = EthereumSigner::new(&mut signing_node);
                                 eth_signer
                                     .sign_contract_message(
                                         contract_tx_bytes,
@@ -1650,6 +1709,8 @@ impl MpcNetworkLayer {
                                         secret_share,
                                         None,
                                         None,
+                                        None, // tics_withdraw_identifiers (not applicable)
+                                        None, // tics_claim_reward_identifiers (not applicable)
                                     )
                                     .await?;
 
@@ -1676,6 +1737,1836 @@ impl MpcNetworkLayer {
                     warn!("❌ [BATCH] User intent manager not available");
                 }
             }
+            GossipsubMessage::TicsUserToVaultIntentBatch {
+                intent_hashes,
+                round,
+                timestamp: _,
+                node_id,
+            } => {
+                info!(
+                    "📦 [TICS_UTV_BATCH] Received TICS UserToVault intent batch from node {} (round {}, {} intents)",
+                    node_id, round, intent_hashes.len()
+                );
+
+                // Keep sliding window in sync on all nodes so when any node becomes final it excludes last N batches
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.record_tics_user_to_vault_batch(&intent_hashes);
+                }
+
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(user) = user_intent_manager
+                            .get_user_by_intent_hash(intent_hash)
+                            .await
+                        {
+                            if let Err(e) = user_intent_manager
+                                .update_intent_status(
+                                    &user.ethereum_address,
+                                    intent_hash,
+                                    IntentStatus::Batched,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Failed to mark intent {} as Batched on receive: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+                    }
+
+                    let mut batch_intents = Vec::new();
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            let tx_ids = user_intent_manager
+                                .get_intent_transaction_ids(intent_hash)
+                                .await;
+                            let no_user_tx = tx_ids
+                                .as_ref()
+                                .map(|ids| ids.user_to_network_tx_id.is_none())
+                                .unwrap_or(true);
+                            if !no_user_tx {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} already has UserToVault tx, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            let source_ok = intent.source_chain.eq_ignore_ascii_case("tics")
+                                || intent.source_chain.eq_ignore_ascii_case("qubetics");
+                            if !source_ok {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} source_chain is not TICS, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_intent_hash(intent_hash)
+                                .await
+                            {
+                                batch_intents.push((
+                                    intent_hash.clone(),
+                                    intent,
+                                    user.ethereum_address,
+                                ));
+                            } else {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} has no registered user, skipping",
+                                    intent_hash
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [TICS_UTV_BATCH] Intent {} not found in database",
+                                intent_hash
+                            );
+                        }
+                    }
+
+                    if batch_intents.is_empty() {
+                        warn!("⚠️ [TICS_UTV_BATCH] No valid TICS UserToVault intents to process");
+                        return Ok(());
+                    }
+
+                    info!(
+                        "✅ [TICS_UTV_BATCH] Fetched {} intents for TICS UserToVault batch (round {})",
+                        batch_intents.len(),
+                        round
+                    );
+
+                    // One VRF round; batch stored and signed per-slot; final node aggregates each slot and broadcasts one-by-one.
+                    // UserToVault on TICS: from user derived_eth -> to treasury vault (env); liquidity_operator_eth is fallback. No group key or BTC addr needed.
+                    let liquidity_operator_eth_addr = user_intent_manager
+                        .get_database()
+                        .get_string(crate::database::keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)
+                        .ok()
+                        .flatten();
+
+                    let mut batch: Vec<(
+                        String,
+                        String,
+                        crate::chain_abstraction::ChainTransaction,
+                        Vec<u8>,
+                        Option<k256::Scalar>,
+                    )> = Vec::new();
+                    for (intent_hash, intent, user_eth_addr) in &batch_intents {
+                        let target_amount = user_intent_manager
+                            .get_intent_target_amount(intent_hash)
+                            .await
+                            .unwrap_or_else(|| intent.amount.parse().unwrap_or(0u128));
+                        let amount = target_amount + (target_amount / 20);
+
+                        let user =
+                            match user_intent_manager.get_user_by_address(user_eth_addr).await {
+                                Some(u) => u,
+                                None => {
+                                    warn!(
+                                        "⚠️ [TICS_UTV_BATCH] User {} not found for intent {}",
+                                        user_eth_addr, intent_hash
+                                    );
+                                    continue;
+                                }
+                            };
+                        let derived_eth_addr = user.derived_eth_address.clone();
+                        let derived_btc_addr = user.derived_btc_address.clone();
+
+                        let chain_tx_result =
+                            crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                                intent,
+                                None, // UserToVault on EVM does not use group key
+                                derived_eth_addr.as_ref(),
+                                derived_btc_addr.as_ref(),
+                                crate::types::TransactionType::UserToVault,
+                                liquidity_operator_eth_addr.as_ref(),
+                                None, // EVM only
+                                amount,
+                            )
+                            .await;
+
+                        let chain_transaction = match chain_tx_result {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                warn!(
+                                    "❌ [TICS_UTV_BATCH] Failed to create chain tx for intent {}: {}",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        let tx_bytes = match &chain_transaction {
+                            crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx) => {
+                                crate::utils::transaction::create_transaction_for_signing(eth_tx)
+                            }
+                            _ => {
+                                warn!(
+                                    "❌ [TICS_UTV_BATCH] Intent {} is not EVM (expected TICS)",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                        };
+
+                        let signing_key = self.get_signing_key_for_user(Some(user_eth_addr)).await;
+                        batch.push((
+                            intent_hash.clone(),
+                            user_eth_addr.clone(),
+                            chain_transaction,
+                            tx_bytes,
+                            signing_key,
+                        ));
+                    }
+
+                    if batch.is_empty() {
+                        warn!(
+                            "⚠️ [TICS_UTV_BATCH] No valid batch entries (missing users/keys/txs)"
+                        );
+                        return Ok(());
+                    }
+
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+
+                    if let Some(arc) = &self.signing_node {
+                        let mut signing_node = arc.lock().await;
+                        signing_node.set_available_nodes(available_nodes);
+
+                        use crate::signing::chains::EthereumSigner;
+                        let mut eth_signer = EthereumSigner::new(&mut signing_node);
+                        let n_slots = batch.len();
+                        if let Err(e) = eth_signer.sign_tics_user_to_vault_batch(round, batch).await
+                        {
+                            warn!(
+                                "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
+                                round, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
+                                round, n_slots
+                            );
+                        }
+                    } else {
+                        warn!("❌ [TICS_UTV_BATCH] Signing node not available");
+                    }
+                } else {
+                    warn!("❌ [TICS_UTV_BATCH] User intent manager not available");
+                }
+            }
+            GossipsubMessage::BtcUserToVaultIntentBatch {
+                intent_hashes,
+                round,
+                timestamp: _,
+                node_id,
+            } => {
+                info!(
+                    "📦 [BTC_UTV_BATCH] Received BTC UserToVault intent batch from node {} (round {}, {} intents)",
+                    node_id, round, intent_hashes.len()
+                );
+
+                // Keep sliding window in sync on all nodes so when any node becomes final it excludes last N batches
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.record_btc_user_to_vault_batch(&intent_hashes);
+                }
+
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(user) = user_intent_manager
+                            .get_user_by_intent_hash(intent_hash)
+                            .await
+                        {
+                            if let Err(e) = user_intent_manager
+                                .update_intent_status(
+                                    &user.ethereum_address,
+                                    intent_hash,
+                                    IntentStatus::Batched,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Failed to mark intent {} as Batched on receive: {}",
+                                    intent_hash, e
+                                );
+                            }
+                        }
+                    }
+
+                    let mut batch_intents = Vec::new();
+                    for intent_hash in intent_hashes.iter() {
+                        if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            let tx_ids = user_intent_manager
+                                .get_intent_transaction_ids(intent_hash)
+                                .await;
+                            let no_user_tx = tx_ids
+                                .as_ref()
+                                .map(|ids| ids.user_to_network_tx_id.is_none())
+                                .unwrap_or(true);
+                            if !no_user_tx {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} already has UserToVault tx, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            let source_ok = intent.source_chain.eq_ignore_ascii_case("bitcoin")
+                                || intent.source_chain.eq_ignore_ascii_case("btc");
+                            if !source_ok {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} source_chain is not Bitcoin, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_intent_hash(intent_hash)
+                                .await
+                            {
+                                batch_intents.push((
+                                    intent_hash.clone(),
+                                    intent,
+                                    user.ethereum_address,
+                                ));
+                            } else {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} has no registered user, skipping",
+                                    intent_hash
+                                );
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [BTC_UTV_BATCH] Intent {} not found in database",
+                                intent_hash
+                            );
+                        }
+                    }
+
+                    if batch_intents.is_empty() {
+                        warn!("⚠️ [BTC_UTV_BATCH] No valid BTC UserToVault intents to process");
+                        return Ok(());
+                    }
+
+                    info!(
+                        "✅ [BTC_UTV_BATCH] Fetched {} intents for BTC UserToVault batch (round {})",
+                        batch_intents.len(),
+                        round
+                    );
+
+                    // UserToVault on Bitcoin: from user derived_btc -> to network BTC address (where network BTC is held)
+                    let network_btc_addr = match &self.dkg_node {
+                        Some(dkg_node) => match dkg_node.get_final_public_key().await {
+                            Some(group_key) => {
+                                Some(crate::utils::get_btc_address_from_group_key(group_key))
+                            }
+                            None => {
+                                warn!("❌ [BTC_UTV_BATCH] Network group key not available; cannot derive network BTC address");
+                                return Ok(());
+                            }
+                        },
+                        None => {
+                            warn!("❌ [BTC_UTV_BATCH] DKG node not available");
+                            return Ok(());
+                        }
+                    };
+
+                    let mut batch: Vec<(
+                        String,
+                        String,
+                        crate::chain_abstraction::ChainTransaction,
+                        Vec<u8>,
+                        Option<k256::Scalar>,
+                    )> = Vec::new();
+                    for (intent_hash, intent, user_eth_addr) in &batch_intents {
+                        // For Bitcoin UserToVault, amount must be in satoshis (source chain).
+                        // intent.amount is in source-chain smallest units = satoshis for Bitcoin.
+                        // Do NOT use get_intent_target_amount — that is in target-chain units (e.g. wei for BTC->TICS).
+                        let amount_sats: u128 = intent.amount.parse().unwrap_or(0);
+                        let amount = amount_sats + (amount_sats / 20); // 5% buffer for fees
+
+                        let user =
+                            match user_intent_manager.get_user_by_address(user_eth_addr).await {
+                                Some(u) => u,
+                                None => {
+                                    warn!(
+                                        "⚠️ [BTC_UTV_BATCH] User {} not found for intent {}",
+                                        user_eth_addr, intent_hash
+                                    );
+                                    continue;
+                                }
+                            };
+                        let derived_eth_addr = user.derived_eth_address.clone();
+                        let derived_btc_addr = user.derived_btc_address.clone();
+
+                        let chain_tx_result =
+                            crate::utils::transaction::create_chain_transaction_from_deposit_intent(
+                                intent,
+                                None,
+                                derived_eth_addr.as_ref(),
+                                derived_btc_addr.as_ref(),
+                                crate::types::TransactionType::UserToVault,
+                                None, // ETH addr not used for Bitcoin chain
+                                network_btc_addr.as_ref(),
+                                amount,
+                            )
+                            .await;
+
+                        let chain_transaction = match chain_tx_result {
+                            Ok(tx) => tx,
+                            Err(e) => {
+                                warn!(
+                                    "❌ [BTC_UTV_BATCH] Failed to create chain tx for intent {}: {}",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        let tx_bytes: Vec<u8> = match &chain_transaction {
+                            crate::chain_abstraction::ChainTransaction::Bitcoin(_) => {
+                                vec![] // Digest is computed from chain_tx (sighash) in get_message_and_type
+                            }
+                            _ => {
+                                warn!("❌ [BTC_UTV_BATCH] Intent {} is not Bitcoin (expected Bitcoin)", intent_hash);
+                                continue;
+                            }
+                        };
+
+                        let signing_key = self.get_signing_key_for_user(Some(user_eth_addr)).await;
+                        batch.push((
+                            intent_hash.clone(),
+                            user_eth_addr.clone(),
+                            chain_transaction,
+                            tx_bytes,
+                            signing_key,
+                        ));
+                    }
+
+                    if batch.is_empty() {
+                        warn!("⚠️ [BTC_UTV_BATCH] No valid batch entries (missing users/keys/txs)");
+                        return Ok(());
+                    }
+
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+
+                    if let Some(arc) = &self.signing_node {
+                        let mut signing_node = arc.lock().await;
+                        signing_node.set_available_nodes(available_nodes);
+
+                        use crate::signing::chains::BitcoinSigner;
+                        let mut btc_signer = BitcoinSigner::new(&mut signing_node);
+                        let n_slots = batch.len();
+                        if let Err(e) = btc_signer.sign_btc_user_to_vault_batch(round, batch).await
+                        {
+                            warn!(
+                                "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
+                                round, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [BTC_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
+                                round, n_slots
+                            );
+                        }
+                    } else {
+                        warn!("❌ [BTC_UTV_BATCH] Signing node not available");
+                    }
+                } else {
+                    warn!("❌ [BTC_UTV_BATCH] User intent manager not available");
+                }
+            }
+            GossipsubMessage::BtcWithdrawBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::signing::chains::bitcoin_batch::{
+                    build_batch_unsigned_tx, select_utxos_for_batch,
+                };
+                use crate::signing::chains::bitcoin_batch::{BatchOutput, BatchPolicy, BatchUtxo};
+                use crate::types::rpc_server::PendingWithdrawRequest;
+
+                info!(
+                    "📦 [BTC_WITHDRAW] Received BTC withdraw batch {} from node {} (round {}, timestamp {})",
+                    batch_id, node_id, round, timestamp
+                );
+
+                // Load all pending withdraw records so we can look up each request
+                let db = &self.db;
+                let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
+                    match db.get_values_with_prefix("pending_withdraw_liquidity:") {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [BTC_WITHDRAW] Failed to load pending withdraw requests: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                // Build a lookup map keyed by (request_id, solver_address_lower)
+                let mut withdraw_map: std::collections::HashMap<
+                    (String, String),
+                    PendingWithdrawRequest,
+                > = std::collections::HashMap::new();
+                for (_key, req) in all_withdraws {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    withdraw_map.insert(key, req);
+                }
+
+                // Build BatchOutput list from BTC withdraw requests
+                let mut batch_outputs: Vec<BatchOutput> = Vec::new();
+                let mut used_requests: Vec<(String, String)> = Vec::new();
+
+                for (request_id, solver_address) in &requests {
+                    let key = (request_id.clone(), solver_address.to_lowercase());
+                    if let Some(req) = withdraw_map.get(&key) {
+                        // Only process BTC withdraws that are in strict Pending state and have no tx_id
+                        if req.asset.to_uppercase() != "BTC"
+                            || req.status != "Pending"
+                            || req.tx_id.is_some()
+                        {
+                            continue;
+                        }
+
+                        let btc_addr = match &req.btc_address {
+                            Some(addr) if !addr.trim().is_empty() => addr.clone(),
+                            _ => {
+                                warn!(
+                                    "⚠️ [BTC_WITHDRAW] Missing BTC address for withdraw request {} (solver={})",
+                                    request_id, solver_address
+                                );
+                                continue;
+                            }
+                        };
+
+                        let amount_sats: u64 = match req.amount.parse() {
+                            Ok(amt) => amt,
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [BTC_WITHDRAW] Invalid amount for withdraw request {}: {}",
+                                    request_id, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        if amount_sats < 546 {
+                            warn!(
+                                "⚠️ [BTC_WITHDRAW] Withdraw request {} amount {} sats is below dust threshold, skipping",
+                                request_id, amount_sats
+                            );
+                            continue;
+                        }
+
+                        batch_outputs.push(BatchOutput {
+                            address: btc_addr.clone(),
+                            amount: amount_sats,
+                        });
+                        used_requests.push((request_id.clone(), solver_address.clone()));
+
+                        info!(
+                            "💰 [BTC_WITHDRAW] Added output: {} sats to {} (request_id={}, solver={})",
+                            amount_sats, btc_addr, request_id, solver_address
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] Withdraw request {} for solver {} not found in DB",
+                            request_id, solver_address
+                        );
+                    }
+                }
+
+                if batch_outputs.is_empty() {
+                    warn!("⚠️ [BTC_WITHDRAW] No valid BTC withdraw outputs after filtering");
+                    return Ok(());
+                }
+
+                // Step 2: Get network's DKG Bitcoin address (where network BTC is stored)
+                let dkg_node = match &self.dkg_node {
+                    Some(node) => node,
+                    None => {
+                        error!("❌ [BTC_WITHDRAW] DKG node not available");
+                        return Ok(());
+                    }
+                };
+
+                let group_key = match dkg_node.get_final_public_key().await {
+                    Some(key) => key,
+                    None => {
+                        error!("❌ [BTC_WITHDRAW] Network group key not available");
+                        return Ok(());
+                    }
+                };
+
+                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+
+                info!(
+                    "🏦 [BTC_WITHDRAW] Using network BTC address for withdraw batch: {}",
+                    network_btc_address
+                );
+
+                // Step 3: Fetch network BTC UTXOs
+                let is_testnet = crate::types::network::network_type().is_testnet();
+                let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                    &network_btc_address,
+                    is_testnet,
+                )
+                .await
+                {
+                    Ok(utxos) => utxos,
+                    Err(e) => {
+                        error!(
+                            "❌ [BTC_WITHDRAW] Failed to fetch UTXOs for liquidity operator: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "📦 [BTC_WITHDRAW] Fetched {} UTXOs from liquidity operator for withdraw batch",
+                    utxos.len()
+                );
+
+                // Step 4: Convert BitcoinUtxo → BatchUtxo
+                let mut batch_utxos: Vec<BatchUtxo> = Vec::new();
+
+                let network_script_pubkey =
+                    match crate::utils::transaction::create_bitcoin_script_pubkey(
+                        &network_btc_address,
+                    ) {
+                        Ok(spk) => spk,
+                        Err(e) => {
+                            error!(
+                                "❌ [BTC_WITHDRAW] Failed to create script pubkey for network address: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                for utxo in utxos {
+                    if !utxo.status.confirmed {
+                        continue;
+                    }
+
+                    batch_utxos.push(BatchUtxo {
+                        txid: utxo.txid,
+                        vout: utxo.vout,
+                        value: utxo.value,
+                        script_pubkey: network_script_pubkey.clone(),
+                    });
+                }
+
+                info!(
+                    "✅ [BTC_WITHDRAW] Prepared {} confirmed UTXOs for withdraw batch selection",
+                    batch_utxos.len()
+                );
+
+                // Step 5: Select UTXOs for batch transaction
+                let policy = BatchPolicy {
+                    fee_rate: std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1),
+                    dust_threshold: 546,
+                    change_address: network_btc_address.clone(),
+                };
+
+                let selected = match select_utxos_for_batch(&batch_utxos, &batch_outputs, &policy) {
+                    Ok(sel) => sel,
+                    Err(e) => {
+                        error!("❌ [BTC_WITHDRAW] UTXO selection failed: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "💰 [BTC_WITHDRAW] Selected {} UTXOs: total={} sats, fee={} sats, change={} sats",
+                    selected.utxos.len(),
+                    selected.total_input_value,
+                    selected.fee,
+                    selected.change
+                );
+
+                // Step 6: Build unsigned transaction
+                let unsigned_tx = match build_batch_unsigned_tx(&selected, &batch_outputs, &policy)
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        error!(
+                            "❌ [BTC_WITHDRAW] Failed to build unsigned withdraw transaction: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "🔨 [BTC_WITHDRAW] Built unsigned withdraw transaction: {} inputs, {} outputs",
+                    unsigned_tx.input.len(),
+                    unsigned_tx.output.len()
+                );
+
+                // Step 7: Convert to internal BitcoinTransaction type
+                let mut our_inputs = Vec::new();
+                for (i, tx_in) in unsigned_tx.input.iter().enumerate() {
+                    our_inputs.push(crate::types::BitcoinInput {
+                        txid: tx_in.previous_output.txid.to_string(),
+                        vout: tx_in.previous_output.vout,
+                        script_sig: vec![],
+                        sequence: tx_in.sequence.0,
+                        witness_utxo: Some(crate::types::BitcoinWitnessUtxo {
+                            value: selected.utxos[i].value,
+                            script_pubkey: selected.utxos[i].script_pubkey.clone(),
+                        }),
+                    });
+                }
+
+                let mut our_outputs = Vec::new();
+                for tx_out in &unsigned_tx.output {
+                    our_outputs.push(crate::types::BitcoinOutput {
+                        value: tx_out.value.to_sat(),
+                        script_pubkey: tx_out.script_pubkey.as_bytes().to_vec(),
+                    });
+                }
+
+                let our_btc_tx = crate::types::BitcoinTransaction {
+                    version: unsigned_tx.version.0 as u32,
+                    inputs: our_inputs,
+                    outputs: our_outputs,
+                    lock_time: unsigned_tx.lock_time.to_consensus_u32(),
+                    witness: None,
+                };
+
+                info!("🔄 [BTC_WITHDRAW] Converted to internal BitcoinTransaction type");
+
+                // Step 8: Trigger signing using existing BTC batch signing flow
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let mut chain_handler_box =
+                        crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                            crate::types::network::network_type()
+                                .bitcoin_network_label()
+                                .to_string(),
+                        );
+
+                    // Set network's DKG group key
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(group_key) = dkg_node.get_final_public_key().await {
+                            let affine_point = group_key.to_affine();
+                            let encoded_point = k256::EncodedPoint::from(affine_point);
+                            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                            if let Some(btc_handler) = chain_handler_box
+                                .as_any_mut()
+                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
+                            ) {
+                                btc_handler.set_group_public_key(compressed_bytes);
+                                info!("🔑 [BTC_WITHDRAW] Set network DKG group public key");
+                            }
+                        }
+                    }
+
+                    let chain_handler: std::sync::Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        std::sync::Arc::from(chain_handler_box);
+
+                    let tx_bytes = chain_handler.create_transaction_bytes(
+                        &crate::chain_abstraction::ChainTransaction::Bitcoin(our_btc_tx.clone()),
+                    )?;
+
+                    let signing_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+
+                    info!("🔐 [BTC_WITHDRAW] Starting Bitcoin withdraw batch signing process...");
+
+                    // Encode batch metadata as "request_id|solver_address" per entry so the
+                    // signing layer can stash it in `withdraw_pending_transactions_btc`.
+                    let withdraw_identifiers: Vec<String> = used_requests
+                        .iter()
+                        .map(|(req_id, solver_addr)| {
+                            format!("{}|{}", req_id, solver_addr.to_lowercase())
+                        })
+                        .collect();
+
+                    use crate::signing::chains::BitcoinSigner;
+                    let mut btc_signer = BitcoinSigner::new(&mut signing_node);
+                    btc_signer
+                        .sign_transaction(
+                            tx_bytes,
+                            &chain_handler,
+                            Some(our_btc_tx),
+                            None, // No user eth address
+                            withdraw_identifiers,
+                            Some(crate::types::TransactionType::WithdrawLiquidity),
+                            signing_key,
+                            None, // No per-withdraw solver address; encoded in identifiers
+                            signing_key,
+                        )
+                        .await?;
+
+                    info!("✅ [BTC_WITHDRAW] Bitcoin withdraw batch transaction signing initiated");
+                } else {
+                    error!("❌ [BTC_WITHDRAW] Signing node not available");
+                }
+            }
+            GossipsubMessage::BtcClaimRewardBatch {
+                batch_id,
+                requests,
+                round: _round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                use crate::signing::chains::bitcoin_batch::{
+                    build_batch_unsigned_tx, select_utxos_for_batch,
+                };
+                use crate::signing::chains::bitcoin_batch::{BatchOutput, BatchPolicy, BatchUtxo};
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+                use ethers::types::Address;
+
+                info!(
+                    "📦 [BTC_CLAIM_REWARD] Received BTC claim-reward batch {} from node {} (timestamp {})",
+                    batch_id, node_id, timestamp
+                );
+
+                let db = &self.db;
+                let all_claims: Vec<(String, PendingClaimRewardRequest)> = match db
+                    .get_values_with_prefix("pending_claim_reward:")
+                {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Failed to load pending claim reward requests: {}",
+                                e
+                            );
+                        return Ok(());
+                    }
+                };
+
+                let mut claim_map: std::collections::HashMap<
+                    (String, String),
+                    PendingClaimRewardRequest,
+                > = std::collections::HashMap::new();
+                for (_key, req) in all_claims {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    claim_map.insert(key, req);
+                }
+
+                let mut batch_outputs: Vec<BatchOutput> = Vec::new();
+                let mut used_requests: Vec<(String, String)> = Vec::new();
+
+                for (request_id, solver_address) in &requests {
+                    let key = (request_id.clone(), solver_address.to_lowercase());
+                    let req = match claim_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Claim request {} for solver {} not found in DB",
+                                request_id, solver_address
+                            );
+                            continue;
+                        }
+                    };
+                    if req.status != "Pending" || req.tx_id.is_some() {
+                        continue;
+                    }
+                    let btc_addr = match &req.btc_address {
+                        Some(addr) if !addr.trim().is_empty() => addr.clone(),
+                        _ => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_REWARD] Missing BTC address for claim request {} (solver={})",
+                                request_id, solver_address
+                            );
+                            continue;
+                        }
+                    };
+
+                    let solver_addr = solver_address
+                        .parse::<Address>()
+                        .map_err(|_| anyhow::anyhow!("invalid solver address {}", solver_address));
+                    let solver_addr = match solver_addr {
+                        Ok(a) => a,
+                        Err(_) => continue,
+                    };
+
+                    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+                        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                    let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                        .unwrap_or_else(|_| {
+                            "0x0000000000000000000000000000000000000000".to_string()
+                        });
+                    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(9029);
+                    if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                        warn!("⚠️ [BTC_CLAIM_REWARD] Solver contract not configured; skipping unclaimed fetch");
+                        continue;
+                    }
+                    let contract_address = match contract_address_env.parse::<Address>() {
+                        Ok(a) => a,
+                        Err(_) => continue,
+                    };
+                    let config = ContractConfig {
+                        rpc_url: rpc_url.clone(),
+                        contract_address,
+                        chain_id,
+                    };
+                    let client = match ContractClient::new(config.clone()) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let contract = match SolverManagerContract::new(&config, client.provider()) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let solver_id = match contract.get_solver_id(solver_addr).await {
+                        Ok(id) if !id.trim().is_empty() => id,
+                        _ => continue,
+                    };
+                    let rewards = match contract
+                        .get_solvers_unclaimed_rewards(vec![solver_id.clone()])
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let btc_unclaimed = rewards
+                        .first()
+                        .map(|r| r.1)
+                        .unwrap_or(ethers::types::U256::zero());
+                    let amount_sats: u64 = btc_unclaimed.as_u64();
+                    if amount_sats < 546 {
+                        continue;
+                    }
+                    batch_outputs.push(BatchOutput {
+                        address: btc_addr.clone(),
+                        amount: amount_sats,
+                    });
+                    used_requests.push((request_id.clone(), solver_address.clone()));
+                }
+
+                if batch_outputs.is_empty() {
+                    warn!("⚠️ [BTC_CLAIM_REWARD] No valid claim-reward outputs after filtering");
+                    return Ok(());
+                }
+
+                let dkg_node = match &self.dkg_node {
+                    Some(node) => node,
+                    None => {
+                        error!("❌ [BTC_CLAIM_REWARD] DKG node not available");
+                        return Ok(());
+                    }
+                };
+                let group_key = match dkg_node.get_final_public_key().await {
+                    Some(key) => key,
+                    None => {
+                        error!("❌ [BTC_CLAIM_REWARD] Network group key not available");
+                        return Ok(());
+                    }
+                };
+                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+
+                let is_testnet = crate::types::network::network_type().is_testnet();
+                let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                    &network_btc_address,
+                    is_testnet,
+                )
+                .await
+                {
+                    Ok(utxos) => utxos,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] Failed to fetch UTXOs: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let mut batch_utxos: Vec<BatchUtxo> = Vec::new();
+                let network_script_pubkey =
+                    match crate::utils::transaction::create_bitcoin_script_pubkey(
+                        &network_btc_address,
+                    ) {
+                        Ok(spk) => spk,
+                        Err(e) => {
+                            error!(
+                                "❌ [BTC_CLAIM_REWARD] Failed to create script pubkey: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+                for utxo in utxos {
+                    if !utxo.status.confirmed {
+                        continue;
+                    }
+                    batch_utxos.push(BatchUtxo {
+                        txid: utxo.txid,
+                        vout: utxo.vout,
+                        value: utxo.value,
+                        script_pubkey: network_script_pubkey.clone(),
+                    });
+                }
+
+                let policy = BatchPolicy {
+                    fee_rate: std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1),
+                    dust_threshold: 546,
+                    change_address: network_btc_address.clone(),
+                };
+
+                let selected = match select_utxos_for_batch(&batch_utxos, &batch_outputs, &policy) {
+                    Ok(sel) => sel,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] UTXO selection failed: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let unsigned_tx = match build_batch_unsigned_tx(&selected, &batch_outputs, &policy)
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] Failed to build unsigned tx: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let mut our_inputs = Vec::new();
+                for (i, tx_in) in unsigned_tx.input.iter().enumerate() {
+                    our_inputs.push(crate::types::BitcoinInput {
+                        txid: tx_in.previous_output.txid.to_string(),
+                        vout: tx_in.previous_output.vout,
+                        script_sig: vec![],
+                        sequence: tx_in.sequence.0,
+                        witness_utxo: Some(crate::types::BitcoinWitnessUtxo {
+                            value: selected.utxos[i].value,
+                            script_pubkey: selected.utxos[i].script_pubkey.clone(),
+                        }),
+                    });
+                }
+                let mut our_outputs = Vec::new();
+                for tx_out in &unsigned_tx.output {
+                    our_outputs.push(crate::types::BitcoinOutput {
+                        value: tx_out.value.to_sat(),
+                        script_pubkey: tx_out.script_pubkey.as_bytes().to_vec(),
+                    });
+                }
+                let our_btc_tx = crate::types::BitcoinTransaction {
+                    version: unsigned_tx.version.0 as u32,
+                    inputs: our_inputs,
+                    outputs: our_outputs,
+                    lock_time: unsigned_tx.lock_time.to_consensus_u32(),
+                    witness: None,
+                };
+
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let mut chain_handler_box =
+                        crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                            crate::types::network::network_type()
+                                .bitcoin_network_label()
+                                .to_string(),
+                        );
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(group_key) = dkg_node.get_final_public_key().await {
+                            let affine_point = group_key.to_affine();
+                            let encoded_point = k256::EncodedPoint::from(affine_point);
+                            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+                            if let Some(btc_handler) = chain_handler_box
+                                .as_any_mut()
+                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
+                            ) {
+                                btc_handler.set_group_public_key(compressed_bytes);
+                            }
+                        }
+                    }
+                    let chain_handler: std::sync::Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        std::sync::Arc::from(chain_handler_box);
+                    let tx_bytes = chain_handler.create_transaction_bytes(
+                        &crate::chain_abstraction::ChainTransaction::Bitcoin(our_btc_tx.clone()),
+                    )?;
+                    let signing_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+                    let claim_reward_identifiers: Vec<String> = used_requests
+                        .iter()
+                        .map(|(req_id, solver_addr)| {
+                            format!("{}|{}", req_id, solver_addr.to_lowercase())
+                        })
+                        .collect();
+                    use crate::signing::chains::BitcoinSigner;
+                    let mut btc_signer = BitcoinSigner::new(&mut signing_node);
+                    btc_signer
+                        .sign_transaction(
+                            tx_bytes,
+                            &chain_handler,
+                            Some(our_btc_tx),
+                            None,
+                            claim_reward_identifiers,
+                            Some(crate::types::TransactionType::ClaimReward),
+                            signing_key,
+                            None,
+                            signing_key,
+                        )
+                        .await?;
+                    info!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
+                } else {
+                    error!("❌ [BTC_CLAIM_REWARD] Signing node not available");
+                }
+            }
+            GossipsubMessage::TicsWithdrawBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::types::rpc_server::PendingWithdrawRequest;
+                use crate::utils::transaction::RemoveLiquidityBatchRequest;
+                use ethers::types::U256;
+
+                info!(
+                    "📦 [TICS_WITHDRAW] Received TICS withdraw batch {} from node {} (round {}, timestamp {})",
+                    batch_id, node_id, round, timestamp
+                );
+
+                if requests.is_empty() {
+                    info!("ℹ️  [TICS_WITHDRAW] Empty TicsWithdrawBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                // Load all pending withdraw records so we can look up each request
+                let db = &self.db;
+                let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
+                    match db.get_values_with_prefix("pending_withdraw_liquidity:") {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to load pending withdraw requests: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                // Build a lookup map keyed by (request_id, solver_address_lower)
+                let mut withdraw_map: std::collections::HashMap<
+                    (String, String),
+                    PendingWithdrawRequest,
+                > = std::collections::HashMap::new();
+                for (_key, req) in all_withdraws {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    withdraw_map.insert(key, req);
+                }
+
+                // Accept both Pending and Batched (epoch 3 marks as Batched before sending)
+                let is_pending_or_batched = |s: &str| s == "Pending" || s == "Batched";
+
+                // 1) Aggregate TICS withdraw amount per solver (all solvers in the batch)
+                let mut per_solver_tics: std::collections::HashMap<String, U256> =
+                    std::collections::HashMap::new();
+
+                // 2) Collect BTC requests that have tx_id (for contract registration)
+                let mut btc_entries: Vec<(String, String, U256)> = Vec::new(); // (solver_address_lower, tx_id, amount)
+                                                                               // 3) Collect "request_id|solver_address" for all requests included in this batch (for tx-id broadcast)
+                let mut used_identifiers: Vec<String> = Vec::new();
+
+                for entry in &requests {
+                    let key = (
+                        entry.request_id.clone(),
+                        entry.solver_address.to_lowercase(),
+                    );
+                    let req = match withdraw_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Withdraw request {} for solver {} not found in DB",
+                                entry.request_id, entry.solver_address
+                            );
+                            continue;
+                        }
+                    };
+
+                    if !is_pending_or_batched(&req.status) {
+                        continue;
+                    }
+
+                    let amount_u256 = match U256::from_dec_str(&req.amount) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Invalid amount for request {}: {}",
+                                req.request_id, e
+                            );
+                            continue;
+                        }
+                    };
+
+                    if req.asset.to_uppercase() == "TICS" {
+                        if amount_u256.is_zero() {
+                            continue;
+                        }
+                        used_identifiers
+                            .push(format!("{}|{}", entry.request_id, entry.solver_address));
+                        let solver_key = req.solver_address.to_lowercase();
+                        let agg = per_solver_tics
+                            .entry(solver_key.clone())
+                            .or_insert(U256::zero());
+                        *agg += amount_u256;
+                        info!(
+                            "💧 [TICS_WITHDRAW] Aggregated TICS {} for solver {} from request {}",
+                            amount_u256, solver_key, req.request_id
+                        );
+                    } else if req.asset.to_uppercase() == "BTC" {
+                        // Include BTC requests that already have tx_id (funds sent; register on contract)
+                        let tx_id = match &req.tx_id {
+                            Some(id) if !id.is_empty() => id.clone(),
+                            _ => continue,
+                        };
+                        used_identifiers
+                            .push(format!("{}|{}", entry.request_id, entry.solver_address));
+                        btc_entries.push((req.solver_address.to_lowercase(), tx_id, amount_u256));
+                        info!(
+                            "💧 [TICS_WITHDRAW] Including BTC request {} for solver {} (tx_id={}, amount={})",
+                            req.request_id, req.solver_address, req.tx_id.as_deref().unwrap_or(""), amount_u256
+                        );
+                    }
+                }
+
+                // Build single removeLiquidity batch: TICS entries (aggregated per solver) + BTC entries (one per request with tx_id)
+                let mut batch_requests: Vec<RemoveLiquidityBatchRequest> = Vec::new();
+
+                for (solver_address_lower, total_amount) in &per_solver_tics {
+                    if total_amount.is_zero() {
+                        continue;
+                    }
+                    let solver_id =
+                        match self.fetch_solver_id_for_address(solver_address_lower).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                warn!(
+                                "⚠️ [TICS_WITHDRAW] Unable to fetch solver ID for {}: {}; skipping",
+                                solver_address_lower, e
+                            );
+                                continue;
+                            }
+                        };
+                    batch_requests.push((
+                        solver_id,
+                        *total_amount,
+                        1u8, // chainType TICS
+                        batch_id.clone(),
+                    ));
+                }
+
+                for (solver_address_lower, tx_id, amount) in &btc_entries {
+                    let solver_id = match self
+                        .fetch_solver_id_for_address(solver_address_lower)
+                        .await
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Unable to fetch solver ID for {} (BTC): {}; skipping",
+                                solver_address_lower, e
+                            );
+                            continue;
+                        }
+                    };
+                    batch_requests.push((
+                        solver_id,
+                        *amount,
+                        0u8, // chainType BTC
+                        tx_id.clone(),
+                    ));
+                }
+
+                if batch_requests.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_WITHDRAW] No valid TICS or BTC withdraw entries to process for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "📦 [TICS_WITHDRAW] Built removeLiquidity batch: {} entries (TICS solvers={}, BTC entries={})",
+                    batch_requests.len(),
+                    per_solver_tics.len(),
+                    btc_entries.len()
+                );
+
+                // Get DKG node and vault group key for liquidity operator address
+                let dkg_node = if let Some(node) = &self.dkg_node {
+                    node
+                } else {
+                    warn!(
+                        "❌ [TICS_WITHDRAW] Cannot process TICS withdraw batch - DKG node unavailable"
+                    );
+                    return Ok(());
+                };
+
+                let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+                    key
+                } else {
+                    warn!(
+                        "❌ [TICS_WITHDRAW] Liquidity operator group key unavailable; cannot derive address"
+                    );
+                    return Ok(());
+                };
+
+                let liquidity_operator_address =
+                    crate::utils::get_eth_address_from_group_key(group_public_key);
+
+                let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                if contract_address == "0x0000000000000000000000000000000000000000" {
+                    warn!(
+                        "⏭️ [TICS_WITHDRAW] Skipping TICS withdraw batch {} - solver contract address not configured",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .unwrap_or_else(|_| "9029".to_string())
+                    .parse::<u64>()
+                    .unwrap_or(9029);
+                let contract_chain_name = if contract_chain_id == 9029 {
+                    "qubetics"
+                } else {
+                    "ethereum"
+                };
+
+                // One removeLiquidity tx for the entire batch (all TICS + all BTC with tx_id)
+                let eth_tx =
+                    crate::utils::transaction::create_solver_remove_liquidity_batch_transaction(
+                        &liquidity_operator_address,
+                        &batch_requests,
+                        &batch_id,
+                        &contract_address,
+                        contract_chain_id,
+                        contract_chain_name,
+                    )
+                    .await?;
+
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+                    if let Some(ref _secret_share) = vault_tweaked_share {
+                        signing_node.set_vault_group_key(group_public_key);
+
+                        let contract_tx = crate::types::intent::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx
+                                .data
+                                .as_ref()
+                                .map(|d| format!("0x{}", hex::encode(d)))
+                                .unwrap_or_else(|| "0x".to_string()),
+                        };
+
+                        let contract_tx_bytes =
+                            crate::utils::transaction::create_transaction_for_signing_contract(
+                                &contract_tx,
+                            );
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
+                        let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+
+                        eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share.clone(),
+                                None,
+                                vec![],
+                                vault_tweaked_share,
+                                None,
+                                None,
+                                Some(used_identifiers.clone()), // for tx-id broadcast to update each request
+                                None, // tics_claim_reward_identifiers (not applicable)
+                            )
+                            .await?;
+
+                        info!(
+                            "✅ [TICS_WITHDRAW] Submitted single removeLiquidity batch transaction ({} entries) into MPC signing flow",
+                            batch_requests.len()
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Skipping removeLiquidity batch - missing vault secret share"
+                        );
+                    }
+                } else {
+                    warn!("❌ [TICS_WITHDRAW] Signing node unavailable for TICS withdraw batch");
+                }
+            }
+            GossipsubMessage::TicsClaimRewardBatch {
+                batch_id,
+                requests,
+                round: _round,
+                timestamp,
+                node_id,
+            } => {
+                use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+                use crate::utils::transaction::{
+                    create_solver_claim_rewards_batch_transaction, RewardClaimBatchEntry,
+                };
+                use ethers::types::{Address, U256};
+
+                info!(
+                    "📦 [TICS_CLAIM_REWARD] Received TICS claim-reward batch {} from node {} (timestamp {})",
+                    batch_id, node_id, timestamp
+                );
+
+                if requests.is_empty() {
+                    info!("ℹ️  [TICS_CLAIM_REWARD] Empty TicsClaimRewardBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                let db = &self.db;
+                let all_claims: Vec<(String, PendingClaimRewardRequest)> = match db
+                    .get_values_with_prefix("pending_claim_reward:")
+                {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Failed to load pending claim reward requests: {}",
+                                e
+                            );
+                        return Ok(());
+                    }
+                };
+
+                let mut claim_map: std::collections::HashMap<
+                    (String, String),
+                    PendingClaimRewardRequest,
+                > = std::collections::HashMap::new();
+                for (_key, req) in all_claims {
+                    let key = (req.request_id.clone(), req.solver_address.to_lowercase());
+                    claim_map.insert(key, req);
+                }
+
+                let is_pending_or_batched = |s: &str| s == "Pending" || s == "Batched";
+
+                // Aggregate TICS unclaimed per solver (solver_address -> amount)
+                let mut per_solver_tics: std::collections::HashMap<String, U256> =
+                    std::collections::HashMap::new();
+                // All request identifiers for tx-id broadcast (request_id|solver_address)
+                let mut used_identifiers: Vec<String> = Vec::new();
+
+                // Collect unique TICS solver addresses and their request identifiers
+                let mut tics_solver_addresses: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                for entry in &requests {
+                    let key = (
+                        entry.request_id.clone(),
+                        entry.solver_address.to_lowercase(),
+                    );
+                    let req = match claim_map.get(&key) {
+                        Some(r) => r,
+                        None => {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Claim request {} for solver {} not found in DB",
+                                entry.request_id, entry.solver_address
+                            );
+                            continue;
+                        }
+                    };
+                    if !is_pending_or_batched(&req.status) {
+                        continue;
+                    }
+                    used_identifiers.push(format!("{}|{}", entry.request_id, entry.solver_address));
+
+                    let has_eth = req
+                        .ethereum_address
+                        .as_ref()
+                        .map_or(false, |a| !a.trim().is_empty());
+                    if has_eth {
+                        tics_solver_addresses.insert(entry.solver_address.to_lowercase());
+                    }
+                }
+
+                if tics_solver_addresses.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_REWARD] No TICS claim requests to process for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                // Fetch unclaimed TICS per solver via contract
+                let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+                    .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(9029);
+                if contract_address_env == "0x0000000000000000000000000000000000000000" {
+                    warn!("⚠️ [TICS_CLAIM_REWARD] Solver contract not configured; skipping");
+                    return Ok(());
+                }
+                let contract_address = match contract_address_env.parse::<Address>() {
+                    Ok(a) => a,
+                    Err(_) => {
+                        warn!("⚠️ [TICS_CLAIM_REWARD] Invalid solver contract address");
+                        return Ok(());
+                    }
+                };
+                let config = ContractConfig {
+                    rpc_url: rpc_url.clone(),
+                    contract_address,
+                    chain_id,
+                };
+                let client = match ContractClient::new(config.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("⚠️ [TICS_CLAIM_REWARD] Contract client failed: {}", e);
+                        return Ok(());
+                    }
+                };
+                let contract = match SolverManagerContract::new(&config, client.provider()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_REWARD] SolverManagerContract::new failed: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                for solver_address_lower in &tics_solver_addresses {
+                    let solver_id = match self
+                        .fetch_solver_id_for_address(solver_address_lower)
+                        .await
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [TICS_CLAIM_REWARD] Unable to fetch solver ID for {}: {}; skipping",
+                                solver_address_lower, e
+                            );
+                            continue;
+                        }
+                    };
+                    let rewards = match contract
+                        .get_solvers_unclaimed_rewards(vec![solver_id.clone()])
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let tics_unclaimed = rewards.first().map(|r| r.2).unwrap_or(U256::zero());
+                    if tics_unclaimed.is_zero() {
+                        continue;
+                    }
+                    per_solver_tics.insert(solver_address_lower.clone(), tics_unclaimed);
+                }
+
+                if per_solver_tics.is_empty() {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_REWARD] No non-zero TICS unclaimed amounts for batch {}",
+                        batch_id
+                    );
+                    return Ok(());
+                }
+
+                let claims: Vec<RewardClaimBatchEntry> = per_solver_tics
+                    .iter()
+                    .filter(|(_, amt)| !amt.is_zero())
+                    .map(|(addr, amt)| (addr.clone(), *amt))
+                    .collect();
+
+                let dkg_node = if let Some(node) = &self.dkg_node {
+                    node
+                } else {
+                    warn!(
+                        "❌ [TICS_CLAIM_REWARD] Cannot process TICS claim-reward batch - DKG node unavailable"
+                    );
+                    return Ok(());
+                };
+
+                let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+                    key
+                } else {
+                    warn!("❌ [TICS_CLAIM_REWARD] Liquidity operator group key unavailable");
+                    return Ok(());
+                };
+
+                let liquidity_operator_address =
+                    crate::utils::get_eth_address_from_group_key(group_public_key);
+
+                let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .unwrap_or_else(|_| "9029".to_string())
+                    .parse::<u64>()
+                    .unwrap_or(9029);
+                let contract_chain_name = if contract_chain_id == 9029 {
+                    "qubetics"
+                } else {
+                    "ethereum"
+                };
+
+                let chain_tx = match create_solver_claim_rewards_batch_transaction(
+                    &liquidity_operator_address,
+                    &claims,
+                    1u8, // chainType TICS
+                    &contract_address_str,
+                    contract_chain_id,
+                    contract_chain_name,
+                )
+                .await
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_REWARD] Failed to create claimRewardsBatch tx: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx) = &chain_tx else {
+                    warn!("❌ [TICS_CLAIM_REWARD] Expected Ethereum transaction");
+                    return Ok(());
+                };
+
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+                    if let Some(ref _secret_share) = vault_tweaked_share {
+                        signing_node.set_vault_group_key(group_public_key);
+
+                        let contract_tx = crate::types::intent::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx
+                                .data
+                                .as_ref()
+                                .map(|d| format!("0x{}", hex::encode(d)))
+                                .unwrap_or_else(|| "0x".to_string()),
+                        };
+
+                        let contract_tx_bytes =
+                            crate::utils::transaction::create_transaction_for_signing_contract(
+                                &contract_tx,
+                            );
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
+                        let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+
+                        if let Err(e) = eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share.clone(),
+                                None,
+                                vec![],
+                                vault_tweaked_share,
+                                None,
+                                None,
+                                None, // tics_withdraw_identifiers (not applicable)
+                                Some(used_identifiers.clone()), // for tx-id broadcast: store tx_id on TICS, mark done for all
+                            )
+                            .await
+                        {
+                            warn!("⚠️ [TICS_CLAIM_REWARD] sign_contract_message failed: {}", e);
+                        } else {
+                            info!(
+                                "✅ [TICS_CLAIM_REWARD] Submitted claimRewardsBatch (TICS) into MPC signing flow ({} claims)",
+                                claims.len()
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_REWARD] Skipping claimRewardsBatch - missing vault secret share"
+                        );
+                    }
+                } else {
+                    warn!("❌ [TICS_CLAIM_REWARD] Signing node unavailable");
+                }
+            }
+            GossipsubMessage::WithdrawTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                solver_address,
+                requests,
+                node_id,
+            } => {
+                info!(
+                    "📡 [WITHDRAW_TXID] Received withdraw-liquidity txid broadcast from node {}: txid={}, batch_id={}, network={}, solver={:?}, requests={}",
+                    node_id,
+                    txid,
+                    batch_id,
+                    network,
+                    solver_address,
+                    requests.len()
+                );
+
+                let is_tics = txid.starts_with("0x");
+
+                if is_tics {
+                    // TICS withdraw-liquidity:
+                    // - txid is an EVM hash (0x...)
+                    // - When requests is non-empty: update all (request_id, solver) via batch handler (multiple solvers/requests).
+                    // - When requests is empty: single-solver legacy, solver_address must be present, call single-request handler with None.
+                    if !requests.is_empty() {
+                        if let Err(e) = self
+                            .handle_withdraw_liquidity_transaction_id_storage_batch(
+                                &txid,
+                                "withdraw_liquidity",
+                                &requests,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Batch storage failed for txid {} ({} requests): {}",
+                                txid, requests.len(), e
+                            );
+                        }
+                    } else if let Some(solver) = solver_address.as_ref() {
+                        if let Err(e) = self
+                            .handle_withdraw_liquidity_transaction_id_storage(
+                                solver,
+                                &txid,
+                                "withdraw_liquidity",
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "⚠️ [TICS_WITHDRAW] Failed to apply txid {} for solver {}: {}",
+                                txid, solver, e
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [TICS_WITHDRAW] Missing solver_address and empty requests for TICS withdraw txid broadcast: txid={}, batch_id={}",
+                            txid, batch_id
+                        );
+                    }
+                } else {
+                    // BTC withdraw-liquidity:
+                    // - txid is a BTC transaction ID (non-0x)
+                    // - When requests is non-empty: update all (request_id, solver) via batch handler (multiple solvers/requests).
+                    if requests.is_empty() {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] WithdrawTxIdBroadcast has no requests for BTC txid {} (batch_id={})",
+                            txid, batch_id
+                        );
+                    } else if let Err(e) = self
+                        .handle_withdraw_liquidity_transaction_id_storage_batch(
+                            &txid,
+                            "withdraw_liquidity",
+                            &requests,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] Batch storage failed for txid {} ({} requests): {}",
+                            txid,
+                            requests.len(),
+                            e
+                        );
+                    }
+                }
+            }
+            GossipsubMessage::ClaimRewardTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                solver_address,
+                requests,
+                node_id,
+            } => {
+                info!(
+                    "📡 [CLAIM_REWARD_TXID] Received claim-reward txid broadcast from node {}: txid={}, network={}, batch_id={}, solver={:?}, requests={}",
+                    node_id, txid, network, batch_id, solver_address, requests.len()
+                );
+                // Unified handler: TICS vs BTC determined by txid (0x = TICS, else BTC), same as withdraw.
+                if !requests.is_empty() {
+                    if let Err(e) = self
+                        .handle_claim_reward_transaction_id_storage_batch(&txid, &requests)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Batch storage failed for txid {} ({} requests): {}",
+                            txid, requests.len(), e
+                        );
+                    }
+                } else if let Some(solver) = solver_address.as_ref() {
+                    if let Err(e) = self
+                        .handle_claim_reward_transaction_id_storage(solver, &txid, None)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD_TXID] Single storage failed for txid {} (solver {}): {}",
+                            txid, solver, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD_TXID] Claim-reward txid broadcast has empty requests and no solver_address: txid={}, batch_id={}",
+                        txid, batch_id
+                    );
+                }
+            }
             GossipsubMessage::BtcIntentManagerTxUpdate {
                 intent_hashes,
                 btc_txid,
@@ -1690,7 +3581,9 @@ impl MpcNetworkLayer {
                 );
                 info!(
                     "🔄 [BTC_INTENT_MANAGER] {} intents, BTC batch round: {}, BTC txid: {}",
-                    intent_hashes.len(), btc_batch_round, btc_txid
+                    intent_hashes.len(),
+                    btc_batch_round,
+                    btc_txid
                 );
 
                 // Process the batch - create contract call
@@ -1710,6 +3603,141 @@ impl MpcNetworkLayer {
                     error!(
                         "❌ [BTC_INTENT_MANAGER] Failed to handle contract update batch: {}",
                         e
+                    );
+                }
+            }
+            GossipsubMessage::SolverAddLiquidityBatch {
+                request_ids,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "💧 [ADD_LIQUIDITY_BATCH] Received solver_add_liquidity batch from node {} (round {})",
+                    node_id, round
+                );
+                info!(
+                    "💧 [ADD_LIQUIDITY_BATCH] {} requests to process (will look up from RocksDB), timestamp: {}",
+                    request_ids.len(), timestamp
+                );
+
+                // Process the batch - all nodes look up full details from RocksDB and participate in signing
+                if let Err(e) = self
+                    .handle_solver_add_liquidity_batch(request_ids, round, timestamp, node_id)
+                    .await
+                {
+                    error!(
+                        "❌ [ADD_LIQUIDITY_BATCH] Failed to handle solver add_liquidity batch: {}",
+                        e
+                    );
+                    // Don't mark as Pending - local processing errors indicate permanent issues
+                    // Only blockchain transaction failures (TransactionErrorBroadcast) trigger retry
+                }
+            }
+            GossipsubMessage::WithdrawLiquidity { .. } => {
+                // Legacy variant; withdraw requests are now propagated via PendingWithdrawRequestBroadcast.
+                debug!("[WITHDRAW_LIQUIDITY] Ignoring legacy WithdrawLiquidity gossip message");
+            }
+            GossipsubMessage::PendingWithdrawRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingWithdrawRequest;
+
+                info!(
+                    "💧 [WITHDRAW_LIQUIDITY] Received pending withdraw request from gossip: request_id={}, solver={}, asset={}",
+                    request.request_id, request.solver_address, request.asset
+                );
+
+                // Persist only if this solver has no existing Pending/Batched request (one in-flight per solver).
+                let solver_lower = request.solver_address.to_lowercase();
+                let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
+                let existing: Vec<(String, PendingWithdrawRequest)> = match self
+                    .db
+                    .get_values_with_prefix(&prefix)
+                {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!(
+                                "⚠️ [WITHDRAW_LIQUIDITY] Failed to check existing withdraws for solver {}: {}",
+                                request.solver_address, e
+                            );
+                        return Ok(());
+                    }
+                };
+                let has_pending_or_batched = existing
+                    .iter()
+                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                if has_pending_or_batched {
+                    info!(
+                        "🚫 [WITHDRAW_LIQUIDITY] Ignoring duplicate withdraw request {} for solver {}: already has Pending/Batched",
+                        request.request_id, request.solver_address
+                    );
+                    return Ok(());
+                }
+
+                let key = format!(
+                    "pending_withdraw_liquidity:{}:{}",
+                    solver_lower, request.request_id
+                );
+
+                if let Err(e) = self.db.put_string_async(&key, &request).await {
+                    warn!(
+                        "⚠️ [WITHDRAW_LIQUIDITY] Failed to persist PendingWithdrawRequest request_id={} from gossip: {}",
+                        request.request_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [WITHDRAW_LIQUIDITY] Stored PendingWithdrawRequest from gossip (request_id={}, solver={})",
+                        request.request_id, request.solver_address
+                    );
+                }
+            }
+            GossipsubMessage::PendingClaimRewardRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingClaimRewardRequest;
+
+                info!(
+                    "🎁 [CLAIM_REWARD] Received pending claim reward request from gossip: request_id={}, solver={}",
+                    request.request_id, request.solver_address
+                );
+
+                let solver_lower = request.solver_address.to_lowercase();
+                let prefix = format!("pending_claim_reward:{}:", solver_lower);
+                let existing: Vec<(String, PendingClaimRewardRequest)> = match self
+                    .db
+                    .get_values_with_prefix(&prefix)
+                {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!(
+                                "⚠️ [CLAIM_REWARD] Failed to check existing claim rewards for solver {}: {}",
+                                request.solver_address, e
+                            );
+                        return Ok(());
+                    }
+                };
+                let has_pending_or_batched = existing
+                    .iter()
+                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                if has_pending_or_batched {
+                    info!(
+                        "🚫 [CLAIM_REWARD] Ignoring duplicate claim reward request {} for solver {}: already has Pending/Batched",
+                        request.request_id, request.solver_address
+                    );
+                    return Ok(());
+                }
+
+                let key = format!(
+                    "pending_claim_reward:{}:{}",
+                    solver_lower, request.request_id
+                );
+
+                if let Err(e) = self.db.put_string_async(&key, &request).await {
+                    warn!(
+                        "⚠️ [CLAIM_REWARD] Failed to persist PendingClaimRewardRequest request_id={} from gossip: {}",
+                        request.request_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [CLAIM_REWARD] Stored PendingClaimRewardRequest from gossip (request_id={}, solver={})",
+                        request.request_id, request.solver_address
                     );
                 }
             }
@@ -1740,6 +3768,9 @@ impl MpcNetworkLayer {
                     "⚠️ [TX_FAILURE] Contract transaction {} failed: {}. Sequencer removed, no automatic retry.",
                     sequencer_request_id, error
                 );
+
+                // Note: For add_liquidity, failed transactions won't reach here since gas estimation
+                // failures are caught earlier and marked as "Failed" in RocksDB
             }
         }
         Ok(())
@@ -1807,9 +3838,6 @@ impl MpcNetworkLayer {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
                 crate::network::transport::types::TOPIC_TRANSACTION_ID_SYNC
             }
-            crate::network::rpc::retry_manager::CriticalMessageType::VrfSelectedNodes => {
-                crate::network::transport::types::TOPIC_VRF_SELECTION
-            }
         };
 
         // Serialize ACK message
@@ -1841,9 +3869,6 @@ impl MpcNetworkLayer {
                 self.channel_health.record_send_success();
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                debug!("⚠️ [RETRY] Channel full - ACK queued for later delivery");
-                debug!("⚠️ [RETRY] Sender will retry anyway - no message loss");
-                debug!("⚠️ [RETRY] High load detected: 11+ parallel users");
                 // Channel is full but not closed - sender will retry this message
                 // So the ACK will be sent again when we receive the retry
                 // Record for monitoring

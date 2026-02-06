@@ -74,16 +74,36 @@ pub struct DKGStatusResponse {
     pub message: String,
 }
 
+/// Response for user_mpc_deposit: returns intent hash immediately so the user can fetch intent details later. No tx-ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMpcDepositVerifyResponse {
     pub status: String,
-    pub signer_address: String,
-    pub is_registered: bool,
-    /// Deposit amount as a decimal string (matches DepositIntent.amount)
-    pub amount: String,
+    /// Intent hash (hex); use this to fetch intent details later. Empty on error before hash is computed.
+    pub intent_hash: String,
+    pub error_message: Option<String>,
+}
+
+/// Response for GET intent_details by intent hash. Error message from database is intentionally omitted (stripped).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentDetailsResponse {
+    pub status: String,
+    pub intent_hash: String,
+    pub intent_status: Option<String>,
+    // Intent details
+    pub source_address: Option<String>,
+    pub target_address: Option<String>,
+    pub source_chain: Option<String>,
+    pub target_chain: Option<String>,
+    pub amount: Option<String>,
+    pub source_token: Option<String>,
+    pub target_token: Option<String>,
+    pub timestamp: Option<u128>,
+    // Transaction IDs and metadata
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub final_solver_id: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -128,6 +148,31 @@ pub struct SolverLiquidityResponse {
     pub solver_address: String,
     pub liquidity_btc: Option<String>,
     pub liquidity_tics: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+/// Query for unclaimed (pending/batched) solver rewards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsRequest {
+    pub solver_address: String,
+}
+
+/// One unclaimed reward entry (subset of PendingClaimRewardRequest; no message/signature).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnclaimedRewardEntry {
+    pub request_id: String,
+    pub status: String,
+    pub tx_id: Option<String>,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSolverRewardsResponse {
+    pub status: String,
+    pub solver_address: String,
+    pub unclaimed_rewards: Vec<UnclaimedRewardEntry>,
     pub message: String,
     pub error_message: Option<String>,
 }
@@ -207,6 +252,59 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+/// Internal representation of a queued withdraw-liquidity request.
+/// Stored in RocksDB under keys with prefix "pending_withdraw_liquidity:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingWithdrawRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    /// "TICS" or "BTC"
+    pub asset: String,
+    /// Amount as decimal string in smallest units for the asset chain
+    pub amount: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    /// Optional on-chain batch transaction ID once processed
+    pub tx_id: Option<String>,
+    /// Logical status of this withdraw request: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
+/// Internal representation of a queued claim-reward request.
+/// Stored in RocksDB under keys with prefix "pending_claim_reward:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingClaimRewardRequest {
+    pub request_id: String,
+    pub solver_address: String,
+    pub ethereum_address: Option<String>,
+    pub btc_address: Option<String>,
+    /// Original signed message payload from the HTTP request
+    pub message: String,
+    pub signature: String,
+    /// Optional BTC transaction ID once the claim-reward BTC batch is broadcast (stored on tx-id broadcast; do not mark done).
+    #[serde(default)]
+    pub tx_id: Option<String>,
+    /// Logical status: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityRequest {
+    /// Signature created by VERIFICATION_ADDRESS over the raw `message` bytes.
+    pub signature: String,
+    /// Opaque payload string that was signed. Expected to be a JSON string containing:
+    /// { "solverId": string, "solverAddress": string, "amount": string, "chainId": number }.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLiquidityResponse {
+    pub status: String,
+    pub message: String,
+    pub error_message: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {
@@ -249,4 +347,18 @@ pub struct AddressInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentsSolvedCountResponse {
     pub count: u64,
+}
+
+/// Response for GET /pending_intents_count (count of Pending + Batched intents)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingIntentsCountResponse {
+    pub count: u64,
+}
+
+/// Response for GET /user_count (count of successfully registered users)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCountResponse {
+    pub status: String,
+    pub count: u64,
+    pub message: String,
 }

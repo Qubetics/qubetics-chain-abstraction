@@ -9,7 +9,7 @@ use tracing::{error, info};
 use warp::{Filter, Reply};
 
 use crate::{
-    database::{Database, DkgStorage, RewardStorage},
+    database::{Database, DkgStorage},
     types::ChannelMessage,
     user_intent_manager::UserIntentManager,
 };
@@ -17,11 +17,12 @@ use crate::{
 use super::{
     errors::RpcError,
     handlers::{
-        handle_claim_reward, handle_get_dkg_status,
-        handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
-        handle_get_node_info, handle_get_reward_solver, handle_get_solver_liquidity,
-        handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-        handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
+        handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
+        handle_get_intent_details, handle_get_intents_solved_count, handle_get_network_addresses,
+        handle_get_node_id, handle_get_pending_intents_count,
+        handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
+        handle_get_status, handle_get_uptime, handle_get_user_count, handle_get_user_info,
+        handle_heartbeat, handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
         handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
@@ -32,23 +33,22 @@ use super::{
     },
 };
 use crate::types::rpc_server::{
-    ClaimRewardRequest, GetRewardSolverRequest, RequestContext,
+    AddLiquidityRequest, ClaimRewardRequest, GetSolverRewardsRequest, RequestContext,
     SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
     UserRegistrationRequest, WithdrawLiquidityRequest,
 };
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
-const REQUEST_TIMEOUT_SECONDS: u64 = 90;
+const REQUEST_TIMEOUT_SECONDS: u64 = 900;
 // Rate limiting configuration
-const RATE_LIMIT_MAX_REQUESTS: u32 = 500; // Maximum requests per window (per IP)
-const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
+const RATE_LIMIT_MAX_REQUESTS: u32 = 50000; // Maximum requests per window (per IP)
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 600; // Time window in seconds
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
     port: u16,
     user_intent_manager: Arc<UserIntentManager>,
     dkg_storage: DkgStorage,
-    reward_storage: RewardStorage,
     database: Database,
     node_id: String,
     start_time: Instant,
@@ -60,7 +60,6 @@ pub async fn start_http_server(
 
     let message_tx = Arc::new(Mutex::new(message_tx));
     let dkg_storage = Arc::new(dkg_storage);
-    let reward_storage = Arc::new(reward_storage);
     let database = Arc::new(database);
     let start_time = Arc::new(start_time);
 
@@ -122,12 +121,7 @@ pub async fn start_http_server(
                     let timeout_reply = warp::reply::with_status(
                         warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "timeout".to_string(),
-                            signer_address: "".to_string(),
-                            is_registered: false,
-                            amount: "0".to_string(),
-                            user_to_network_tx_id: None,
-                            network_to_target_tx_id: None,
-                            final_solver_id: None,
+                            intent_hash: "".to_string(),
                             error_message: Some(
                                 "Request timed out before processing could complete".to_string(),
                             ),
@@ -139,28 +133,34 @@ pub async fn start_http_server(
             }
         });
 
-    let get_reward_solver = warp::path("get_reward_solver")
-        .and(warp::get())
-        .and(warp::query::<GetRewardSolverRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and_then(handle_get_reward_solver);
-
     let get_solver_liquidity = warp::path("solver_liquidity")
         .and(warp::get())
         .and(warp::query::<SolverLiquidityRequest>())
-        .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_solver_liquidity);
+
+    let get_solver_rewards = warp::path("solver_rewards")
+        .and(warp::get())
+        .and(warp::query::<GetSolverRewardsRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_solver_rewards);
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
         .and(with_rate_limit(rate_limiter.clone()))
         .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
-        .and(with_reward_storage(reward_storage.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_auth())
         .and_then(handle_claim_reward);
+
+    let add_liquidity = warp::path("solver_add_liquidity")
+        .and(warp::post())
+        .and(with_rate_limit(rate_limiter.clone()))
+        .and(limited_json_body::<AddLiquidityRequest>())
+        .and(with_message_tx(message_tx.clone()))
+        .and(with_auth())
+        .and_then(handle_add_liquidity);
 
     let withdraw_liquidity = warp::path("withdraw_liquidity")
         .and(warp::post())
@@ -177,6 +177,12 @@ pub async fn start_http_server(
         .and(warp::get())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_info);
+
+    let get_intent_details = warp::path("intent_details")
+        .and(warp::path::param())
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_intent_details);
 
     let get_node_id = warp::path("node_id")
         .and(warp::get())
@@ -227,6 +233,16 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_intents_solved_count);
 
+    let get_pending_intents_count = warp::path("pending_intents_count")
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_pending_intents_count);
+
+    let get_user_count = warp::path("user_count")
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_user_count);
+
     // Upgrade endpoints
     let validate_upgrade = warp::path("validate-upgrade")
         .and(warp::post())
@@ -271,20 +287,24 @@ pub async fn start_http_server(
 
     let routes = register_user
         .or(get_user_info)
+        .or(get_intent_details)
         .or(get_node_id)
         .or(get_node_info)
         .or(get_status)
         .or(get_dkg_status)
         .or(user_mpc_deposit)
-        .or(get_reward_solver)
         .or(get_solver_liquidity)
+        .or(get_solver_rewards)
         .or(claim_reward)
+        .or(add_liquidity)
         .or(withdraw_liquidity)
         .or(heartbeat)
         .or(uptime)
         .or(log_partial_pubkeys)
         .or(get_network_addresses)
         .or(get_intents_solved_count)
+        .or(get_pending_intents_count)
+        .or(get_user_count)
         .or(validate_upgrade)
         .or(upgrade)
         .or(upgrade_status)
@@ -412,12 +432,6 @@ fn with_dkg_storage(
     dkg_storage: Arc<DkgStorage>,
 ) -> impl Filter<Extract = (Arc<DkgStorage>,), Error = Infallible> + Clone {
     warp::any().map(move || dkg_storage.clone())
-}
-
-fn with_reward_storage(
-    reward_storage: Arc<RewardStorage>,
-) -> impl Filter<Extract = (Arc<RewardStorage>,), Error = Infallible> + Clone {
-    warp::any().map(move || reward_storage.clone())
 }
 
 fn with_database(
