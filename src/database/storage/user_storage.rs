@@ -27,42 +27,21 @@ impl UserStorage {
     pub async fn store_user(&self, ethereum_address: &str, user: &UserRegistration) -> Result<()> {
         let key = key_utils::user_key(ethereum_address);
 
-        info!("💾 [USER_STORAGE] Starting to store user registration:");
-        info!("  📧 Address: {}", ethereum_address);
-        info!("  🆔 User ID: {}", user.user_id);
-        info!("  🏗️  Registered by node: {}", user.registered_by_node);
-        info!("  📅 Created at: {}", user.created_at);
-        info!(
-            "  🔑 Has tweaked secret share: {:?}",
-            user.tweaked_secret_share
+        debug!(
+            "[USER_STORAGE] Storing user: {}, intents: {}",
+            ethereum_address, user.intent_hashes.len()
         );
-        info!("  🔑 Has user group key: {}", user.user_group_key.is_some());
-        info!(
-            "  🏠 Has derived ETH address: {}",
-            user.derived_eth_address.is_some()
-        );
-        info!(
-            "  🪙 Has derived BTC address: {}",
-            user.derived_btc_address.is_some()
-        );
-        info!("  📋 Intent hashes count: {}", user.intent_hashes.len());
 
         match self.db.put_string(&key, user) {
             Ok(()) => {
-                info!(
-                    "✅ [USER_STORAGE] Successfully stored user registration for: {}",
-                    ethereum_address
-                );
-                info!("  🗄️  Database key: {}", key);
+                info!("[USER_STORAGE] Stored user registration: {}", ethereum_address);
                 Ok(())
             }
             Err(e) => {
                 error!(
-                    "❌ [USER_STORAGE] Failed to store user registration for: {}",
-                    ethereum_address
+                    "[USER_STORAGE] Failed to store user registration for {}: {}",
+                    ethereum_address, e
                 );
-                error!("  🗄️  Database key: {}", key);
-                error!("  💥 Error: {}", e);
                 Err(e)
             }
         }

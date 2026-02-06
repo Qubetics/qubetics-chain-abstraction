@@ -56,7 +56,7 @@ pub enum RetryableUnicast {
 }
 
 /// Maximum number of concurrent outbound requests per peer
-pub const MAX_OUTBOUND_INFLIGHT_PER_PEER: u32 = 5;
+pub const MAX_OUTBOUND_INFLIGHT_PER_PEER: u32 = 10;
 
 /// Maximum number of retry attempts on timeout
-pub const MAX_OUTBOUND_RETRIES: u8 = 3;
+pub const MAX_OUTBOUND_RETRIES: u8 = 5;

@@ -1153,9 +1153,9 @@ async fn create_chain_transaction_from_deposit_intent_internal(
 
         Ok(ChainTransaction::Ethereum(ethereum_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
-        // Get liquidity operator address from parameter
-        let btc_liquidity_operator_address = liquidity_operator_btc_address
-            .ok_or_else(|| anyhow::anyhow!("Liquidity operator BTC address not provided"))?;
+        // Destination for Bitcoin UserToVault: network BTC address (where network BTC is held)
+        let btc_to_address = liquidity_operator_btc_address
+            .ok_or_else(|| anyhow::anyhow!("Network BTC address not provided for UserToVault destination"))?;
 
         // Determine source and target based on transaction type
         // NOTE: group_public_key will always be available once the solver ecosystem is live,
@@ -1165,17 +1165,17 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // network address. We only unwrap and compute btc_network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
-                // User deposit: FROM derived bitcoin address TO vault bitcoin address
-                // Group public key is not needed for UserToVault on Bitcoin
+                // User deposit: FROM derived bitcoin address TO network bitcoin address
+                // Group public key is not needed for UserToVault on Bitcoin (caller passes network BTC address)
                 if let Some(derived_btc_addr) = derived_btc_addr {
                     tracing::info!(
-                        "💰 [TRANSACTION] Bitcoin user to liquidity operator: {} -> {}",
+                        "💰 [TRANSACTION] Bitcoin user to network: {} -> {}",
                         derived_btc_addr,
-                        btc_liquidity_operator_address
+                        btc_to_address
                     );
                     (
                         derived_btc_addr.clone(),
-                        btc_liquidity_operator_address.clone(),
+                        btc_to_address.clone(),
                     )
                 } else {
                     return Err(anyhow::anyhow!(
@@ -1604,7 +1604,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         from_address,
         &normalized_contract_address,
         &calldata_hex,
-        chain_id,
+        9029u64,
     )
     .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);

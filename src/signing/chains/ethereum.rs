@@ -1,4 +1,5 @@
 use crate::signing::SigningNode;
+use crate::types::signing::SigningMessage;
 use crate::{
     chain_abstraction::{ChainTransaction, EthereumTransaction},
     types::{
@@ -19,7 +20,8 @@ use secp256k1::{ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, Secr
 use sha3::Digest;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, error, info, warn};
 
 /// Convenience wrapper for Ethereum-focused signing flows.
 pub struct EthereumSigner<'a> {
@@ -94,6 +96,23 @@ impl<'a> EthereumSigner<'a> {
                 tics_withdraw_identifiers,
                 tics_claim_reward_identifiers,
             )
+            .await
+    }
+
+    /// TICS UserToVault batch: one round, one VRF; sign each slot and send partials to final node.
+    pub async fn sign_tics_user_to_vault_batch(
+        &mut self,
+        round: u64,
+        batch: Vec<(
+            String,
+            String,
+            crate::chain_abstraction::ChainTransaction,
+            Vec<u8>,
+            Option<Scalar>,
+        )>,
+    ) -> Result<()> {
+        self.node
+            .sign_tics_user_to_vault_batch(round, batch)
             .await
     }
 }
@@ -371,21 +390,10 @@ impl SigningNode {
             }
         };
 
-        // Log signing key for testing/debugging
-        let signing_key_hex = hex::encode(signing_key.secret_bytes());
-        info!(
-            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{}",
-            self.id, signing_key_hex
+        debug!(
+            "[SIGNING] Node {} signing ETH transaction: to={}, value={}, nonce={}",
+            self.id, transaction.to, transaction.value, transaction.nonce
         );
-
-        // Calculate and log DKG index for this node
-        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-        info!(
-            "🔢 [SIGNING-DEBUG] Node {} DKG index: {}",
-            self.id, dkg_index
-        );
-
-        info!("📝 [SIGNING] Node {} starting to sign transaction", self.id);
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
         let chain_transaction =
@@ -409,7 +417,7 @@ impl SigningNode {
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(tx_hash));
+        debug!("[SIGNING] Transaction hash: 0x{}", hex::encode(&tx_hash));
 
         // Get available nodes and perform VRF selection
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
@@ -518,28 +526,6 @@ impl SigningNode {
                 .entry(round)
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
-
-            // Calculate and log this node's DKG index
-            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-
-            info!(
-                "💾 [SIGNING] Node {} stored signature for {} round {}",
-                self.id,
-                self.chain_handler.chain_type(),
-                round
-            );
-            info!(
-                "💾 [SIGNING-DEBUG] Stored signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
-                hex::encode(&signature_bytes[0..32]),
-                hex::encode(&signature_bytes[32..64]),
-                recovery_id.to_i32()
-            );
-            info!(
-                "💾 [INDEX-PEER-DEBUG] Stored signature for Index {} => PeerId {} (s-share: 0x{})",
-                my_dkg_index,
-                self.id,
-                hex::encode(&signature_bytes[32..64])
-            );
         }
 
         // Store original transaction for reconstruction after aggregation
@@ -622,7 +608,7 @@ impl SigningNode {
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
-        chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
+        _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
         user_eth_address: Option<String>,
@@ -657,25 +643,9 @@ impl SigningNode {
             }
         };
 
-        // Log signing key for testing/debugging
-        let signing_key_hex = hex::encode(signing_key.secret_bytes());
-        info!(
-            "🔐 [SIGNING-DEBUG] Node {} signing key (hex): 0x{} (chain: {})",
-            self.id,
-            signing_key_hex,
-            chain_handler.chain_type()
-        );
-
-        // Calculate and log DKG index for this node
-        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-        info!(
-            "🔢 [SIGNING-DEBUG] Node {} DKG index: {}",
-            self.id, dkg_index
-        );
-
-        info!(
-            "📝 [SIGNING] Node {} starting to sign contract transaction",
-            self.id
+        debug!(
+            "[SIGNING] Node {} signing contract tx: to={}, value={}, data_len={}",
+            self.id, transaction.to, transaction.value, transaction.data.len()
         );
 
         // Create chain transaction from contract transaction
@@ -692,12 +662,6 @@ impl SigningNode {
             .map_err(|e| anyhow!("Invalid hex data in contract transaction: {}", e))?
         };
 
-        info!(
-            "🔍 [SIGNING] Contract transaction data: '{}' -> {} bytes",
-            transaction.data,
-            data_bytes.len()
-        );
-
         let chain_transaction =
             ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
                 to: transaction.to.clone(),
@@ -713,17 +677,14 @@ impl SigningNode {
         let tx_bytes = self
             .contract_chain_handler
             .create_transaction_bytes_contract(&chain_transaction)?;
-        info!(
-            "🔐 [SIGNING] Contract transaction bytes: 0x{}",
-            hex::encode(&tx_bytes)
-        );
+
+        debug!("[SIGNING] Contract tx bytes length: {}", tx_bytes.len());
 
         // Hash the transaction bytes
         let mut hasher: sha2::digest::core_api::CoreWrapper<sha3::Keccak256Core> =
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        info!("Tx hash: 0x{}", hex::encode(tx_hash));
         // Get available nodes and perform VRF selection
         let available_nodes = self.get_available_nodes_from_manager().await;
 
@@ -781,25 +742,6 @@ impl SigningNode {
                 .or_insert_with(HashMap::new);
             round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
 
-            // Calculate and log this node's DKG index
-            let my_dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-
-            info!(
-                "💾 [SIGNING] Node {} stored contract signature for round {}",
-                self.id, round
-            );
-            info!(
-                "💾 [SIGNING-DEBUG] Stored contract signature details - r: 0x{}, s: 0x{}, recovery_id: {}",
-                hex::encode(&signature_bytes[0..32]),
-                hex::encode(&signature_bytes[32..64]),
-                recovery_id.to_i32()
-            );
-            info!(
-                "💾 [INDEX-PEER-DEBUG] Stored contract signature for Index {} => PeerId {} (s-share: 0x{})",
-                my_dkg_index,
-                self.id,
-                hex::encode(&signature_bytes[32..64])
-            );
         }
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
@@ -1190,6 +1132,76 @@ impl SigningNode {
         }
     }
 
+    /// Reconstruct signed Ethereum tx for one TICS UserToVault batch slot (round, intent_hash).
+    pub async fn reconstruct_signed_ethereum_transaction_for_batch_slot(
+        &self,
+        round: u64,
+        slot_id: &str,
+        aggregated_signature: &[u8],
+        recovery_id: u8,
+    ) -> Result<Option<String>> {
+        let (_intent_hash, user_eth, chain_tx, _tx_bytes) = {
+            let batch = self.pending.user_to_vault_tics_batch.read().await;
+            let entries = batch
+                .get(&round)
+                .ok_or_else(|| anyhow!("No TICS UserToVault batch for round {}", round))?;
+            entries
+                .iter()
+                .find(|(h, ..)| h == slot_id)
+                .map(|(a, b, c, d)| (a.clone(), b.clone(), c.clone(), d.clone()))
+                .ok_or_else(|| anyhow!("No slot {} in batch for round {}", slot_id, round))?
+        };
+        let ChainTransaction::Ethereum(original_tx) = &chain_tx else {
+            return Ok(None);
+        };
+        let r = &aggregated_signature[0..32];
+        let s = &aggregated_signature[32..64];
+        let chain_id = original_tx.chain_id;
+        let v = recovery_id as u64 + 35 + chain_id * 2;
+        let nonce_address = if let Some(user_intent_manager) = &self.user_intent_manager {
+            if let Some(user) = user_intent_manager.get_user_by_address(&user_eth).await {
+                if let Some(derived_eth_addr) = &user.derived_eth_address {
+                    Self::fetch_nonce_and_log(
+                        derived_eth_addr,
+                        chain_id,
+                        "UserToVault batch slot",
+                    )
+                    .await?
+                } else {
+                    return Err(anyhow!(
+                        "User {} has no derived Ethereum address",
+                        user_eth
+                    ));
+                }
+            } else {
+                return Err(anyhow!("User {} not found in registry", user_eth));
+            }
+        } else {
+            return Err(anyhow!("User intent manager not available"));
+        };
+        let _ = nonce_address;
+        let signed_tx = create_signed_transaction(
+            &DummyTransaction {
+                to: original_tx.to.clone(),
+                value: original_tx.value.clone(),
+                nonce: original_tx.nonce,
+                gas_limit: original_tx.gas_limit,
+                gas_price: original_tx.gas_price.clone(),
+                chain_id: original_tx.chain_id,
+            },
+            original_tx.data.as_deref(),
+            r,
+            s,
+            v,
+        );
+        let signed_tx_hex = format!("0x{}", hex::encode(&signed_tx));
+        info!(
+            "✅ [SIGNING] Reconstructed signed tx for batch slot {} (round {})",
+            slot_id, round
+        );
+        Ok(Some(signed_tx_hex))
+    }
+
     pub fn create_ecdsa_signature_with_key(
         &self,
         message: &Message,
@@ -1206,5 +1218,123 @@ impl SigningNode {
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         self.create_ecdsa_signature_with_signing_key(message, signing_key)
+    }
+
+    /// Create a single partial ECDSA for a TICS UserToVault batch slot. Does not advance VRF or store state.
+    pub fn create_partial_ecdsa_for_tics_slot(
+        &self,
+        tx_bytes: &[u8],
+        transaction: &EthereumTransaction,
+        signing_key: &SecretKey,
+        user_eth_address: Option<String>,
+    ) -> Result<ECDSASignature> {
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(tx_bytes);
+        let tx_hash = hasher.finalize();
+        let msg = Message::from_digest_slice(tx_hash.as_slice())?;
+        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, signing_key)?;
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        Ok(ECDSASignature {
+            signature: signature_bytes.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address,
+        })
+    }
+
+    /// TICS UserToVault batch: one round, multiple slots. Store batch, create partial per slot, store in
+    /// signatures_by_round_slot, and send each partial to the final node with slot_id.
+    pub async fn sign_tics_user_to_vault_batch(
+        &mut self,
+        round: u64,
+        batch: Vec<(
+            String,
+            String,
+            ChainTransaction,
+            Vec<u8>,
+            Option<Scalar>,
+        )>,
+    ) -> Result<()> {
+        use crate::signing::state::RoundSlotKey;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let final_node_id = {
+            let final_nodes = self.signatures.final_nodes_by_round.read().await;
+            final_nodes
+                .get(&round)
+                .cloned()
+                .ok_or_else(|| anyhow!("No final node for TICS UserToVault batch round {}", round))?
+        };
+
+        let batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>)> = batch
+            .iter()
+            .map(|(h, u, tx, bytes, _key)| (h.clone(), u.clone(), tx.clone(), bytes.clone()))
+            .collect();
+        {
+            let mut store = self.pending.user_to_vault_tics_batch.write().await;
+            store.insert(round, batch_storage);
+        }
+
+        info!(
+            "📦 [TICS_UTV_BATCH] Node {} signing {} slots for round {} (final node: {})",
+            self.id,
+            batch.len(),
+            round,
+            final_node_id
+        );
+
+        for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
+            let signing_key = match key_opt {
+                Some(scalar) => Self::derive_secp_secret(&scalar)?,
+                None => {
+                    warn!(
+                        "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",
+                        intent_hash, user_eth
+                    );
+                    continue;
+                }
+            };
+            let eth_tx = match &chain_tx {
+                ChainTransaction::Ethereum(t) => t,
+                _ => {
+                    warn!(
+                        "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
+                        intent_hash
+                    );
+                    continue;
+                }
+            };
+            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot(
+                &tx_bytes,
+                eth_tx,
+                &signing_key,
+                Some(user_eth.clone()),
+            )?;
+
+            let slot_key: RoundSlotKey = (round, intent_hash.clone());
+            {
+                let mut by_slot = self.signatures.signatures_by_round_slot.write().await;
+                let entry = by_slot.entry(slot_key).or_default();
+                entry.insert(self.id.clone(), ecdsa_sig.clone());
+            }
+
+            let signature_msg = SigningMessage::ECDSASignature {
+                from: self.id.clone(),
+                signature: ecdsa_sig,
+                round,
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                user_eth_address: Some(user_eth),
+                slot_id: Some(intent_hash.clone()),
+            };
+            let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
+            let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+            self.broadcast("signing", &signature_data).await?;
+            info!(
+                "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
+                intent_hash, round, final_node_id
+            );
+        }
+        Ok(())
     }
 }

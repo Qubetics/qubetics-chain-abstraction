@@ -74,16 +74,36 @@ pub struct DKGStatusResponse {
     pub message: String,
 }
 
+/// Response for user_mpc_deposit: returns intent hash immediately so the user can fetch intent details later. No tx-ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMpcDepositVerifyResponse {
     pub status: String,
-    pub signer_address: String,
-    pub is_registered: bool,
-    /// Deposit amount as a decimal string (matches DepositIntent.amount)
-    pub amount: String,
+    /// Intent hash (hex); use this to fetch intent details later. Empty on error before hash is computed.
+    pub intent_hash: String,
+    pub error_message: Option<String>,
+}
+
+/// Response for GET intent_details by intent hash. Error message from database is intentionally omitted (stripped).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentDetailsResponse {
+    pub status: String,
+    pub intent_hash: String,
+    pub intent_status: Option<String>,
+    // Intent details
+    pub source_address: Option<String>,
+    pub target_address: Option<String>,
+    pub source_chain: Option<String>,
+    pub target_chain: Option<String>,
+    pub amount: Option<String>,
+    pub source_token: Option<String>,
+    pub target_token: Option<String>,
+    pub timestamp: Option<u128>,
+    // Transaction IDs and metadata
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub final_solver_id: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -286,7 +306,6 @@ pub struct AddLiquidityResponse {
     pub error_message: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {
     pub peer_id: String,
@@ -328,4 +347,18 @@ pub struct AddressInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentsSolvedCountResponse {
     pub count: u64,
+}
+
+/// Response for GET /pending_intents_count (count of Pending + Batched intents)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingIntentsCountResponse {
+    pub count: u64,
+}
+
+/// Response for GET /user_count (count of successfully registered users)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCountResponse {
+    pub status: String,
+    pub count: u64,
+    pub message: String,
 }

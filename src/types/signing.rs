@@ -55,11 +55,23 @@ pub enum SigningMessage {
         round: u64,
         timestamp: u128,
         user_eth_address: Option<String>,
+        /// For TICS UserToVault batch: intent_hash slot. When set, store/aggregate by (round, slot_id).
+        slot_id: Option<String>,
     },
     BtcSignaturesMessage {
         from: String,
         signatures: Vec<BtcIndexedSignature>,
         round: u64,
+        timestamp: u128,
+        user_eth_address: Option<String>,
+    },
+    /// BTC UserToVault batch: per-slot multi-input signatures.
+    /// Each slot (intent) can have multiple inputs (UTXOs).
+    BtcUtvSignaturesMessage {
+        from: String,
+        signatures: Vec<BtcIndexedSignature>, // Multiple sigs (one per input)
+        round: u64,
+        slot_id: String, // intent_hash - identifies which slot in the batch
         timestamp: u128,
         user_eth_address: Option<String>,
     },

@@ -17,8 +17,9 @@ impl MpcNetworkLayer {
         self.dkg_node = Some(dkg_node);
     }
 
-    /// Set the signing node
-    pub fn set_signing_node(&mut self, signing_node: SigningNode) {
+    /// Set the signing node (Arc<Mutex<SigningNode>>). Calls set_self_arc on the node so it can spawn aggregation tasks.
+    pub async fn set_signing_node(&mut self, signing_node: Arc<Mutex<SigningNode>>) {
+        signing_node.lock().await.set_self_arc(Arc::clone(&signing_node));
         self.signing_node = Some(signing_node);
     }
 
@@ -38,7 +39,7 @@ impl MpcNetworkLayer {
     }
 
     /// Set the user intent manager
-    pub fn set_user_intent_manager(&mut self, registry: Arc<UserIntentManager>) {
+    pub async fn set_user_intent_manager(&mut self, registry: Arc<UserIntentManager>) {
         info!(
             "🔗 [NETWORK] Received database user registry - Arc pointer: {:p}",
             Arc::as_ptr(&registry)
@@ -48,8 +49,8 @@ impl MpcNetworkLayer {
         info!("🔗 [NETWORK] UserIntentManager clone stored in network layer");
 
         // Also set the user registry on the signing node for transaction ID storage
-        if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_user_intent_manager(registry.clone());
+        if let Some(signing_node) = &self.signing_node {
+            signing_node.lock().await.set_user_intent_manager(registry.clone());
             info!("📋 [NETWORK] Set user registry on signing node for transaction ID storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting user registry");
@@ -65,12 +66,12 @@ impl MpcNetworkLayer {
     }
 
     /// Set the database on signing node
-    pub fn set_database(&mut self, database: Arc<Database>) {
+    pub async fn set_database(&mut self, database: Arc<Database>) {
         info!("🗄️ [NETWORK] Setting database on signing node for solver amount storage");
 
         // Set the database on the signing node for solver amount storage
-        if let Some(signing_node) = &mut self.signing_node {
-            signing_node.set_database(database);
+        if let Some(signing_node) = &self.signing_node {
+            signing_node.lock().await.set_database(database);
             info!("🗄️ [NETWORK] Set database on signing node for solver amount storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting database");

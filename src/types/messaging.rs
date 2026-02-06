@@ -119,6 +119,22 @@ pub enum ChannelMessage {
         /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
+    /// TICS UserToVault intent batch: final node picks pending intents with source_chain TICS
+    /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
+    TicsUserToVaultIntentBatch {
+        intent_hashes: Vec<String>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
+    /// BTC UserToVault intent batch: final node picks pending intents with source_chain bitcoin
+    /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
+    BtcUserToVaultIntentBatch {
+        intent_hashes: Vec<String>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
     /// BTC Intent Manager contract update batch
     /// Used to update network-to-target tx-id on contract for BTC intents
     BtcIntentManagerTxUpdate {
@@ -514,6 +530,20 @@ pub enum GossipsubMessage {
         /// Round number that triggered this batch
         round: u64,
         /// Node ID of the final node broadcasting this batch
+        node_id: String,
+    },
+    /// TICS UserToVault intent batch: intents with source_chain TICS to be signed individually (one tx per intent).
+    TicsUserToVaultIntentBatch {
+        intent_hashes: Vec<String>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
+    /// BTC UserToVault intent batch: intents with source_chain bitcoin to be signed individually (one tx per intent).
+    BtcUserToVaultIntentBatch {
+        intent_hashes: Vec<String>,
+        round: u64,
+        timestamp: String,
         node_id: String,
     },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
