@@ -387,6 +387,20 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}[${timestamp}] ${message}${colors.reset}`);
 }
 
+/** Serialize deposit intent for signing; must match server serde_json key order and amount-as-string. */
+function serializeDepositIntentForSigning(intent) {
+  return JSON.stringify({
+    source_address: intent.source_address,
+    target_address: intent.target_address,
+    source_chain: intent.source_chain,
+    target_chain: intent.target_chain,
+    amount: String(intent.amount),
+    source_token: intent.source_token,
+    target_token: intent.target_token,
+    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
+  });
+}
+
 // Register a user (like test_register_user.js)
 async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
   try {
@@ -520,7 +534,7 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: amount,
+      amount: String(amount),
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: intentTimestamp,
@@ -528,10 +542,8 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
 
     log(`[User ${userId}]   Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
 
-    // Serialize DepositIntent for signing
-    const msg = JSON.stringify(depositIntent);
-
-    // EIP-191 personal_sign  
+    // Sign the serialized intent (same bytes the server uses for hash/recovery)
+    const msg = serializeDepositIntentForSigning(depositIntent);
     const signature = await wallet.signMessage(msg);
     log(`[User ${userId}]   Signature: ${signature}`, 'cyan');
 

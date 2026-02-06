@@ -448,6 +448,7 @@ impl UserIntentManager {
             info!(
                 "📋 [INTENT_MANAGER] Excluded {} already-solved intents from awaiting list ({} remaining)",
                 original_len - filtered.len(),
+
                 filtered.len()
             );
         }

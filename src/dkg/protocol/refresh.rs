@@ -204,7 +204,23 @@ impl DKGNode {
             .into_iter()
             .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
             .collect();
-        nodes_with_indices.sort_by_key(|(_, idx)| *idx);
+
+        // Include local node's permanent index if missing (e.g. after re-join: our index
+        // is stored under DKG_MY_PERMANENT_INDEX, not peer_index:)
+        let my_index_opt = self.permanent_index().or(
+            self.storage.get_my_permanent_index().await.ok().flatten(),
+        );
+        if let Some(my_idx) = my_index_opt {
+            let self_id = self.id.clone();
+            if !nodes_with_indices.iter().any(|(pid, _)| pid == &self_id) {
+                info!(
+                    "🔍 [REFRESH] Including self {} with permanent index {} (not in peer_indices)",
+                    self_id, my_idx
+                );
+                nodes_with_indices.push((self_id, my_idx));
+                nodes_with_indices.sort_by_key(|(_, idx)| *idx);
+            }
+        }
 
         info!(
             "🔍 [REFRESH] Nodes with indices (sorted): {:?}",
@@ -642,11 +658,7 @@ impl DKGNode {
         );
         info!("📊 [REFRESH]   Secret delta computed (value redacted)");
 
-        info!("💾 [REFRESH] Storing refreshed polynomial share for NETWORK");
-        self.storage.set_final_secret(new_secret).await?;
-        info!("✅ [REFRESH] Successfully stored refreshed NETWORK polynomial share");
-
-        info!("🔄 [REFRESH] Updating commitments and final public key...");
+        info!("🔄 [REFRESH] Computing new public key from refresh commitments (verify before persisting)...");
 
         // Get all refresh commitments
         let all_commitments = self.storage.get_all_commitments().await?;
@@ -663,7 +675,7 @@ impl DKGNode {
         // Calculate new final public key by summing all refresh C0 commitments in peer-index order
         let mut new_final_public_key = ProjectivePoint::IDENTITY;
 
-        // Build (peer_id, idx) from DB and order refresh_* commitments by idx
+        // Build (refresh_key, idx) from DB and order refresh_* commitments by idx
         let peer_indices = self.storage.get_peer_indices().await?;
         let mut refresh_with_indices: Vec<(String, usize)> = refresh_commitment_entries
             .keys()
@@ -674,6 +686,23 @@ impl DKGNode {
                 peer_indices.get(&pid).copied().map(|idx| (k, idx))
             })
             .collect();
+
+        // Include local node's refresh commitment if missing (our index is under DKG_MY_PERMANENT_INDEX)
+        let self_refresh_key = format!("refresh_{}", self.id);
+        if refresh_commitment_entries.contains_key(&self_refresh_key)
+            && !refresh_with_indices.iter().any(|(k, _)| k == &self_refresh_key)
+        {
+            let my_idx = self.permanent_index().or(
+                self.storage.get_my_permanent_index().await.ok().flatten(),
+            );
+            if let Some(idx) = my_idx {
+                info!(
+                    "🔍 [REFRESH] Including self refresh commitment in C0 sum (index {})",
+                    idx
+                );
+                refresh_with_indices.push((self_refresh_key, idx));
+            }
+        }
         refresh_with_indices.sort_by_key(|(_, idx)| *idx);
 
         for (refresh_key, _) in refresh_with_indices {
@@ -709,6 +738,12 @@ impl DKGNode {
             info!("✅ [REFRESH] SUCCESS: Public keys MATCH! Secret preserved correctly!");
             info!("✅ [REFRESH] The refresh protocol is working correctly.");
             info!("✅ [REFRESH] All nodes used the SAME Lagrange basis.");
+
+            // Persist secret and public only after verification
+            info!("💾 [REFRESH] Storing refreshed polynomial share for NETWORK");
+            self.storage.set_final_secret(new_secret).await?;
+            info!("✅ [REFRESH] Successfully stored refreshed NETWORK polynomial share");
+            self.storage.set_final_public(new_final_public_key).await?;
         } else {
             warn!("❌ [REFRESH] FAILURE: Public keys DO NOT MATCH!");
             warn!("❌ [REFRESH] This means the secret has CHANGED during refresh!");
@@ -729,10 +764,18 @@ impl DKGNode {
             warn!(
                 "⚠️  [REFRESH] CHECK LOGS: Did all nodes use the same 'All indices for Lagrange'?"
             );
-        }
 
-        // Store the new final public key
-        self.storage.set_final_public(new_final_public_key).await?;
+            // Abort refresh: do not overwrite public key or commitments
+            if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+                warn!(
+                    "⚠️ [REFRESH] Failed to clear refresh_in_progress after public key mismatch: {}",
+                    e
+                );
+            }
+            return Err(anyhow!(
+                "Refresh aborted: public key would have changed (original != new). Secret must be preserved."
+            ));
+        }
 
         // Update CURRENT commitments with NEW refresh commitments (for signing verification)
         info!("🔄 [REFRESH] Updating current commitments with refresh commitments...");
