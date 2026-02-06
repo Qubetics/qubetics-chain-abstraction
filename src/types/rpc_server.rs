@@ -88,8 +88,17 @@ pub struct UserMpcDepositVerifyResponse {
 pub struct IntentDetailsResponse {
     pub status: String,
     pub intent_hash: String,
-    pub intent: Option<crate::types::intent::DepositIntent>,
     pub intent_status: Option<String>,
+    // Intent details
+    pub source_address: Option<String>,
+    pub target_address: Option<String>,
+    pub source_chain: Option<String>,
+    pub target_chain: Option<String>,
+    pub amount: Option<String>,
+    pub source_token: Option<String>,
+    pub target_token: Option<String>,
+    pub timestamp: Option<u128>,
+    // Transaction IDs and metadata
     pub user_to_network_tx_id: Option<String>,
     pub network_to_target_tx_id: Option<String>,
     pub final_solver_id: Option<String>,
@@ -296,7 +305,6 @@ pub struct AddLiquidityResponse {
     pub message: String,
     pub error_message: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPartialPubkeysRequest {
