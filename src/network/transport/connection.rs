@@ -131,7 +131,8 @@ impl MpcNetworkLayer {
             }
         }
 
-        if let Some(signing_node) = &mut self.signing_node {
+        if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
             signing_node.set_threshold(new_threshold);
         }
 
@@ -222,7 +223,8 @@ impl MpcNetworkLayer {
                 .map_err(|e| anyhow::anyhow!(e))?;
 
             // Update signing node threshold after adding peer
-            if let Some(signing_node) = &mut self.signing_node {
+            if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
                 let new_threshold = self.node_manager.get_threshold();
                 signing_node.set_threshold(new_threshold);
                 info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);

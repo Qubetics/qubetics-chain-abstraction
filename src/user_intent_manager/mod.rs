@@ -333,6 +333,7 @@ impl UserRegistry {
                 .get(intent_hash)
                 .map(|info| match info {
                     IntentStatus::Pending => 0,
+                    IntentStatus::Batched => 0,
                     IntentStatus::Processing => 0,
                     IntentStatus::Solved => 0,
                     IntentStatus::Rejected => 0,

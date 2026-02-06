@@ -266,6 +266,73 @@ impl UserIntentManager {
         }
     }
 
+    /// Get intents that have not yet completed UserToVault (no user_to_network_tx_id),
+    /// filtered by source chain. Used by the final node to pick a batch for TICS/BTC UserToVault signing.
+    /// Returns (intent_hash, intent, user_eth_address) for each intent; only intents with a
+    /// registered user are included.
+    /// - `batched_only`: None or Some(false) → only intents with status Pending are included.
+    /// - `batched_only`: Some(true) → only intents with status Batched and no user_to_network_tx_id are included.
+    /// - `excluded_intent_hashes`: when provided, intents whose hash is in this set are skipped (e.g. intents from last N batches).
+    pub async fn get_pending_user_to_vault_intents_by_source_chain(
+        &self,
+        source_chain: &str,
+        limit: usize,
+        batched_only: Option<bool>,
+        excluded_intent_hashes: Option<&std::collections::HashSet<String>>,
+    ) -> Vec<(String, DepositIntent, String)> {
+        let pending = self.get_pending_transaction_intents().await;
+        let source_lower = source_chain.to_lowercase();
+        let mut out = Vec::with_capacity(limit.min(pending.len()));
+        for (intent_hash, intent, tx_ids) in pending {
+            if out.len() >= limit {
+                break;
+            }
+            if excluded_intent_hashes.map_or(false, |ex| ex.contains(&intent_hash)) {
+                continue;
+            }
+            let no_user_tx = tx_ids
+                .as_ref()
+                .map(|ids| ids.user_to_network_tx_id.is_none())
+                .unwrap_or(true);
+            if !no_user_tx {
+                continue;
+            }
+            let chain_ok = intent.source_chain.eq_ignore_ascii_case("tics")
+                || intent.source_chain.eq_ignore_ascii_case("qubetics");
+            if !chain_ok && source_lower != intent.source_chain.to_lowercase() {
+                continue;
+            }
+            if source_lower == "tics" || source_lower == "qubetics" {
+                if !intent.source_chain.eq_ignore_ascii_case("tics")
+                    && !intent.source_chain.eq_ignore_ascii_case("qubetics")
+                {
+                    continue;
+                }
+            } else if intent.source_chain.to_lowercase() != source_lower {
+                continue;
+            }
+            if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
+                let status = user.intent_hashes.get(&intent_hash);
+                match batched_only {
+                    Some(true) => {
+                        // Only Batched intents that don't have user_to_vault tx-id yet
+                        if !matches!(status, Some(IntentStatus::Batched)) {
+                            continue;
+                        }
+                    }
+                    _ => {
+                        // Only Pending intents; exclude Batched and others
+                        if matches!(status, Some(IntentStatus::Batched) | Some(IntentStatus::Processing) | Some(IntentStatus::Solved) | Some(IntentStatus::Rejected)) {
+                            continue;
+                        }
+                    }
+                }
+                out.push((intent_hash, intent, user.ethereum_address));
+            }
+        }
+        out
+    }
+
     /// Check if an intent has both transaction IDs
     pub async fn is_intent_transaction_complete(&self, intent_hash: &str) -> bool {
         match self.get_intent_transaction_ids(intent_hash).await {
@@ -364,6 +431,7 @@ impl UserIntentManager {
                 return Vec::new();
             }
         };
+        let original_len = intents.len();
         // Exclude intents already marked Solved (TICS-TICS and others get marked Solved after fulfillment)
         let mut filtered = Vec::new();
         for (intent_hash, intent, tx_ids) in intents {
@@ -376,10 +444,11 @@ impl UserIntentManager {
             }
             filtered.push((intent_hash, intent, tx_ids));
         }
-        if filtered.len() < intents.len() {
+        if filtered.len() < original_len {
             info!(
                 "📋 [INTENT_MANAGER] Excluded {} already-solved intents from awaiting list ({} remaining)",
-                intents.len() - filtered.len(),
+                original_len - filtered.len(),
+
                 filtered.len()
             );
         }

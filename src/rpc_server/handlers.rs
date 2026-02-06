@@ -19,12 +19,13 @@ use crate::{
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
-            GetSolverRewardsResponse, HeartbeatResponse, IntentsSolvedCountResponse, NodeIdResponse,
-            PendingClaimRewardRequest, PendingWithdrawRequest, RequestContext,
+            GetSolverRewardsResponse, HeartbeatResponse, IntentDetailsResponse,
+            IntentsSolvedCountResponse, NodeIdResponse, PendingClaimRewardRequest,
+            PendingIntentsCountResponse, PendingWithdrawRequest, RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse,
-            UserInfoResponse,
-            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
-            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            UserCountResponse, UserInfoResponse, UserMpcDepositRequest,
+            UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
+            WithdrawLiquidityResponse,
         },
         IntentStatus,
     },
@@ -34,7 +35,7 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 
 use super::{
     errors::{RpcError, TransactionError},
-    utils::{normalize_eth_signature, recover_eth_address_secp, wait_for_transaction_result},
+    utils::{normalize_eth_signature, recover_eth_address_secp},
 };
 
 pub(crate) async fn handle_deposit_intent(
@@ -57,14 +58,16 @@ pub(crate) async fn handle_deposit_intent(
         )))
     })?;
 
-   
     let required_amount_u128 = parsed_amount + (parsed_amount / 20);
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
         intent: intent.clone(),
         intent_id: intent_id.clone(),
-        user_eth_address: user_eth_address.as_ref().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
+        user_eth_address: user_eth_address
+            .as_ref()
+            .map(|s| s.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
         transaction_type: transaction_type.clone(),
         amount: required_amount_u128,
         signature,
@@ -646,12 +649,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         );
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
-            signer_address: "".to_string(),
-            is_registered: false,
-            amount: req.msg.amount,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            final_solver_id: None,
+            intent_hash: "".to_string(),
             error_message: Some("shares are getting refreshed".to_string()),
         }));
     }
@@ -666,12 +664,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             );
             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                 status: "error".to_string(),
-                signer_address: "".to_string(),
-                is_registered: false,
-                amount: req.msg.amount,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                final_solver_id: None,
+                intent_hash: "".to_string(),
                 error_message: Some("Invalid deposit intent payload".to_string()),
             }));
         }
@@ -689,7 +682,11 @@ pub(crate) async fn handle_user_mpc_deposit(
     info!("🧾 HTTP: user_mpc_deposit received");
 
     // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup, no channel send).
-    if user_intent_manager.get_intent(&intent_hash_hex).await.is_some() {
+    if user_intent_manager
+        .get_intent(&intent_hash_hex)
+        .await
+        .is_some()
+    {
         warn!(
             request_id = %request_context.request_id,
             intent_hash = %intent_hash_hex,
@@ -697,13 +694,10 @@ pub(crate) async fn handle_user_mpc_deposit(
         );
         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
             status: "error".to_string(),
-            signer_address: "".to_string(),
-            is_registered: false,
-            amount: req.msg.amount,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            final_solver_id: None,
-            error_message: Some("Intent hash already exists - this deposit has already been processed".to_string()),
+            intent_hash: intent_hash_hex.clone(),
+            error_message: Some(
+                "Intent hash already exists - this deposit has already been processed".to_string(),
+            ),
         }));
     }
 
@@ -718,12 +712,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             );
             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                 status: "error".to_string(),
-                signer_address: "".to_string(),
-                is_registered: false,
-                amount: req.msg.amount,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                final_solver_id: None,
+                intent_hash: intent_hash_hex.clone(),
                 error_message: Some("Signature is required for UserToVault deposits".to_string()),
             }));
         }
@@ -755,95 +744,150 @@ pub(crate) async fn handle_user_mpc_deposit(
         None => {
             // Signature is already validated above, so we can safely unwrap
             {
-                    info!("No existing user found for intent hash, but signature is present in the request.");
-                    let (compact, v) = match normalize_eth_signature(signature) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!("❌ Failed to normalize signature: {}", e);
-                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                status: "error".to_string(),
-                                signer_address: "".to_string(),
-                                is_registered: false,
-                                amount: "0".to_string(),
-                                user_to_network_tx_id: None,
-                                network_to_target_tx_id: None,
-                                final_solver_id: None,
-                                error_message: Some(format!("Invalid signature format: {e}")),
-                            }));
-                        }
-                    };
-                    let (signer, _used_personal) = match recover_eth_address_secp(
-                        intent_bytes,
-                        &compact,
-                        v,
-                        true,
-                    ) {
-                        Ok(addr) => (addr, true),
-                        Err(e1) => {
-                            warn!("⚠️ personal_sign recovery failed: {}", e1);
-                            match recover_eth_address_secp(intent_bytes, &compact, v, false) {
-                                Ok(addr) => (addr, false),
-                                Err(e2) => {
-                                    error!(
+                info!("No existing user found for intent hash, but signature is present in the request.");
+                let (compact, v) = match normalize_eth_signature(signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!("❌ Failed to normalize signature: {}", e);
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            intent_hash: intent_hash_hex.clone(),
+                            error_message: Some(format!("Invalid signature format: {e}")),
+                        }));
+                    }
+                };
+                let (signer, _used_personal) = match recover_eth_address_secp(
+                    intent_bytes,
+                    &compact,
+                    v,
+                    true,
+                ) {
+                    Ok(addr) => (addr, true),
+                    Err(e1) => {
+                        warn!("⚠️ personal_sign recovery failed: {}", e1);
+                        match recover_eth_address_secp(intent_bytes, &compact, v, false) {
+                            Ok(addr) => (addr, false),
+                            Err(e2) => {
+                                error!(
                                             "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
                                             e1, e2
                                         );
-                                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                        status: "error".to_string(),
-                                        signer_address: "".to_string(),
-                                        is_registered: false,
-                                        amount: "0".to_string(),
-                                        user_to_network_tx_id: None,
-                                        network_to_target_tx_id: None,
-                                        final_solver_id: None,
-                                        error_message: Some(format!(
-                                            "Failed to recover signature: personal_sign={e1}, raw={e2}"
-                                        )),
-                                    }));
-                                }
+                                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                    status: "error".to_string(),
+                                    intent_hash: intent_hash_hex.clone(),
+                                    error_message: Some(format!(
+                                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                                    )),
+                                }));
                             }
                         }
-                    };
-                    let user_reg = match user_intent_manager.get_user_by_address(&signer).await {
-                        Some(user_reg) => user_reg,
-                        None => {
-                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                status: "error".to_string(),
-                                signer_address: signer.clone(),
-                                is_registered: false,
-                                amount: "0".to_string(),
-                                user_to_network_tx_id: None,
-                                network_to_target_tx_id: None,
-                                final_solver_id: None,
-                                error_message: Some(
-                                    "No user registration found for signer address.".to_string(),
-                                ),
-                            }));
-                        }
-                    };
-                    let intent_hash_bytes = intent_hash.to_vec();
-                    // Store intent hash directly in the local user intent manager instead of
-                    // broadcasting it via ChannelMessage::IntentHash / gossipsub.
-                    if let Err(e) = user_intent_manager
-                        .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
-                        .await
-                    {
-                        error!("❌ Failed to store intent hash in user intent manager: {}", e);
+                    }
+                };
+                let user_reg = match user_intent_manager.get_user_by_address(&signer).await {
+                    Some(user_reg) => user_reg,
+                    None => {
                         return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                             status: "error".to_string(),
-                            signer_address: signer.clone(),
-                            is_registered: true,
-                            amount: "0".to_string(),
-                            user_to_network_tx_id: None,
-                            network_to_target_tx_id: None,
-                            final_solver_id: None,
-                            error_message: Some(format!("Failed to process deposit intent: {e}")),
+                            intent_hash: intent_hash_hex.clone(),
+                            error_message: Some(
+                                "No user registration found for signer address.".to_string(),
+                            ),
                         }));
                     }
+                };
 
-                    info!("✅ Stored intent hash for user: {}", signer);
+                // CRITICAL: Check if user has sufficient balance on source chain BEFORE storing intent
+                info!(
+                    "💰 [HTTP] Checking source address balance for intent: {} (amount: {})",
+                    intent_hash_hex, req.msg.amount
+                );
 
-                    user_reg
+                let source_amount = match req.msg.amount.parse::<u128>() {
+                    Ok(amt) => amt,
+                    Err(e) => {
+                        warn!("❌ Invalid amount format in intent: {}", e);
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            intent_hash: intent_hash_hex.clone(),
+                            error_message: Some(format!("Invalid amount format: {}", e)),
+                        }));
+                    }
+                };
+
+                // Determine blockchain for balance check
+                let source_blockchain = if req.msg.source_chain.eq_ignore_ascii_case("btc")
+                    || req.msg.source_chain.eq_ignore_ascii_case("bitcoin")
+                {
+                    "btc"
+                } else {
+                    "eth"
+                };
+
+                // Fetch user's source address balance
+                match crate::rpc_server::utils::fetch_network_balance(
+                    &req.msg.source_address,
+                    source_blockchain,
+                )
+                .await
+                {
+                    Ok(user_balance) => {
+                        if user_balance < source_amount {
+                            warn!(
+                                "⚠️ [HTTP] Insufficient balance for intent {}: user has {}, needs {}",
+                                intent_hash_hex, user_balance, source_amount
+                            );
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                intent_hash: intent_hash_hex.clone(),
+                                error_message: Some(format!(
+                                    "Insufficient balance: you have {} but need {} (in smallest units)",
+                                    user_balance, source_amount
+                                )),
+                            }));
+                        } else {
+                            info!(
+                                "✅ [HTTP] Source address has sufficient balance: {} >= {}",
+                                user_balance, source_amount
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [HTTP] Failed to fetch source address balance for {}: {}",
+                            intent_hash_hex, e
+                        );
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            intent_hash: intent_hash_hex.clone(),
+                            error_message: Some(format!(
+                                "Failed to verify source address balance: {}",
+                                e
+                            )),
+                        }));
+                    }
+                }
+
+                let intent_hash_bytes = intent_hash.to_vec();
+                // Store intent hash directly in the local user intent manager instead of
+                // broadcasting it via ChannelMessage::IntentHash / gossipsub.
+                if let Err(e) = user_intent_manager
+                    .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
+                    .await
+                {
+                    error!(
+                        "❌ Failed to store intent hash in user intent manager: {}",
+                        e
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(format!("Failed to process deposit intent: {e}")),
+                    }));
+                }
+
+                info!("✅ Stored intent hash for user: {}", signer);
+
+                user_reg
             }
         }
     };
@@ -884,12 +928,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                 status: "error".to_string(),
-                signer_address: user_registration.ethereum_address.clone(),
-                is_registered: true,
-                amount: req.msg.amount,
-                user_to_network_tx_id: None,
-                network_to_target_tx_id: None,
-                final_solver_id: None,
+                intent_hash: intent_hash_hex.clone(),
                 error_message: Some(error_message),
             }));
         }
@@ -897,79 +936,123 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     let intent_hash_hex = hex::encode(intent_hash);
     info!(
-        "✅ Deposit intent submitted successfully. Intent hash: {}",
+        "✅ Deposit intent submitted successfully. Intent hash: {} (use this to fetch intent details later)",
         intent_hash_hex
     );
-    info!("⏳ Waiting for transaction to be processed by the network...");
+    Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+        status: "success".to_string(),
+        intent_hash: intent_hash_hex,
+        error_message: None,
+    }))
+}
 
-    let (u2n_tx_id, n2t_tx_id, final_solver_id, chain_error) =
-        wait_for_transaction_result(&user_intent_manager, &intent_hash, 40).await;
-
-    if let Some(ref tx_id_str) = u2n_tx_id {
-        info!(
-            "✅ User->Network transaction completed with ID: {:?}",
-            tx_id_str
-        );
-    }
-    if let Some(ref tx_id_str) = n2t_tx_id {
-        info!(
-            "✅ Network->Target transaction completed with ID: {:?}",
-            tx_id_str
-        );
-    }
-
-    let duration_ms = request_context.started_at.elapsed().as_millis() as u64;
-
-    if u2n_tx_id.is_some() || n2t_tx_id.is_some() {
-        info!(
-            request_id = %request_context.request_id,
-            duration_ms,
-            "✅ Deposit request finished with on-chain receipts"
-        );
-        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "success".to_string(),
-            signer_address: user_registration.ethereum_address.clone(),
-            is_registered: true,
-            amount: req.msg.amount,
-            user_to_network_tx_id: u2n_tx_id,
-            network_to_target_tx_id: n2t_tx_id,
-            final_solver_id: final_solver_id.clone(),
-            error_message: None,
-        }))
-    } else if let Some(error_msg) = chain_error {
-        warn!(
-            request_id = %request_context.request_id,
-            duration_ms,
-            "⚠️ Deposit processing returned chain error"
-        );
-        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+/// Get intent details by intent hash. Database-stored error message is stripped and not returned.
+pub(crate) async fn handle_get_intent_details(
+    intent_hash: String,
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let intent_hash = intent_hash.trim();
+    if intent_hash.is_empty() {
+        return Ok(warp::reply::json(&IntentDetailsResponse {
             status: "error".to_string(),
-            signer_address: user_registration.ethereum_address.clone(),
-            is_registered: true,
-            amount: req.msg.amount,
+            intent_hash: "".to_string(),
+            intent_status: None,
+            source_address: None,
+            target_address: None,
+            source_chain: None,
+            target_chain: None,
+            amount: None,
+            source_token: None,
+            target_token: None,
+            timestamp: None,
             user_to_network_tx_id: None,
             network_to_target_tx_id: None,
-            final_solver_id: final_solver_id.clone(),
-            error_message: Some(error_msg),
-        }))
-    } else {
-        warn!(
-            request_id = %request_context.request_id,
-            duration_ms,
-            "⚠️ Deposit processing timed out"
-        );
-        Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-            status: "timeout".to_string(),
-            signer_address: user_registration.ethereum_address.clone(),
-            is_registered: true,
-            amount: req.msg.amount,
-            user_to_network_tx_id: None,
-            network_to_target_tx_id: None,
-            final_solver_id,
-            error_message: Some(format!(
-                "Transaction processing timeout. Intent hash: {intent_hash_hex}. The transaction may still be processing or may have failed. Please check the status later."
-            )),
-        }))
+            final_solver_id: None,
+            created_at: None,
+            updated_at: None,
+            error_message: Some("intent_hash is required".to_string()),
+        }));
+    }
+    let intent = user_intent_manager.get_intent(intent_hash).await;
+    let tx_ids = user_intent_manager
+        .get_intent_transaction_ids(intent_hash)
+        .await;
+    let intent_status = user_intent_manager
+        .get_user_by_intent_hash(intent_hash)
+        .await
+        .and_then(|u| u.intent_hashes.get(intent_hash).cloned())
+        .map(|s| format!("{:?}", s));
+    match intent {
+        None => {
+            info!("❌ HTTP: Intent not found: {}", intent_hash);
+            Ok(warp::reply::json(&IntentDetailsResponse {
+                status: "not_found".to_string(),
+                intent_hash: intent_hash.to_string(),
+                intent_status: None,
+                source_address: None,
+                target_address: None,
+                source_chain: None,
+                target_chain: None,
+                amount: None,
+                source_token: None,
+                target_token: None,
+                timestamp: None,
+                user_to_network_tx_id: None,
+                network_to_target_tx_id: None,
+                final_solver_id: None,
+                created_at: None,
+                updated_at: None,
+                error_message: Some("Intent not found".to_string()),
+            }))
+        }
+        Some(intent) => {
+            let (
+                user_to_network_tx_id,
+                network_to_target_tx_id,
+                final_solver_id,
+                created_at,
+                updated_at,
+            ) = match &tx_ids {
+                Some(ids) => (
+                    ids.user_to_network_tx_id.clone(),
+                    ids.network_to_target_tx_id.clone(),
+                    ids.final_solver_id.clone(),
+                    Some(ids.created_at.to_rfc3339()),
+                    Some(ids.updated_at.to_rfc3339()),
+                ),
+                None => (None, None, None, None, None),
+            };
+
+            // Extract fields from intent for top-level access
+            let source_address = Some(intent.source_address.clone());
+            let target_address = Some(intent.target_address.clone());
+            let source_chain = Some(intent.source_chain.clone());
+            let target_chain = Some(intent.target_chain.clone());
+            let amount = Some(intent.amount.clone());
+            let source_token = Some(intent.source_token.clone());
+            let target_token = Some(intent.target_token.clone());
+            let timestamp = Some(intent.timestamp);
+
+            Ok(warp::reply::json(&IntentDetailsResponse {
+                status: "success".to_string(),
+                intent_hash: intent_hash.to_string(),
+                intent_status,
+                source_address,
+                target_address,
+                source_chain,
+                target_chain,
+                amount,
+                source_token,
+                target_token,
+                timestamp,
+                user_to_network_tx_id,
+                network_to_target_tx_id,
+                final_solver_id,
+                created_at,
+                updated_at,
+                error_message: None,
+            }))
+        }
     }
 }
 
@@ -1154,6 +1237,42 @@ pub(crate) async fn handle_get_intents_solved_count(
     Ok(warp::reply::json(&IntentsSolvedCountResponse { count }))
 }
 
+/// Returns the count of intents with status Pending or Batched (treated as pending intents).
+/// GET /pending_intents_count
+pub(crate) async fn handle_get_pending_intents_count(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let pending = user_intent_manager
+        .get_intents_by_status_global(IntentStatus::Pending)
+        .await;
+    let batched = user_intent_manager
+        .get_intents_by_status_global(IntentStatus::Batched)
+        .await;
+    let count = (pending.len() + batched.len()) as u64;
+    info!(
+        "📊 HTTP: pending_intents_count = {} (Pending: {}, Batched: {})",
+        count,
+        pending.len(),
+        batched.len()
+    );
+    Ok(warp::reply::json(&PendingIntentsCountResponse { count }))
+}
+
+/// Returns the count of successfully registered users.
+/// GET /user_count
+pub(crate) async fn handle_get_user_count(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let users = user_intent_manager.get_all_users().await;
+    let count = users.len() as u64;
+    info!("📊 HTTP: user_count = {}", count);
+    Ok(warp::reply::json(&UserCountResponse {
+        status: "success".to_string(),
+        count,
+        message: format!("{} users successfully registered", count),
+    }))
+}
+
 pub(crate) async fn handle_get_dkg_status(
     dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -1219,8 +1338,8 @@ async fn fetch_solver_liquidity_from_contract(
         chain_id,
     };
 
-    let client =
-        ContractClient::new(config.clone()).map_err(|e| format!("Failed to create contract client: {e}"))?;
+    let client = ContractClient::new(config.clone())
+        .map_err(|e| format!("Failed to create contract client: {e}"))?;
 
     let solver_contract = SolverManagerContract::new(&config, client.provider())
         .map_err(|e| format!("Failed to create solver contract interface: {e}"))?;
@@ -1302,20 +1421,21 @@ pub(crate) async fn handle_get_solver_liquidity(
     };
 
     // Fetch liquidity directly from the SolverManager contract
-    let (liquidity_btc, liquidity_tics) = match fetch_solver_liquidity_from_contract(&normalized_address).await {
-        Ok((btc, tics)) => (btc, tics),
-        Err(e) => {
-            warn!("❌ Failed to get solver liquidity from contract: {}", e);
-            return Ok(warp::reply::json(&SolverLiquidityResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address,
-                liquidity_btc: None,
-                liquidity_tics: None,
-                message: "Failed to fetch solver liquidity".to_string(),
-                error_message: Some(e),
-            }));
-        }
-    };
+    let (liquidity_btc, liquidity_tics) =
+        match fetch_solver_liquidity_from_contract(&normalized_address).await {
+            Ok((btc, tics)) => (btc, tics),
+            Err(e) => {
+                warn!("❌ Failed to get solver liquidity from contract: {}", e);
+                return Ok(warp::reply::json(&SolverLiquidityResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address,
+                    liquidity_btc: None,
+                    liquidity_tics: None,
+                    message: "Failed to fetch solver liquidity".to_string(),
+                    error_message: Some(e),
+                }));
+            }
+        };
 
     if liquidity_btc.is_none() && liquidity_tics.is_none() {
         warn!(
@@ -1382,8 +1502,12 @@ pub(crate) async fn handle_get_solver_rewards(
     };
 
     let db = user_intent_manager.get_database();
-    let prefix = format!("pending_claim_reward:{}:", normalized_address.to_lowercase());
-    let entries: Vec<(String, PendingClaimRewardRequest)> = match db.get_values_with_prefix(&prefix) {
+    let prefix = format!(
+        "pending_claim_reward:{}:",
+        normalized_address.to_lowercase()
+    );
+    let entries: Vec<(String, PendingClaimRewardRequest)> = match db.get_values_with_prefix(&prefix)
+    {
         Ok(e) => e,
         Err(e) => {
             warn!(
@@ -1493,7 +1617,10 @@ pub(crate) async fn handle_claim_reward(
         Err(e1) => match recover_eth_address_secp(req.message.as_bytes(), &compact, v, false) {
             Ok(addr) => addr,
             Err(e2) => {
-                error!("❌ Failed to recover address: personal_sign={}, raw={}", e1, e2);
+                error!(
+                    "❌ Failed to recover address: personal_sign={}, raw={}",
+                    e1, e2
+                );
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
                     ethereum_address: req.ethereum_address.clone(),
@@ -1501,7 +1628,9 @@ pub(crate) async fn handle_claim_reward(
                     reward_btc: None,
                     reward_tics: None,
                     message: "Failed to recover signature".to_string(),
-                    error_message: Some(format!("Failed to recover signature: personal_sign={e1}, raw={e2}")),
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                    )),
                     tics_reward_tx_id: None,
                     btc_reward_tx_id: None,
                 }));
@@ -1527,29 +1656,39 @@ pub(crate) async fn handle_claim_reward(
         }
     };
 
-    info!("🔐 Recovered solver address from signature: {}", normalized_address);
+    info!(
+        "🔐 Recovered solver address from signature: {}",
+        normalized_address
+    );
 
     // Reject if this solver already has a claim reward request in Pending or Batched (one in-flight per solver).
     {
         let db = user_intent_manager.get_database();
-        let prefix = format!("pending_claim_reward:{}:", normalized_address.to_lowercase());
-        let entries: Vec<(String, PendingClaimRewardRequest)> = match db.get_values_with_prefix(&prefix) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("⚠️ [CLAIM_REWARD] Failed to check existing claim requests for solver {}: {}", normalized_address, e);
-                return Ok(warp::reply::json(&ClaimRewardResponse {
-                    status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
-                    btc_address: req.btc_address.clone(),
-                    reward_btc: None,
-                    reward_tics: None,
-                    message: "Failed to check existing claim requests".to_string(),
-                    error_message: Some("Database error".to_string()),
-                    tics_reward_tx_id: None,
-                    btc_reward_tx_id: None,
-                }));
-            }
-        };
+        let prefix = format!(
+            "pending_claim_reward:{}:",
+            normalized_address.to_lowercase()
+        );
+        let entries: Vec<(String, PendingClaimRewardRequest)> =
+            match db.get_values_with_prefix(&prefix) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                    "⚠️ [CLAIM_REWARD] Failed to check existing claim requests for solver {}: {}",
+                    normalized_address, e
+                );
+                    return Ok(warp::reply::json(&ClaimRewardResponse {
+                        status: "error".to_string(),
+                        ethereum_address: req.ethereum_address.clone(),
+                        btc_address: req.btc_address.clone(),
+                        reward_btc: None,
+                        reward_tics: None,
+                        message: "Failed to check existing claim requests".to_string(),
+                        error_message: Some("Database error".to_string()),
+                        tics_reward_tx_id: None,
+                        btc_reward_tx_id: None,
+                    }));
+                }
+            };
         let has_pending_or_batched = entries
             .iter()
             .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
@@ -1588,9 +1727,15 @@ pub(crate) async fn handle_claim_reward(
         request: pending.clone(),
     };
     if let Err(e) = message_tx.lock().await.send(broadcast).await {
-        warn!("⚠️ Failed to broadcast claim_reward request {} to other nodes: {}", request_id, e);
+        warn!(
+            "⚠️ Failed to broadcast claim_reward request {} to other nodes: {}",
+            request_id, e
+        );
     } else {
-        info!("📡 Broadcast claim_reward request {} to other nodes for DB sync", request_id);
+        info!(
+            "📡 Broadcast claim_reward request {} to other nodes for DB sync",
+            request_id
+        );
     }
 
     info!(
@@ -2002,7 +2147,9 @@ pub(crate) async fn handle_withdraw_liquidity(
             "pending_withdraw_liquidity:{}:",
             normalized_address.to_lowercase()
         );
-        let entries: Vec<(String, PendingWithdrawRequest)> = match db.get_values_with_prefix(&prefix) {
+        let entries: Vec<(String, PendingWithdrawRequest)> = match db
+            .get_values_with_prefix(&prefix)
+        {
             Ok(e) => e,
             Err(e) => {
                 warn!(
@@ -2135,7 +2282,10 @@ pub(crate) async fn handle_add_liquidity(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
 
-    info!("💧 HTTP: add_liquidity request with message: {}", req.message);
+    info!(
+        "💧 HTTP: add_liquidity request with message: {}",
+        req.message
+    );
 
     // 1) Load VERIFICATION_ADDRESS from env (must NOT be hardcoded).
     let verification_address_raw =
@@ -2345,7 +2495,10 @@ pub(crate) async fn handle_log_partial_pubkeys(
             None
         }
         Err(e) => {
-            error!("❌ [RPC] Failed to get liquidity operator share pubkey: {}", e);
+            error!(
+                "❌ [RPC] Failed to get liquidity operator share pubkey: {}",
+                e
+            );
             None
         }
     };
@@ -2443,8 +2596,10 @@ pub(crate) async fn handle_get_network_addresses(
     // Get liquidity operator aggregated group key
     let liquidity_operator_addresses = match dkg_storage.get_vault_group_key().await {
         Ok(Some(liquidity_operator_group_key)) => {
-            let eth_addr = crate::utils::get_eth_address_from_group_key(liquidity_operator_group_key);
-            let btc_addr = crate::utils::get_btc_address_from_group_key(liquidity_operator_group_key);
+            let eth_addr =
+                crate::utils::get_eth_address_from_group_key(liquidity_operator_group_key);
+            let btc_addr =
+                crate::utils::get_btc_address_from_group_key(liquidity_operator_group_key);
             Some(crate::types::rpc_server::AddressInfo {
                 eth_address: eth_addr,
                 btc_address: btc_addr,

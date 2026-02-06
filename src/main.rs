@@ -297,7 +297,7 @@ impl NodeContext {
         let command_processor = CommandProcessor::new();
 
         network.set_dkg_node(dkg_node);
-        network.set_signing_node(signing_node.lock().await.clone());
+        network.set_signing_node(signing_node.clone()).await;
         network.set_db_signing_node(db_signing_node.clone());
         network.set_consensus_node(consensus_node);
         network.set_command_processor(command_processor);
@@ -312,9 +312,9 @@ impl NodeContext {
             "🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}",
             Arc::as_ptr(&db_user_intent_manager)
         );
-        network.set_user_intent_manager(db_user_intent_manager.clone());
+        network.set_user_intent_manager(db_user_intent_manager.clone()).await;
 
-        network.set_database(database);
+        network.set_database(database).await;
 
         self.user_intent_manager = Some(db_user_intent_manager);
         self.network = Some(network);

@@ -25,12 +25,6 @@ impl DatabaseConsensusNode {
         round: u64,
         selected_nodes: Vec<SerializablePeerId>,
     ) -> Result<()> {
-        info!(
-            "📋 [DB_CONSENSUS] Adding {} selected nodes for round {}",
-            selected_nodes.len(),
-            round
-        );
-
         self.consensus_storage
             .store_selected_nodes(round, &selected_nodes)
             .await?;

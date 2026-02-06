@@ -226,8 +226,6 @@ impl VrfNodeSelector {
             .map(|(node_id, _)| node_id)
             .collect();
 
-        info!("Selected nodes: {:?}", selected_nodes);
-
         let vrf_outputs: HashMap<SerializablePeerId, VrfOutput> = working_set
             .into_iter()
             .filter(|(peer_id, _)| allowed.contains(peer_id))
@@ -339,12 +337,6 @@ impl VrfNodeSelector {
         result: NodeSelectionResult,
         round: u64,
     ) -> Result<()> {
-        debug!(
-            "Received selection result for round {}: {} nodes selected",
-            round,
-            result.selected_nodes.len()
-        );
-
         self.results.insert(round, result);
 
         if self.is_selected(round) {
@@ -406,8 +398,6 @@ impl VrfNodeSelector {
             .or_default()
             .insert(authenticated_sender, broadcast);
 
-        let all_selected = self.get_all_selected_nodes_for_round(round);
-        info!("All selected nodes for round {}: {:?}", round, all_selected);
         info!(
             "🔄 [VRF] Updating aggregated selections for round {}...",
             round
@@ -431,63 +421,22 @@ impl VrfNodeSelector {
 
     pub fn get_all_selected_nodes_for_round(&self, round: u64) -> Vec<SerializablePeerId> {
         let mut all_selected = std::collections::HashSet::new();
-        let mut own_selections = Vec::new();
-        let mut received_selections = Vec::new();
 
         if let Some(result) = self.results.get(&round) {
-            info!(
-                "🎯 [VRF] Our own selections for round {}: {:?}",
-                round, result.selected_nodes
-            );
             for node in &result.selected_nodes {
                 all_selected.insert(node.clone());
-                own_selections.push(node.clone());
             }
-        } else {
-            info!(
-                "⚠️ [VRF] No own selections found for round {} - this may be due to UTXO unavailability",
-                round
-            );
         }
 
         if let Some(selections) = self.received_selections.get(&round) {
-            info!(
-                "📥 [VRF] Received {} broadcasts for round {}",
-                selections.len(),
-                round
-            );
-
-            for (selector_id, broadcast) in selections.iter() {
-                info!(
-                    "📋 [VRF] From node {}: selected {} nodes: {:?}",
-                    selector_id.0,
-                    broadcast.selected_nodes.len(),
-                    broadcast.selected_nodes
-                );
-
+            for (_selector_id, broadcast) in selections.iter() {
                 for node in &broadcast.selected_nodes {
                     all_selected.insert(node.clone());
-                    received_selections.push(node.clone());
                 }
             }
-        } else {
-            info!("⚠️ [VRF] No received selections found for round {}", round);
         }
 
         let final_selected: Vec<SerializablePeerId> = all_selected.into_iter().collect();
-
-        info!(
-            "🎉 [VRF] Final aggregated selections for round {}: {} unique nodes",
-            round,
-            final_selected.len()
-        );
-        info!(
-            "📊 [VRF] Own selections: {}, Received selections: {}, Total unique: {}",
-            own_selections.len(),
-            received_selections.len(),
-            final_selected.len()
-        );
-        info!("📋 [VRF] All unique selected nodes: {:?}", final_selected);
 
         final_selected
     }
@@ -508,12 +457,6 @@ impl VrfNodeSelector {
                 }
             }
         }
-
-        info!(
-            "📊 [VRF] Total selected nodes for consensus round {}: {} (with frequencies)",
-            round,
-            all_selected.len()
-        );
 
         all_selected
     }

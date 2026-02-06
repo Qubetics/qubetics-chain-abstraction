@@ -8,6 +8,8 @@ use crate::types::{intent::DepositIntent, SerializablePoint, SerializableScalar}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IntentStatus {
     Pending,
+    /// Included in a UserToVault batch (not yet signed); excluded from future batch picks until completed or failed.
+    Batched,
     Processing,
     Solved,
     Rejected,

@@ -1,5 +1,6 @@
 use libp2p::PeerId;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::protocols::DKGNode;
 use crate::signing::SigningNode;
@@ -14,9 +15,9 @@ impl MpcNetworkLayer {
         self.dkg_node.as_mut()
     }
 
-    /// Get mutable reference to signing node
-    pub fn get_signing_node(&mut self) -> Option<&mut SigningNode> {
-        self.signing_node.as_mut()
+    /// Get the signing node (Arc<Mutex<SigningNode>>). Lock it to get mutable access.
+    pub fn get_signing_node(&self) -> Option<Arc<Mutex<SigningNode>>> {
+        self.signing_node.clone()
     }
 
     /// Get mutable reference to user intent manager

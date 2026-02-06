@@ -25,9 +25,12 @@ let ADDRESSES = [];
 try {
   const data = fs.readFileSync(REGISTERED_ADDRESSES_FILE, 'utf8');
   const registered = JSON.parse(data);
-  ADDRESSES = registered.map(entry => entry.derivedEthAddress);
-  console.log(ADDRESSES)
-  console.log(`✅ Loaded ${ADDRESSES.length} derived Ethereum addresses from ${REGISTERED_ADDRESSES_FILE}`);
+  ADDRESSES = registered.map(entry => entry.derivedEthAddress ?? entry.walletAddress).filter(Boolean);
+  if (ADDRESSES.length === 0) {
+    console.error('❌ No valid addresses (derivedEthAddress or walletAddress) in registered_eth_addresses.json');
+    process.exit(1);
+  }
+  console.log(`✅ Loaded ${ADDRESSES.length} addresses from ${REGISTERED_ADDRESSES_FILE}`);
 } catch (error) {
   console.error(`❌ Error loading addresses: ${error.message}`);
   process.exit(1);
@@ -106,7 +109,7 @@ async function main() {
         const tx = await wallet.sendTransaction({
           to: addr,
           value: ethers.utils.parseEther(AMOUNT),
-          gasLimit: 21000,
+          gasLimit: 100000, // chain requires >21000 intrinsic gas (e.g. 53000)
         });
 
         log(`  TX: ${tx.hash}`, 'yellow');
