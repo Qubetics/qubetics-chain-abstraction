@@ -18,22 +18,56 @@ import fs from 'fs';
 import path from 'path';
 
 // Configuration
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
-// const RPC_BASE_URL = 'http://172.16.12.140:8082';
-// const RPC_BASE_URL = 'http://172.16.14.223:8082';
+const RPC_NODES = [
+  'http://127.0.0.1:8082',
+  'http://127.0.0.1:8083',
+  'http://127.0.0.1:8084',
+];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
+// Get node for a specific user (consistent assignment based on userId)
+function getNodeForUser(userId) {
+  return RPC_NODES[(userId - 1) % RPC_NODES.length];
+}
+
 // ============================================
-// 🔑 PRIVATE KEYS - 300 test accounts for load testing
+// 🔑 PRIVATE KEYS - Load from file or use hardcoded
 // ============================================
-const PRIVATE_KEYS = [
+// To use generated keys: node generate_private_keys.js 100000 --output private_keys.json
+// Then run: KEYS_FILE=private_keys.json node test_sequencer_parallel.js step1
+// To limit number of keys: KEY_LIMIT=100 KEYS_FILE=private_keys_100k.json node test_sequencer_parallel.js step1
+// To force re-registration (ignore local cache): FRESH=1 KEY_LIMIT=100 KEYS_FILE=private_keys_100k.json node test_sequencer_parallel.js step1
+const KEYS_FILE = process.env.KEYS_FILE || null;
+const KEY_LIMIT = process.env.KEY_LIMIT ? parseInt(process.env.KEY_LIMIT, 10) : null;
+const FRESH_START = process.env.FRESH === '1' || process.env.FRESH === 'true';
+
+let PRIVATE_KEYS = [];
+
+if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
+  try {
+    const keysData = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8'));
+    PRIVATE_KEYS = keysData.keys.map(k => k.privateKey);
+    console.log(`✅ Loaded ${PRIVATE_KEYS.length} private keys from ${KEYS_FILE}`);
+
+    // Apply key limit if specified
+    if (KEY_LIMIT && KEY_LIMIT > 0 && KEY_LIMIT < PRIVATE_KEYS.length) {
+      PRIVATE_KEYS = PRIVATE_KEYS.slice(0, KEY_LIMIT);
+      console.log(`🔢 Limited to first ${KEY_LIMIT} keys`);
+    }
+  } catch (error) {
+    console.error(`❌ Error loading keys from ${KEYS_FILE}: ${error.message}`);
+    process.exit(1);
+  }
+} else {
+  // Fallback to hardcoded keys for backward compatibility
+  PRIVATE_KEYS = [
   // Original 35 accounts (1-35)
   // '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
   // 'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1',
   // "b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37",
   // "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
   // "03c2a0cbaf3a88ddbca8aec76259ff01c9165816794dbcda330ecda5c6008c80",
-  "f44356ec40eea5d9f21c7bd2f29bbedb0269d11168bce2ac38f12b4ef5949156",
+  // "f44356ec40eea5d9f21c7bd2f29bbedb0269d11168bce2ac38f12b4ef5949156",
   // "ab71a0afb1ffe76973336a105e14573255863dd4ac5692fac9e5b887ef050555",
   // "d12a02464e11ba3d596380d6a2cb854eff3e537c597c69bb9d90639daf85e2c1",
   // "bb6ae158bb718b25645f1a545dcf301672c1b10a2bf49b3a08b7bcba62415814",
@@ -203,7 +237,7 @@ const PRIVATE_KEYS = [
   // "0442bded36c12f32810ad0bc750cdaf8897af24d44a63bda2cea8f2d1f4c067d",
   // "f4a264db00d16db2741baf29c75583c9f01221da8afd97210ee62160168e0d2b",
   // "09aa9303de1daa31cb1ee442b6299442e82b49ca75cd2c314ca78439b2f01f3b",
-  // "39ec755dc5faa69bbd3bb2e3bd714ecbe6323beb6cee9d19db5ac0bc85b0ac94",
+  "39ec755dc5faa69bbd3bb2e3bd714ecbe6323beb6cee9d19db5ac0bc85b0ac94",
   // "4ab1ebee4ca749ab56657a518c1640e6512741166f28c8f8d14aa758c4d715a7",
   // "834ea2678934b410e7cb4cde11e52168567a12ec3968312b44d65a4f75a2d4b6",
   // "6cfbeab194ccd49247b77dfd5e1b0e2ed48195c452d57498fc86df751f86f544",
@@ -333,7 +367,8 @@ const PRIVATE_KEYS = [
   // "8141e8e2bfe302ea4b63d7c6ac37b03e2cda56918c1312c5724478f4ac77383a",
   // "3c27fcb05a46a7b043ae31c7619058c1d8f9c2d67ea4935d1ee7b70bc9b46599",
   // "b00ed967d107dcd7c1c6a9d3551b992673951c6d3589c849b9c288572d009425"
-];
+  ];
+}
 
 // Colors
 const colors = {
@@ -353,9 +388,9 @@ function log(message, color = 'reset') {
 }
 
 // Register a user (like test_register_user.js)
-async function testRegisterUser(ethereumAddress, userId, wallet) {
+async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
   try {
-    log(`[User ${userId}] Registering address: ${ethereumAddress}`, 'blue');
+    log(`[User ${userId}] Registering address: ${ethereumAddress} via ${nodeUrl}`, 'blue');
 
     // Create registration message: "register:{ethereum_address}:{timestamp}"
     const timestamp = Math.floor(Date.now() / 1000);
@@ -367,7 +402,7 @@ async function testRegisterUser(ethereumAddress, userId, wallet) {
     log(`[User ${userId}] ✍️  Signature: ${signature}`, 'cyan');
 
     const response = await axios.post(
-      `${RPC_BASE_URL}/register_user`,
+      `${nodeUrl}/register_user`,
       {
         ethereum_address: ethereumAddress,
         signature: signature,
@@ -398,12 +433,38 @@ async function testRegisterUser(ethereumAddress, userId, wallet) {
   }
 }
 
-// Get user info (like test_register_user.js)
-async function testGetUserInfo(ethereumAddress, userId) {
+// Get total registered user count from API
+async function getUserCount(nodeUrl = RPC_NODES[0]) {
   try {
-    log(`[User ${userId}] Fetching user info for: ${ethereumAddress}`, 'blue');
+    log(`📊 Fetching total registered user count from API via ${nodeUrl}...`, 'blue');
 
-    const response = await axios.get(`${RPC_BASE_URL}/user_info/${ethereumAddress}`, {
+    const response = await axios.get(`${nodeUrl}/user_count`, {
+      headers: { 'X-API-KEY': API_KEY },
+      timeout: 10000
+    });
+
+    log(`✅ User count retrieved successfully!`, 'green');
+    log(`   Status: ${response.data.status}`, 'cyan');
+    log(`   Count: ${response.data.count}`, 'cyan');
+    log(`   Message: ${response.data.message}`, 'cyan');
+
+    return { success: true, count: response.data.count };
+  } catch (error) {
+    if (error.response) {
+      log(`❌ Failed to get user count: ${error.response.data?.message || error.response.statusText}`, 'red');
+    } else {
+      log(`❌ Error getting user count: ${error.message}`, 'red');
+    }
+    return { success: false, count: 0, error: error.message };
+  }
+}
+
+// Get user info (like test_register_user.js)
+async function testGetUserInfo(ethereumAddress, userId, nodeUrl = RPC_NODES[0]) {
+  try {
+    log(`[User ${userId}] Fetching user info for: ${ethereumAddress} via ${nodeUrl}`, 'blue');
+
+    const response = await axios.get(`${nodeUrl}/user_info/${ethereumAddress}`, {
       headers: { 'X-API-KEY': API_KEY },
       timeout: 10000
     });
@@ -431,14 +492,14 @@ async function testGetUserInfo(ethereumAddress, userId) {
 }
 
 // Submit deposit using user_mpc_deposit (like test_register_user.js)
-async function testUserMpcDeposit({ wallet, amount, userId }) {
+async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
   try {
     const signerAddr = await wallet.getAddress();
-    log(`[User ${userId}] Testing user_mpc_deposit for signer: ${signerAddr}`, 'blue');
+    log(`[User ${userId}] Testing user_mpc_deposit for signer: ${signerAddr} via ${nodeUrl}`, 'blue');
     log(`[User ${userId}]   Amount: ${amount}`, 'cyan');
 
     // Fetch user info to get the derived addresses
-    const userInfo = await testGetUserInfo(signerAddr, userId);
+    const userInfo = await testGetUserInfo(signerAddr, userId, nodeUrl);
     if (!userInfo.success) {
       throw new Error('Failed to fetch user info');
     }
@@ -457,10 +518,10 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
       // target_address: userInfo.data.derived_eth_address,
       target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
-      source_chain: 'bitcoin',
+      source_chain: 'qubetics',
       target_chain: 'qubetics',
       amount: amount,
-      source_token: 'BTC',
+      source_token: 'TICS',
       target_token: 'TICS',
       timestamp: intentTimestamp,
     };
@@ -475,7 +536,7 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
     log(`[User ${userId}]   Signature: ${signature}`, 'cyan');
 
     const response = await axios.post(
-      `${RPC_BASE_URL}/user_mpc_deposit`,
+      `${nodeUrl}/user_mpc_deposit`,
       { signature, msg: depositIntent },
       {
         headers: {
@@ -540,6 +601,45 @@ async function testUserMpcDeposit({ wallet, amount, userId }) {
   }
 }
 
+// Output file for registered addresses - saved on runtime
+const REGISTERED_ADDRESSES_FILE = path.join(process.cwd(), 'registered_eth_addresses.json');
+
+// Load existing registered addresses (for resume capability)
+function loadExistingAddresses() {
+  try {
+    if (fs.existsSync(REGISTERED_ADDRESSES_FILE)) {
+      return JSON.parse(fs.readFileSync(REGISTERED_ADDRESSES_FILE, 'utf8'));
+    }
+  } catch (e) {
+    log(`⚠️ Could not load existing addresses: ${e.message}`, 'yellow');
+  }
+  return [];
+}
+
+// Save addresses to file (batch save - more efficient for large datasets)
+function saveAddressesToFile(existingAddresses) {
+  fs.writeFileSync(REGISTERED_ADDRESSES_FILE, JSON.stringify(existingAddresses, null, 2));
+}
+
+// Add address to array (does NOT write to file - call saveAddressesToFile separately)
+function addAddressToArray(addressData, existingAddresses, existingSet) {
+  const key = addressData.walletAddress.toLowerCase();
+
+  if (existingSet.has(key)) {
+    // Update existing entry
+    const existingIndex = existingAddresses.findIndex(a => a.walletAddress.toLowerCase() === key);
+    if (existingIndex >= 0) {
+      existingAddresses[existingIndex] = addressData;
+    }
+  } else {
+    // Append new entry
+    existingAddresses.push(addressData);
+    existingSet.add(key);
+  }
+
+  return existingAddresses;
+}
+
 // Step 1: Register all users
 async function step1_RegisterUsers() {
   log('═══════════════════════════════════════════════════════════', 'bright');
@@ -550,89 +650,155 @@ async function step1_RegisterUsers() {
   const validPrivateKeys = PRIVATE_KEYS.filter(pk => pk && pk.length >= 64);
   log(`📝 Configuration:`, 'yellow');
   log(`   - Number of users: ${validPrivateKeys.length}`, 'yellow');
-  log(`   - RPC Endpoint: ${RPC_BASE_URL}`, 'yellow');
+  log(`   - RPC Nodes: ${RPC_NODES.join(', ')}`, 'yellow');
+  log(`   - Load balancing: Round-robin across ${RPC_NODES.length} nodes`, 'yellow');
+  log(`   - Output file: ${REGISTERED_ADDRESSES_FILE}`, 'yellow');
+  log(`   - Fresh start: ${FRESH_START ? 'YES (ignoring local cache)' : 'NO (resume mode)'}`, 'yellow');
   log('', 'reset');
 
-  // Create wallets from private keys
-  log(`👥 Creating wallets from private keys...`, 'magenta');
-  const wallets = validPrivateKeys.map((pk, i) => {
-    const privKey = pk.startsWith('0x') ? pk : `0x${pk}`;
-    const wallet = new Wallet(privKey);
-    log(`   User ${i + 1}: ${wallet.address}`, 'cyan');
-    return { userId: i + 1, wallet, address: wallet.address };
-  });
-  log('', 'reset');
-
-  // Register users in batches of 5
-  log('📝 Registering users in batches of 5...', 'magenta');
-  log('   Note: Derived addresses may take a few seconds to generate', 'yellow');
-  log('', 'reset');
-
-  const BATCH_SIZE = 5;
-  const registrationResults = [];
-
-  for (let i = 0; i < wallets.length; i += BATCH_SIZE) {
-    const batch = wallets.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(wallets.length / BATCH_SIZE);
-
-    log(`📦 Batch ${batchNum}/${totalBatches}: Registering users ${batch[0].userId} to ${batch[batch.length - 1].userId}`, 'blue');
-
-    const batchPromises = batch.map(({ address, userId, wallet }) =>
-      testRegisterUser(address, userId, wallet)
-    );
-    const batchResults = await Promise.all(batchPromises);
-    registrationResults.push(...batchResults);
-
-    const batchSuccess = batchResults.filter(r => r.success).length;
-    log(`   ✅ Batch ${batchNum} complete: ${batchSuccess}/${batch.length} users registered`, 'green');
-
-    // Wait 5 seconds between batches (except after the last batch)
-    if (i + BATCH_SIZE < wallets.length) {
-      log(`   ⏳ Waiting 5 seconds before next batch...`, 'yellow');
-      await new Promise(r => setTimeout(r, 5000));
+  // Load existing addresses for resume capability (unless FRESH_START is set)
+  let registeredAddresses = [];
+  if (FRESH_START) {
+    log(`🔄 FRESH_START enabled - clearing local cache and re-registering all users`, 'yellow');
+    // Clear the local file
+    if (fs.existsSync(REGISTERED_ADDRESSES_FILE)) {
+      fs.unlinkSync(REGISTERED_ADDRESSES_FILE);
+      log(`   🗑️  Deleted ${REGISTERED_ADDRESSES_FILE}`, 'cyan');
     }
-    log('', 'reset');
+  } else {
+    registeredAddresses = loadExistingAddresses();
+    const existingCount = registeredAddresses.length;
+    if (existingCount > 0) {
+      log(`📂 Found ${existingCount} existing registered addresses (will skip or update)`, 'cyan');
+    }
   }
 
-  const successfulRegistrations = registrationResults.filter(r => r.success).length;
-  log(`✅ Total registered: ${successfulRegistrations}/${wallets.length} users`, 'green');
+  // Build set of existing addresses FIRST (before creating wallets)
+  const existingWalletAddresses = new Set(registeredAddresses.map(a => a.walletAddress.toLowerCase()));
   log('', 'reset');
 
-  // Wait a bit for derived addresses to be populated
-  log('⏳ Waiting 5 seconds for derived addresses to be populated...', 'yellow');
-  await new Promise(r => setTimeout(r, 5000));
+  // Create wallets from private keys - optimized for large numbers
+  log(`👥 Creating wallets from ${validPrivateKeys.length} private keys...`, 'magenta');
+  const startTime = Date.now();
+
+  const walletsToRegister = [];
+  let skippedCount = 0;
+
+  for (let i = 0; i < validPrivateKeys.length; i++) {
+    const pk = validPrivateKeys[i];
+    const privKey = pk.startsWith('0x') ? pk : `0x${pk}`;
+    const wallet = new Wallet(privKey);
+    const address = wallet.address;
+
+    // Check if already registered
+    if (existingWalletAddresses.has(address.toLowerCase())) {
+      skippedCount++;
+    } else {
+      walletsToRegister.push({ userId: i + 1, wallet, address });
+    }
+
+    // Progress update every 10000
+    if ((i + 1) % 10000 === 0) {
+      log(`   Processed ${i + 1}/${validPrivateKeys.length} keys...`, 'cyan');
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  log(`   ✅ Created wallets in ${elapsed}s`, 'green');
+
+  if (skippedCount > 0) {
+    log(`⏭️  Skipping ${skippedCount} already registered wallets`, 'cyan');
+  }
+  log(`📝 Will register ${walletsToRegister.length} new wallets`, 'yellow');
   log('', 'reset');
 
-  // Get user info for all registered users
-  log('🔍 Fetching user info for all registered users...', 'magenta');
+  if (walletsToRegister.length === 0) {
+    log(`✅ All wallets already registered!`, 'green');
+    log('', 'reset');
+  } else {
+    // Register users in batches
+    const BATCH_SIZE = 500;
+    let successfulRegistrations = 0;
+
+    for (let i = 0; i < walletsToRegister.length; i += BATCH_SIZE) {
+      const batch = walletsToRegister.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(walletsToRegister.length / BATCH_SIZE);
+
+      log(`📦 Batch ${batchNum}/${totalBatches}: Registering users ${batch[0].userId} to ${batch[batch.length - 1].userId}`, 'blue');
+
+      const batchPromises = batch.map(({ address, userId, wallet }) => {
+        const nodeUrl = getNodeForUser(userId);
+        return testRegisterUser(address, userId, wallet, nodeUrl);
+      });
+      const batchResults = await Promise.all(batchPromises);
+
+      // Process results and add to array
+      let batchSuccess = 0;
+      for (let j = 0; j < batch.length; j++) {
+        const { address, userId } = batch[j];
+        const result = batchResults[j];
+
+        if (result.success) {
+          successfulRegistrations++;
+          batchSuccess++;
+
+          // Add to array with derived addresses from registration response
+          const addressData = {
+            userId: userId,
+            walletAddress: address,
+            derivedEthAddress: result.data.derived_eth_address || null,
+            derivedBtcAddress: result.data.derived_btc_address || null,
+            hasUserGroupKey: true,
+            registeredAt: new Date().toISOString()
+          };
+
+          addAddressToArray(addressData, registeredAddresses, existingWalletAddresses);
+        }
+      }
+
+      // Save to file once per batch (much faster than per-registration)
+      saveAddressesToFile(registeredAddresses);
+
+      log(`   ✅ Batch ${batchNum} complete: ${batchSuccess}/${batch.length} users registered`, 'green');
+      log(`   💾 Total saved to file: ${registeredAddresses.length}`, 'cyan');
+
+      // Wait between batches (except after the last batch)
+      if (i + BATCH_SIZE < walletsToRegister.length) {
+        log(`   ⏳ Waiting 5 seconds before next batch...`, 'yellow');
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      log('', 'reset');
+    }
+
+    log(`✅ Total registered in this run: ${successfulRegistrations}/${walletsToRegister.length} users`, 'green');
+  }
+
+  log('', 'reset');
+  log(`💾 Total addresses in file: ${registeredAddresses.length}`, 'green');
   log('', 'reset');
 
-  const userInfoPromises = wallets.map(({ address, userId }) =>
-    testGetUserInfo(address, userId)
-  );
-  const userInfoResults = await Promise.all(userInfoPromises);
-
-  // Save all addresses (wallet + derived) to JSON file
-  const addressData = wallets.map(({ address, userId }, index) => {
-    const userInfoResult = userInfoResults[index];
-    return {
-      userId: userId,
-      walletAddress: address,
-      derivedEthAddress: userInfoResult.success ? userInfoResult.data.derived_eth_address : null,
-      derivedBtcAddress: userInfoResult.success ? userInfoResult.data.derived_btc_address : null,
-      hasUserGroupKey: userInfoResult.success ? userInfoResult.data.has_user_group_key : false
-    };
-  });
-
-  const outputFile = path.join(process.cwd(), 'registered_eth_addresses.json');
-  fs.writeFileSync(outputFile, JSON.stringify(addressData, null, 2));
-
+  // Verify total registered users via API
+  log('═══════════════════════════════════════════════════════════', 'bright');
+  log('🔍 VERIFYING REGISTERED USERS VIA API', 'bright');
+  log('═══════════════════════════════════════════════════════════', 'bright');
   log('', 'reset');
-  log(`💾 Saved ${addressData.length} users with derived addresses to: ${outputFile}`, 'green');
+
+  const userCountResult = await getUserCount();
+
+  if (userCountResult.success) {
+    log('', 'reset');
+    log(`✅ API reports ${userCountResult.count} total registered users`, 'green');
+    log(`   File contains ${registeredAddresses.length} addresses`, 'cyan');
+  } else {
+    log(`⚠️  Could not verify user count via API`, 'yellow');
+  }
+
   log('', 'reset');
   log('═══════════════════════════════════════════════════════════', 'bright');
-  log(`✅ STEP 1 COMPLETE: ${successfulRegistrations}/${wallets.length} users registered`, 'green');
+  log(`✅ STEP 1 COMPLETE`, 'green');
+  log(`   📂 Saved: ${REGISTERED_ADDRESSES_FILE}`, 'cyan');
+  log(`   📊 Total addresses: ${registeredAddresses.length}`, 'cyan');
   log('═══════════════════════════════════════════════════════════', 'bright');
   log('', 'reset');
   log('💡 Next: Run step 2 to submit parallel transactions', 'cyan');
@@ -650,7 +816,8 @@ async function step2_SubmitTransactions() {
   const validPrivateKeys = PRIVATE_KEYS.filter(pk => pk && pk.length >= 64);
   log(`📝 Configuration:`, 'yellow');
   log(`   - Number of parallel transactions: ${validPrivateKeys.length}`, 'yellow');
-  log(`   - RPC Endpoint: ${RPC_BASE_URL}`, 'yellow');
+  log(`   - RPC Nodes: ${RPC_NODES.join(', ')}`, 'yellow');
+  log(`   - Load balancing: Round-robin across ${RPC_NODES.length} nodes`, 'yellow');
   log('', 'reset');
 
   // Create wallets from the same private keys
@@ -670,11 +837,12 @@ async function step2_SubmitTransactions() {
 
   const startTime = Date.now();
 
-  // Submit all transactions in parallel
+  // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    // const amount = "32000000000000000000";  // 5 TICS (reduced from 44 to fit 10 TICS balance)
-    const amount = "700";  // btc
-    return testUserMpcDeposit({ wallet, amount, userId });
+    const amount = "12000000000000000000";  // 5 TICS (reduced from 44 to fit 10 TICS balance)
+    // const amount = "700";  // btc
+    const nodeUrl = getNodeForUser(userId);
+    return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });
 
   log(`⚡ All ${wallets.length} transactions submitted in parallel!`, 'bright');

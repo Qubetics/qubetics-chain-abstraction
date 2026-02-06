@@ -21,8 +21,8 @@ use super::{
         handle_get_intent_details, handle_get_intents_solved_count, handle_get_network_addresses,
         handle_get_node_id, handle_get_pending_intents_count,
         handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
-        handle_get_status, handle_get_uptime, handle_get_user_info, handle_heartbeat,
-        handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
+        handle_get_status, handle_get_uptime, handle_get_user_count, handle_get_user_info,
+        handle_heartbeat, handle_log_partial_pubkeys, handle_register_user, handle_user_mpc_deposit,
         handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
@@ -39,10 +39,10 @@ use crate::types::rpc_server::{
 };
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
-const REQUEST_TIMEOUT_SECONDS: u64 = 90;
+const REQUEST_TIMEOUT_SECONDS: u64 = 900;
 // Rate limiting configuration
-const RATE_LIMIT_MAX_REQUESTS: u32 = 500; // Maximum requests per window (per IP)
-const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
+const RATE_LIMIT_MAX_REQUESTS: u32 = 50000; // Maximum requests per window (per IP)
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 600; // Time window in seconds
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -238,6 +238,11 @@ pub async fn start_http_server(
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_pending_intents_count);
 
+    let get_user_count = warp::path("user_count")
+        .and(warp::get())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_user_count);
+
     // Upgrade endpoints
     let validate_upgrade = warp::path("validate-upgrade")
         .and(warp::post())
@@ -299,6 +304,7 @@ pub async fn start_http_server(
         .or(get_network_addresses)
         .or(get_intents_solved_count)
         .or(get_pending_intents_count)
+        .or(get_user_count)
         .or(validate_upgrade)
         .or(upgrade)
         .or(upgrade_status)

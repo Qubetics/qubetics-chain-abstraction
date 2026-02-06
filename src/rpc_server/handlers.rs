@@ -23,7 +23,7 @@ use crate::{
             NodeIdResponse, PendingClaimRewardRequest, PendingIntentsCountResponse, PendingWithdrawRequest,
             RequestContext,
             SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse,
-            UserInfoResponse,
+            UserCountResponse, UserInfoResponse,
             UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
             WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
@@ -1129,6 +1129,21 @@ pub(crate) async fn handle_get_pending_intents_count(
     let count = (pending.len() + batched.len()) as u64;
     info!("📊 HTTP: pending_intents_count = {} (Pending: {}, Batched: {})", count, pending.len(), batched.len());
     Ok(warp::reply::json(&PendingIntentsCountResponse { count }))
+}
+
+/// Returns the count of successfully registered users.
+/// GET /user_count
+pub(crate) async fn handle_get_user_count(
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let users = user_intent_manager.get_all_users().await;
+    let count = users.len() as u64;
+    info!("📊 HTTP: user_count = {}", count);
+    Ok(warp::reply::json(&UserCountResponse {
+        status: "success".to_string(),
+        count,
+        message: format!("{} users successfully registered", count),
+    }))
 }
 
 pub(crate) async fn handle_get_dkg_status(

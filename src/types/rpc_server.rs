@@ -346,3 +346,11 @@ pub struct IntentsSolvedCountResponse {
 pub struct PendingIntentsCountResponse {
     pub count: u64,
 }
+
+/// Response for GET /user_count (count of successfully registered users)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCountResponse {
+    pub status: String,
+    pub count: u64,
+    pub message: String,
+}
