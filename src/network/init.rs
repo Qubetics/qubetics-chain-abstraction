@@ -20,8 +20,12 @@ use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
-    /// Create a new MpcNetworkLayer instance
-    pub async fn new(node_manager: Box<dyn NodeMembership>, db: Database) -> Result<Self> {
+    /// Create a new MpcNetworkLayer instance with provided keypair
+    pub async fn new(
+        node_manager: Box<dyn NodeMembership>,
+        db: Database,
+        keypair: libp2p::identity::Keypair,
+    ) -> Result<Self> {
         // Load network configuration from config.rs (hardcoded bootstrap nodes)
         let network_config = NetworkConfig::default();
 
@@ -42,11 +46,12 @@ impl MpcNetworkLayer {
             }
         }
 
-        // Load or create persistent keypair using the injected database
-        // Wrap in Arc to satisfy KeyStore trait object requirements
-        // Clone the database since we need to move it into the struct later
-        let keystore: Arc<dyn KeyStore> = Arc::new(db.clone());
-        let (local_key, local_peer_id) = Self::load_or_create_keypair(keystore).await?;
+        // Use the provided keypair instead of loading/creating one
+        let local_peer_id = PeerId::from(keypair.public());
+        info!(
+            "🔑 [NETWORK] Using provided keypair - Peer ID: {}",
+            local_peer_id
+        );
         // Production: Large channel capacity for high-concurrency scenarios
         // With 11+ parallel users, each can generate multiple messages simultaneously
         // Channel needs to handle: broadcasts + retries + ACKs + internal messages
@@ -61,7 +66,7 @@ impl MpcNetworkLayer {
         let channel_health = Arc::new(ChannelHealthMonitor::new());
 
         let mut this = Self {
-            local_key,
+            local_key: keypair,
             local_peer_id,
             message_tx: tx,
             message_rx: rx,

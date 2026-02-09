@@ -1007,6 +1007,29 @@ impl MpcNetworkLayer {
                     peer, sequence, index
                 );
 
+                // ===== SOLVER VALIDATION =====
+                // Validate that the discovered peer is an active solver before processing
+                let solver_id = peer.to_string();
+
+                match crate::contract::validate_solver_active_strict(
+                    &solver_id,
+                    "PEER_DISCOVERY_VALIDATION",
+                )
+                .await
+                {
+                    Ok(_) => {
+                        // Solver is active, proceed with peer discovery
+                    }
+                    Err(e) => {
+                        warn!(
+                            "🚫 [PEER_DISCOVERY_VALIDATION] Rejecting peer discovery for {}: {}",
+                            peer, e
+                        );
+                        return Ok(());
+                    }
+                }
+                // ===== END SOLVER VALIDATION =====
+
                 // Check if we already have this peer to avoid duplicates
                 let current_nodes = self.node_manager.get_active_nodes();
                 if current_nodes.contains(&peer) {

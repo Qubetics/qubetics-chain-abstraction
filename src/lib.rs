@@ -6,6 +6,7 @@ pub mod consensus;
 pub mod contract;
 pub mod database;
 pub mod hrw;
+pub mod identity;
 // Deterministic selection is now integrated into NetworkTransactionSequencer
 // pub mod deterministic_selection;
 pub mod dkg;
@@ -23,8 +24,8 @@ pub mod vrf;
 pub use commands::{CommandKind, CommandProcessor};
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
-    ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage,
-    SigningStorage, TransactionStatusStorage, UserStorage,
+    ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage, SigningStorage,
+    TransactionStatusStorage, UserStorage,
 };
 // Removed deterministic_selection module - functionality integrated into sequencers
 // pub use deterministic_selection::{...};

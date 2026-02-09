@@ -18,6 +18,7 @@ abigen!(
         function getMinimumLiquidityBTC() view returns (uint256)
         function getMinimumLiquidityTICS() view returns (uint256)
         function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
+        function isSolverActive(string solverId) view returns (bool)
     ]"#
 );
 
@@ -105,5 +106,16 @@ impl SolverManagerContract {
             .map_err(|e| anyhow!("getSolversUnclaimedRewards failed: {}", e))?;
         // ethers may return a single tuple for array of structs; normalize to Vec
         Ok(vec![rewards])
+    }
+
+    /// Check if a solver is active by solver ID
+    pub async fn is_solver_active(&self, solver_id: &str) -> Result<bool> {
+        let is_active = self
+            .inner
+            .is_solver_active(solver_id.to_string())
+            .call()
+            .await
+            .map_err(|e| anyhow!("isSolverActive call failed: {}", e))?;
+        Ok(is_active)
     }
 }
