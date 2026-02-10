@@ -29,7 +29,7 @@ import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
-const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
+const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
 const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 

@@ -1,10 +1,90 @@
 [
   {
     "userId": 1,
-    "walletAddress": "0x19B8C629B407D7E714F9FBF0DbbCd55085F5e7D8",
+    "walletAddress": "0x94C8F147767702EC8020E5c616964c72a837C88d",
     "derivedEthAddress": null,
     "derivedBtcAddress": null,
     "hasUserGroupKey": true,
-    "registeredAt": "2026-02-05T13:12:31.998Z"
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 4,
+    "walletAddress": "0x7802fc8e83f3b3Ca8900dFc51615Ee9499f859c8",
+    "derivedEthAddress": "0x17cd71b1b87082f0d7b92560ed1f32157504bf89",
+    "derivedBtcAddress": "moRa5JZvynAjCHJfthZL3bxunf77awmr21",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 7,
+    "walletAddress": "0x210dB8E133E146F28DEdE34B344de07Ce37A2EB9",
+    "derivedEthAddress": "0xc15743d47c0dfdec8a3397906de29a558c55bad7",
+    "derivedBtcAddress": "n1WafAth2RMvooNBAVRXSdKNkWUntZ7fDQ",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 10,
+    "walletAddress": "0x39ed903Db91D6965c6bbcfeE9eC7eeE7007d7648",
+    "derivedEthAddress": "0xbb2f99a75cdcaa47443a5a74c2a473dfc525dbae",
+    "derivedBtcAddress": "mxFKadCsrwzoY3BYniFWaM2fgzp3nLECSm",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 13,
+    "walletAddress": "0x71Ab1452f0c85578A6b7284Ad5493C21650a4458",
+    "derivedEthAddress": null,
+    "derivedBtcAddress": null,
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 16,
+    "walletAddress": "0x62ebcf83C6E93beaAf6885F47b381d41828d6bE1",
+    "derivedEthAddress": "0x81f5030a11be319e84a604bad3b4ee1ed8acaa96",
+    "derivedBtcAddress": "mm98L317SJjBnrWFeqvpx2uJo7cW55BRx5",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 19,
+    "walletAddress": "0x10DA669476DA73D79a9d5B8C86C58b2532e93236",
+    "derivedEthAddress": "0xbeede0191ddfb8f370ab2858ed9046c2ed009700",
+    "derivedBtcAddress": "mqw7Qionk6MUZuzDz34oiED5TTSsBFwUEz",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 22,
+    "walletAddress": "0xCf6437D52014Eb452E8fA42eAea9701d86f22A02",
+    "derivedEthAddress": "0x69a75914a799b0defc6e382e16098c13d7e13517",
+    "derivedBtcAddress": "n2v9nSLD4bY931Gr35apBqgPpATRQ122Rw",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 25,
+    "walletAddress": "0x93F3D30c1c76652B964f63e547f1Fb6dA920a935",
+    "derivedEthAddress": null,
+    "derivedBtcAddress": null,
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 28,
+    "walletAddress": "0x65a1fb26ecbfC0e2eCdd78eE28c1eeE6278c9201",
+    "derivedEthAddress": "0x8e70d420181c0fb7ef3761c07a0c456054529ea6",
+    "derivedBtcAddress": "moLmCwS7ogZzuFTrYWrW4gwRzzyFxYXaph",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.747Z"
+  },
+  {
+    "userId": 31,
+    "walletAddress": "0x07B00714DB8996e9D8C6Ac902dE0984B7979a711",
+    "derivedEthAddress": "0xaa26da389d26118bbdd6350bfcf914610ef7d494",
+    "derivedBtcAddress": "msqufPfi3UuYuns5jqekKs1GZF83rCRmN9",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-09T13:44:54.748Z"
   }
 ]
