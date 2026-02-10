@@ -24,6 +24,10 @@ impl MpcChainExecutor {
     /// - Transaction signing
     ///
     /// It does NOT handle networking concerns - those should be handled by the caller.
+    ///
+    /// NOTE: This is a legacy path. For production use with coordinated nonces,
+    /// callers should use the batch flow instead. If nonce_tuple_id is None,
+    /// the signing will fail as all signing operations now require coordinated nonces.
     pub async fn execute_contract_call(
         signing_node: &mut SigningNode,
         node_manager: &dyn NodeMembership,
@@ -37,6 +41,7 @@ impl MpcChainExecutor {
         tx_hash: &str,
         request_id: Option<String>,
         _original_request: Option<()>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         info!(
             "📝 [CHAIN_EXECUTOR] Executing contract call for transaction type: {:?}",
@@ -114,10 +119,11 @@ impl MpcChainExecutor {
                                 None,
                                 vec![],
                                 vault_tweaked_share,
-                            request_id,
-                            None,
-                            None, // tics_withdraw_identifiers (not applicable)
-                            None, // tics_claim_reward_identifiers (not applicable)
+                                request_id,
+                                None,
+                                None, // tics_withdraw_identifiers (not applicable)
+                                None, // tics_claim_reward_identifiers (not applicable)
+                                nonce_tuple_id.clone(), // Coordinated nonce (required for signing)
                             )
                             .await?;
                     }

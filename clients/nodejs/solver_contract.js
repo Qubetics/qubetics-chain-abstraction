@@ -17,6 +17,10 @@ const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
 const solver1 = new ethers.Wallet(process.env.SOLVER1_PK, provider);
 
+// SOLVER_004's private key for self-validation
+const SOLVER_004_PK = '0x4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
+const solver4 = new ethers.Wallet(SOLVER_004_PK, provider);
+
 // -------- ABI (ONLY WHAT WE USE) --------
 const ABI = [
   "function getNonce(address) view returns (uint256)",
@@ -256,26 +260,28 @@ async function checkSolverLiquidity(solverId) {
 
 /**
  * Validate a solver (makes it active)
+ * The solver must validate themselves using their own wallet
  */
-async function validateSolver(solverId) {
+async function validateSolver(solverId, solverWallet = solver1) {
   console.log(`\n🔐 Validating solver: ${solverId}\n`);
-  
+  console.log(`Using wallet: ${solverWallet.address}\n`);
+
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
-  
+
   const domain = {
     name: "SolverManager",
     version: "1",
     chainId,
     verifyingContract: CONTRACT_ADDRESS
   };
-  
-  let nonce = await solverManager.getNonce(solver1.address);
+
+  let nonce = await solverManager.getNonce(solverWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
-  
+
   console.log("Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
-  
+
   const validateTypes = {
     ValidateSolver: [
       { name: "solverId", type: "string" },
@@ -283,31 +289,31 @@ async function validateSolver(solverId) {
       { name: "deadline", type: "uint256" }
     ]
   };
-  
+
   const validateMessage = {
     solverId,
     nonce,
     deadline
   };
-  
-  const validateSig = await solver1._signTypedData(domain, validateTypes, validateMessage);
+
+  const validateSig = await solverWallet._signTypedData(domain, validateTypes, validateMessage);
   console.log("Validate Signature:", validateSig);
-  
+
   console.log("\n🚀 Sending validate transaction...\n");
-  
-  const solverManagerWithSigner = solverManager.connect(solver1);
+
+  const solverManagerWithSigner = solverManager.connect(solverWallet);
   const tx = await solverManagerWithSigner.validateSolverId(deadline, validateSig);
-  
+
   console.log("Transaction Hash:", tx.hash);
   console.log("Waiting for confirmation...");
-  
+
   const receipt = await tx.wait();
   console.log("✅ Validated! Block:", receipt.blockNumber);
   console.log("Gas Used:", receipt.gasUsed.toString());
-  
+
   // Check if solver is now active
   await checkSolverStatus(solverId);
-  
+
   return true;
 }
 
@@ -369,32 +375,35 @@ async function main() {
   console.log("\n" + "=".repeat(80) + "\n");
   
   // ⚠️ CONFIGURE YOUR SOLVER DETAILS HERE
-  const solverId = "SOLVER_002";
-  const solverName = "Alpha_ayush";
+  const solverId = "SOLVER_004";
+  const solverName = "Test_Solver_004";
   const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
   const solverAddresses = [
-    "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",  // BTC address (testnet)
-    "0xB1Bd33e2021307FE723C6ad795fE7c37Fab60F26"   // EVM address
+    "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",  // BTC address (testnet)
+    "0x19B8C629B407D7E714F9FBF0DbbCd55085F5e7D8"   // EVM address
   ];
-  
+
   // UNCOMMENT THE FUNCTION YOU WANT TO RUN:
-  
+
   // 1. Check solver status (full details)
   // await checkSolverStatus(solverId);
-  
+
   // 2. Check solver liquidity only (quick check)
-  await checkSolverLiquidity(solverId);
-  
+  // await checkSolverLiquidity(solverId);
+
   // 3. Onboard solver (if not already onboarded)
   // await onboardSolver(solverId, solverName, chainIds, solverAddresses);
-  
+
   // 4. Validate solver (REQUIRED to make it active!)
-  // Uncomment this after onboarding:
-  // await validateSolver(solverId);
-  
-  // 5. Check MPC role for an address
-  // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
-  // await checkMPCRole(mpcAddress);
+  // NOTE: The solver must validate themselves using their own wallet!
+  // For SOLVER_004, we use solver4 wallet
+  // await validateSolver(solverId, solver4);
+
+  // 5. Check MPC role for addresses
+  console.log("Checking MPC role for key addresses...\n");
+  await checkMPCRole(solver1.address);  // SOLVER1 from .env
+  await checkMPCRole(solver4.address);  // SOLVER_004
+  await checkMPCRole("0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9");  // SOLVER_003
   
   // 6. Grant MPC role (requires admin privileges)
   // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";

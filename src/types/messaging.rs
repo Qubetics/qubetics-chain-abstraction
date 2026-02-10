@@ -158,6 +158,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     /// Solver add-liquidity batch broadcast
     /// Final node broadcasts selected requests for distributed signing
@@ -171,6 +173,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     TransactionIdBroadcast {
         /// One or more intent hashes associated with this transaction ID.
@@ -408,6 +412,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     UserRegistration {
         ethereum_address: String,
@@ -601,5 +608,8 @@ pub enum GossipsubMessage {
         timestamp: String,
         /// Node ID broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
 }

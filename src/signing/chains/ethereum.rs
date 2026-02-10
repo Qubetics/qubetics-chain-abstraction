@@ -81,6 +81,7 @@ impl<'a> EthereumSigner<'a> {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -95,6 +96,7 @@ impl<'a> EthereumSigner<'a> {
                 original_request,
                 tics_withdraw_identifiers,
                 tics_claim_reward_identifiers,
+                nonce_tuple_id,
             )
             .await
     }
@@ -626,6 +628,7 @@ impl SigningNode {
 
     /// Sign a contract transaction message (overload for ContractTransaction)
     /// When tics_withdraw_identifiers is Some(non-empty), stores in withdraw_pending_transactions_tics for batch TICS withdraw.
+    /// When nonce_tuple_id is Some, uses coordinated nonce from the pool (required for threshold signing).
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
@@ -639,6 +642,7 @@ impl SigningNode {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -727,10 +731,57 @@ impl SigningNode {
             );
         }
 
-        // Create ECDSA signature using secp256k1 (with random nonce if available)
+        // Create ECDSA signature using secp256k1 with COORDINATED nonce
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature =
-            self.create_ecdsa_signature_with_key_contract_async(&msg, transaction, &signing_key).await?;
+        let signature = if let Some(ref tuple_id) = nonce_tuple_id {
+            // Use coordinated nonce - all nodes will use the same k value
+            info!(
+                "🔐 [SIGNING] Using coordinated nonce {} for contract signing",
+                tuple_id
+            );
+
+            // Acquire the specific nonce from the pool
+            if let Some(nm) = &self.nonce_manager {
+                let nm_guard = nm.lock().await;
+                match nm_guard.acquire_specific_nonce(tuple_id).await {
+                    Ok(Some(nonce_tuple)) => {
+                        info!(
+                            "🔐 [CONTRACT_SIGN] Acquired coordinated nonce {} (r_scalar: 0x{}...)",
+                            tuple_id,
+                            hex::encode(&nonce_tuple.r_scalar.0.to_bytes()[..4])
+                        );
+                        drop(nm_guard); // Release lock before signing
+                        self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?
+                    }
+                    Ok(None) => {
+                        error!(
+                            "🔴 [CONTRACT_SIGN] Nonce {} not found or already consumed",
+                            tuple_id
+                        );
+                        return Err(anyhow!("Nonce {} not found or already consumed", tuple_id));
+                    }
+                    Err(e) => {
+                        error!(
+                            "🔴 [CONTRACT_SIGN] Failed to acquire nonce {}: {}",
+                            tuple_id, e
+                        );
+                        return Err(anyhow!("Failed to acquire nonce {}: {}", tuple_id, e));
+                    }
+                }
+            } else {
+                error!("🔴 [CONTRACT_SIGN] Nonce manager not available");
+                return Err(anyhow!("Nonce manager not available for coordinated signing"));
+            }
+        } else {
+            // No nonce_tuple_id provided - this is a BUG in the caller
+            error!(
+                "🔴 [SIGNING] No nonce_tuple_id provided for contract signing - this is a coordination bug!"
+            );
+            return Err(anyhow!(
+                "No nonce_tuple_id provided. All signing operations must use coordinated nonces. \
+                The coordinator must reserve a nonce and include the tuple_id in the broadcast message."
+            ));
+        };
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         info!(
