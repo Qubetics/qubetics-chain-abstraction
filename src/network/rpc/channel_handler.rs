@@ -307,6 +307,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -316,6 +317,7 @@ impl MpcNetworkLayer {
                     timestamp,
                     round,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -369,6 +371,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -377,6 +380,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -433,6 +437,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -441,6 +446,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -693,6 +699,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -702,6 +709,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -755,6 +763,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -764,6 +773,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {

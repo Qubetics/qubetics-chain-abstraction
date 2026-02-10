@@ -98,4 +98,54 @@ pub enum SigningMessage {
         transaction_type: Option<String>,
         request_id: Option<String>,
     },
+
+    // ============================================================
+    // Nonce Protocol Messages (for random k with additive shares)
+    // Supports batch generation: each message contains batch_size values
+    // ============================================================
+
+    /// Phase 1: Broadcast commitments H(R_i[j] || batch_id || j) for batch_size nonces
+    /// Each node commits to all their R_i values before revealing
+    NonceCommitment {
+        from: String,
+        batch_id: String,
+        round: u64,
+        /// Number of nonces in this batch
+        batch_size: usize,
+        /// SHA256(R_i[j] || batch_id || j) for each j in 0..batch_size
+        commitments: Vec<[u8; 32]>,
+        timestamp: u128,
+    },
+
+    /// Phase 2: After all commitments received, reveal R_i[j] = k_i[j] * G and k_i[j]
+    /// Nodes verify each revealed R_i[j] matches prior commitment, then aggregate k[j] = Σk_i[j]
+    NonceReveal {
+        from: String,
+        batch_id: String,
+        round: u64,
+        /// R_i[j] points in compressed SEC1 format (33 bytes each), batch_size points
+        r_points: Vec<Vec<u8>>,
+        /// k_i[j] scalar values (32 bytes each), batch_size scalars
+        /// All nodes collect these to compute k[j] = Σk_i[j] for each j
+        k_shares: Vec<[u8; 32]>,
+        timestamp: u128,
+    },
+
+    /// Request to start nonce generation (broadcast by coordinator)
+    RequestNonceGeneration {
+        batch_id: String,
+        round: u64,
+        coordinator_id: String,
+        batch_size: usize,
+    },
+
+    /// Signal that nonce generation completed successfully
+    NonceGenerationComplete {
+        from: String,
+        batch_id: String,
+        round: u64,
+        /// Number of nonce tuples generated
+        tuples_count: usize,
+        success: bool,
+    },
 }

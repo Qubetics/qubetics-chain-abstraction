@@ -118,6 +118,8 @@ pub enum ChannelMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     /// TICS UserToVault intent batch: final node picks pending intents with source_chain TICS
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
@@ -126,6 +128,9 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce assignments: intent_hash -> nonce tuple_id
+        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        nonce_assignments: std::collections::HashMap<String, String>,
     },
     /// BTC UserToVault intent batch: final node picks pending intents with source_chain bitcoin
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
@@ -134,6 +139,9 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce assignments: intent_hash -> nonce tuple_id
+        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        nonce_assignments: std::collections::HashMap<String, String>,
     },
     /// BTC Intent Manager contract update batch
     /// Used to update network-to-target tx-id on contract for BTC intents
@@ -213,6 +221,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     /// TICS claim-reward batch broadcast (same flow as TicsWithdrawBatch).
     /// Picks TICS claim requests (pending) and BTC claim requests (pending + have tx_id) for contract.
@@ -223,6 +233,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same pattern as WithdrawTxIdBroadcast).
     /// - TICS: txid starts with "0x" (EVM); store tx_id on TICS requests and mark done; mark BTC requests in batch done only. Single: solver_address Some, requests empty. Batch: requests non-empty.
@@ -450,6 +462,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// TICS claim-reward batch broadcast (same flow as TicsWithdrawBatch).
     TicsClaimRewardBatch {
@@ -458,6 +473,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same shape as WithdrawTxIdBroadcast).
     ClaimRewardTxIdBroadcast {
@@ -531,6 +549,9 @@ pub enum GossipsubMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// TICS UserToVault intent batch: intents with source_chain TICS to be signed individually (one tx per intent).
     TicsUserToVaultIntentBatch {
@@ -538,6 +559,10 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce assignments: intent_hash -> nonce tuple_id
+        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        #[serde(default)]
+        nonce_assignments: std::collections::HashMap<String, String>,
     },
     /// BTC UserToVault intent batch: intents with source_chain bitcoin to be signed individually (one tx per intent).
     BtcUserToVaultIntentBatch {
@@ -545,6 +570,10 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce assignments: intent_hash -> nonce tuple_id
+        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        #[serde(default)]
+        nonce_assignments: std::collections::HashMap<String, String>,
     },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
     TransactionFailure {

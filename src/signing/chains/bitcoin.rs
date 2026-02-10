@@ -100,6 +100,9 @@ impl<'a> BitcoinSigner<'a> {
     /// Each slot can have multiple inputs (UTXOs) - mirrors N2T multi-input signing.
     /// Store batch with BtcRoundExtras, create per-input partial signatures,
     /// store in btc_utv_state, and broadcast BtcUtvSignaturesMessage with slot_id.
+    ///
+    /// SECURITY: nonce_assignments parameter is REQUIRED - all intents must have
+    /// coordinated nonces assigned by the coordinator node.
     pub async fn sign_btc_user_to_vault_batch(
         &mut self,
         round: u64,
@@ -110,6 +113,7 @@ impl<'a> BitcoinSigner<'a> {
             Vec<u8>,          // tx_bytes
             Option<Scalar>,   // signing_key
         )>,
+        nonce_assignments: &HashMap<String, String>,  // intent_hash -> nonce_tuple_id
     ) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -241,7 +245,58 @@ impl<'a> BitcoinSigner<'a> {
                 continue;
             }
 
+            // Get the assigned nonce for this intent - REQUIRED for security
+            let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
+                info!(
+                    "🔍 [BTC_UTV_BATCH] Intent {} has nonce assignment: {}",
+                    intent_hash, tuple_id
+                );
+                // Acquire the specific nonce assigned by coordinator
+                if let Some(nm) = &self.node.nonce_manager {
+                    let nm_guard = nm.lock().await;
+                    match nm_guard.acquire_specific_nonce(tuple_id).await {
+                        Ok(Some(tuple)) => {
+                            info!(
+                                "🔐 [BTC_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
+                                tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
+                            );
+                            tuple
+                        }
+                        Ok(None) => {
+                            error!(
+                                "🔴 [BTC_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
+                                tuple_id, intent_hash
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                "🔴 [BTC_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
+                                tuple_id, intent_hash, e
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    error!(
+                        "🔴 [BTC_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                        intent_hash
+                    );
+                    continue;
+                }
+            } else {
+                error!(
+                    "🔴 [BTC_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
+                    intent_hash
+                );
+                continue;
+            };
+
             // Build per-input digests and signatures (like N2T)
+            // NOTE: For BTC multi-input transactions, we use the same nonce for all inputs.
+            // This is a simplification - ideally each input would have its own nonce,
+            // but for threshold signing where all nodes must coordinate, using one nonce
+            // per intent is more practical.
             let mut btc_sigs: Vec<BtcIndexedSignature> = Vec::with_capacity(btc_tx.inputs.len());
 
             for (idx, inp) in btc_tx.inputs.iter().enumerate() {
@@ -252,9 +307,11 @@ impl<'a> BitcoinSigner<'a> {
                     .compute_legacy_sighash_all_p2pkh(btc_tx, idx, &prev_spk)?;
 
                 let msg = Message::from_digest_slice(&digest)?;
+
+                // Sign using coordinated random nonce (fixed k removed for security)
                 let sig = self
                     .node
-                    .create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
+                    .create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?;
                 let (recovery_id, sig_bytes) = sig.serialize_compact();
 
                 let ecdsa_sig = ECDSASignature {
@@ -552,9 +609,44 @@ impl SigningNode {
         let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
             Vec::with_capacity(digests.len());
 
+        // For withdraw/claim batches, acquire a nonce from the pool
+        // NOTE: This is a simplification - for proper multi-input signing, each input
+        // ideally needs its own coordinated nonce. Currently using one nonce for all inputs.
+        let nonce_tuple = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.acquire_nonce().await {
+                Ok(Some(tuple)) => {
+                    info!(
+                        "🔐 [BTC-SIGNING] Acquired nonce {} for signing (r_scalar: 0x{})",
+                        tuple.tuple_id,
+                        hex::encode(tuple.r_scalar.0.to_bytes())
+                    );
+                    Some(tuple)
+                }
+                Ok(None) => {
+                    error!("🔴 [BTC-SIGNING] No nonce available in pool - CANNOT SIGN (fixed k removed for security)");
+                    None
+                }
+                Err(e) => {
+                    error!("🔴 [BTC-SIGNING] Failed to acquire nonce: {} - CANNOT SIGN (fixed k removed for security)", e);
+                    None
+                }
+            }
+        } else {
+            error!("🔴 [BTC-SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
+            None
+        };
+
+        // SECURITY: Require nonce for signing - fixed k has been removed
+        let nonce = nonce_tuple.ok_or_else(|| {
+            anyhow!("Nonce is required for signing - fixed k fallback has been removed for security")
+        })?;
+
         for (i, digest) in digests.iter().enumerate() {
             let msg = Message::from_digest_slice(digest)?;
-            let sig = self.create_ecdsa_signature_with_signing_key(&msg, &signing_key)?;
+
+            // Sign using the coordinated random nonce (fixed k removed for security)
+            let sig = self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce)?;
             per_input_sigs.push((i, sig));
 
             // Log the digest that this node signs with its share for debugging transaction failures

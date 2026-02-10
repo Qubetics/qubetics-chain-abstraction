@@ -222,12 +222,16 @@ impl MpcNetworkLayer {
                 .add_node(peer_id)
                 .map_err(|e| anyhow::anyhow!(e))?;
 
-            // Update signing node threshold after adding peer
+            // Update signing node threshold and handle nonce regeneration for new node
             if let Some(arc) = &self.signing_node {
-            let mut signing_node = arc.lock().await;
+                let mut signing_node = arc.lock().await;
                 let new_threshold = self.node_manager.get_threshold();
+                let new_total = self.node_manager.get_total_nodes();
                 signing_node.set_threshold(new_threshold);
-                info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);
+                // NEW NODE JOINED: Delete stale nonces and regenerate with all nodes
+                // This is critical because the new node doesn't have the old nonces!
+                signing_node.handle_nonce_manager_node_joined(new_total).await;
+                info!("🔄 [THRESHOLD] Updated signing node threshold to {} and nonce total_nodes to {} after Kademlia peer addition", new_threshold, new_total);
             }
         }
 

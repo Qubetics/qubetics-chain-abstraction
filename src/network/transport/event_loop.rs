@@ -278,6 +278,18 @@ impl MpcNetworkLayer {
             return Ok(());
         }
 
+        // Trigger nonce pre-generation on first clock tick when network is ready
+        // This ensures nonces are generated after P2P connections are established
+        if let Some(arc) = &self.signing_node {
+            let signing_node = arc.lock().await;
+            if !signing_node.is_nonce_pool_ready().await {
+                info!("🎲 [CLOCK] Network ready, triggering nonce pre-generation");
+                if let Err(e) = signing_node.start_nonce_pregeneration().await {
+                    warn!("⚠️ [CLOCK] Failed to start nonce pre-generation: {}", e);
+                }
+            }
+        }
+
         info!(
             "⏰ [CLOCK] Available nodes for VRF selection: count={}, nodes={:?}",
             available_nodes.len(),

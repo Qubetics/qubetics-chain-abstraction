@@ -277,6 +277,9 @@ impl NodeContext {
             network.get_msg_tx(),
         )));
 
+        // Note: NonceManager initialization moved after set_database() below
+        // because NonceStorage requires a database reference
+
         let dkg_storage: DkgStorage = database_module.dkg_storage();
         let chain_code = self.chain_code;
         let mut dkg_node = DKGNode::new(
@@ -315,6 +318,14 @@ impl NodeContext {
         network.set_user_intent_manager(db_user_intent_manager.clone()).await;
 
         network.set_database(database).await;
+
+        // Initialize nonce manager for random k generation
+        // MUST be called AFTER set_database() since NonceStorage requires database
+        {
+            let mut sn = signing_node.lock().await;
+            sn.init_nonce_manager(total);
+            info!("🔐 [MAIN] Initialized NonceManager for random nonce generation");
+        }
 
         self.user_intent_manager = Some(db_user_intent_manager);
         self.network = Some(network);

@@ -130,6 +130,31 @@ impl MpcNetworkLayer {
                                 from, slot_id, round, signatures.len()
                             );
                         }
+                        // Nonce protocol messages for random k generation
+                        SigningMessage::NonceCommitment { from, batch_id, round, .. } => {
+                            info!(
+                                "📥 [NONCE] Received commitment from {} for batch {} round {}",
+                                from, batch_id, round
+                            );
+                        }
+                        SigningMessage::NonceReveal { from, batch_id, round, .. } => {
+                            info!(
+                                "📥 [NONCE] Received reveal from {} for batch {} round {}",
+                                from, batch_id, round
+                            );
+                        }
+                        SigningMessage::RequestNonceGeneration { coordinator_id, batch_id, batch_size, .. } => {
+                            info!(
+                                "📥 [NONCE] Received generation request from {} for batch {} (size: {})",
+                                coordinator_id, batch_id, batch_size
+                            );
+                        }
+                        SigningMessage::NonceGenerationComplete { from, batch_id, tuples_count, success, .. } => {
+                            info!(
+                                "📥 [NONCE] Generation complete from {} for batch {} ({} tuples, success: {})",
+                                from, batch_id, tuples_count, success
+                            );
+                        }
                         _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;
@@ -1033,11 +1058,14 @@ impl MpcNetworkLayer {
 
                         // Contract sequencer removed
 
-                        // Update signing node threshold to match current network state
+                        // Update signing node threshold and handle nonce regeneration for new node
                         if let Some(arc) = &self.signing_node {
                             let mut signing_node = arc.lock().await;
                             let new_threshold = self.node_manager.get_threshold();
                             signing_node.set_threshold(new_threshold);
+                            // NEW NODE JOINED: Delete stale nonces and regenerate with all nodes
+                            // This is critical because the new node doesn't have the old nonces!
+                            signing_node.handle_nonce_manager_node_joined(total).await;
                             info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
                         }
 
@@ -1147,6 +1175,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
+                nonce_tuple_id: _,
             } => {
                 info!(
                     "📦 [INTENT_BATCH] Received intent batch broadcast from node {} (round {})",
@@ -1742,6 +1771,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp: _,
                 node_id,
+                nonce_assignments,
             } => {
                 info!(
                     "📦 [TICS_UTV_BATCH] Received TICS UserToVault intent batch from node {} (round {}, {} intents)",
@@ -1937,7 +1967,8 @@ impl MpcNetworkLayer {
                         use crate::signing::chains::EthereumSigner;
                         let mut eth_signer = EthereumSigner::new(&mut signing_node);
                         let n_slots = batch.len();
-                        if let Err(e) = eth_signer.sign_tics_user_to_vault_batch(round, batch).await
+                        // Use coordinated nonces if available
+                        if let Err(e) = eth_signer.sign_tics_user_to_vault_batch_with_nonces(round, batch, nonce_assignments.clone()).await
                         {
                             warn!(
                                 "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
@@ -1945,8 +1976,8 @@ impl MpcNetworkLayer {
                             );
                         } else {
                             info!(
-                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
-                                round, n_slots
+                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots, coordinated: {})",
+                                round, n_slots, !nonce_assignments.is_empty()
                             );
                         }
                     } else {
@@ -1961,6 +1992,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp: _,
                 node_id,
+                nonce_assignments,
             } => {
                 info!(
                     "📦 [BTC_UTV_BATCH] Received BTC UserToVault intent batch from node {} (round {}, {} intents)",
@@ -2160,7 +2192,7 @@ impl MpcNetworkLayer {
                         use crate::signing::chains::BitcoinSigner;
                         let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                         let n_slots = batch.len();
-                        if let Err(e) = btc_signer.sign_btc_user_to_vault_batch(round, batch).await
+                        if let Err(e) = btc_signer.sign_btc_user_to_vault_batch(round, batch, &nonce_assignments).await
                         {
                             warn!(
                                 "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
@@ -2836,6 +2868,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id: _, // Nonces acquired at signing time by async signing functions
             } => {
                 use crate::types::rpc_server::PendingWithdrawRequest;
                 use crate::utils::transaction::RemoveLiquidityBatchRequest;
@@ -3140,6 +3173,7 @@ impl MpcNetworkLayer {
                 round: _round,
                 timestamp,
                 node_id,
+                nonce_tuple_id: _, // Nonces acquired at signing time by async signing functions
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::types::rpc_server::PendingClaimRewardRequest;
