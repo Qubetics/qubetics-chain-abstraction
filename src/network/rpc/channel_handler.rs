@@ -168,6 +168,7 @@ impl MpcNetworkLayer {
                     warn!("❌ [STATUS] Failed to send node status response to requester");
                 }
             }
+
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
@@ -672,6 +673,7 @@ impl MpcNetworkLayer {
                     );
                 }
 
+
                 let swarm_mut = swarm.behaviour_mut();
                 let peer_count = swarm_mut.gossipsub.all_peers().count();
                 if peer_count > 0 {
@@ -684,6 +686,66 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [BTC_CLAIM_REWARD] No peers available for broadcasting BtcClaimRewardBatch"
+                    );
+                }
+            }
+            ChannelMessage::PeerInvalidationBatch {
+                solver_ids,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::PeerInvalidationBatch {
+                    solver_ids,
+                    round,
+                    timestamp,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [PEER_INVALIDATION] Failed to serialize PeerInvalidationBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // 1) Process locally by calling the main gossipsub handler
+                let topic = "peer-invalidation-batch".to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [PEER_INVALIDATION] Failed to process local PeerInvalidationBatch: {}",
+                        e
+                    );
+                }
+
+                // 2) Publish to other peers via gossipsub
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [PEER_INVALIDATION] Failed to publish PeerInvalidationBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [PEER_INVALIDATION] No peers available for broadcasting PeerInvalidationBatch"
                     );
                 }
             }
@@ -2510,6 +2572,29 @@ impl MpcNetworkLayer {
                     info!("ℹ️ [NETWORK] No intent hashes or solver address supplied with transaction ID broadcast");
                 }
 
+                // Process locally first (like add_liquidity / peerinv:) so this node updates DB too
+                {
+                    use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+                    let topic_hash = IdentTopic::new("transaction-id-sync");
+                    let gossip_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
+                        intent_hashes: intent_hashes.clone(),
+                        transaction_id: transaction_id.clone(),
+                        transaction_type: transaction_type.clone(),
+                        solver_address: solver_address.clone(),
+                        node_id: node_id.clone(),
+                    };
+                    let data = serde_json::to_vec(&gossip_message).unwrap_or_default();
+                    let local_msg = GossipMessage {
+                        source: Some(self.local_peer_id),
+                        data,
+                        sequence_number: None,
+                        topic: topic_hash.hash(),
+                    };
+                    if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                        warn!("❌ [NETWORK] Failed to process TransactionIdBroadcast locally: {}", e);
+                    }
+                }
+
                 // Gossip the transaction ID broadcast to other peers immediately so everyone can contribute their share in parallel
                 let gossip_message = GossipsubMessage::TransactionIdBroadcast {
                     intent_hashes: intent_hashes.clone(),
@@ -3401,7 +3486,7 @@ impl MpcNetworkLayer {
                         None,     // user_eth_address (not applicable)
                         request_ids.clone(),   // Pass request_ids for tracking
                         vault_tweaked_share,
-                        None,     // request_id (for sequencer)
+                        None,     // request_id
                         None,     // original_request
                         None,     // tics_withdraw_identifiers (not applicable)
                         None,     // tics_claim_reward_identifiers (not applicable)
@@ -3436,4 +3521,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
+
+
 }
+

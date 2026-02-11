@@ -630,6 +630,63 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // STEP 1.5: Broadcast peer disconnection for contract invalidation
+                let solver_id = peer_id.to_string(); // peer_id IS the solver_id
+                let disconnection_msg = GossipsubMessage::PeerDisconnection {
+                    peer_id: peer_id.to_string(),
+                    solver_id: solver_id.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    detector_node_id: self.local_peer_id.to_string(),
+                };
+
+                if let Ok(msg_bytes) = serde_json::to_vec(&disconnection_msg) {
+                    if let Err(e) = self
+                        .message_tx
+                        .send(ChannelMessage::Broadcast {
+                            topic: "peer-disconnections".to_string(),
+                            data: msg_bytes,
+                        })
+                        .await
+                    {
+                        error!(
+                            "❌ [DISCONNECT] Failed to broadcast peer disconnection: {}",
+                            e
+                        );
+                    } else {
+                        info!(
+                            "📡 [DISCONNECT] Broadcasted disconnection for solver: {}",
+                            solver_id
+                        );
+                    }
+                }
+
+                // Store locally for batch processing
+                let key = format!(
+                    "{}{}",
+                    crate::database::keys::PENDING_DISCONNECTION,
+                    peer_id
+                );
+                let disconnection_record = serde_json::json!({
+                    "peer_id": peer_id.to_string(),
+                    "solver_id": solver_id,
+                    "timestamp": chrono::Utc::now().timestamp(),
+                    "detector_node_id": self.local_peer_id.to_string(),
+                });
+
+                if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
+                    if let Err(e) = self.db.put_string(&key, &record_str) {
+                        error!(
+                            "❌ [DISCONNECT] Failed to store disconnection record: {}",
+                            e
+                        );
+                    } else {
+                        info!(
+                            "💾 [DISCONNECT] Stored disconnection record for solver: {}",
+                            solver_id
+                        );
+                    }
+                }
+
                 // STEP 2: Process disconnect locally
                 self.handle_node_disconnect_internal(peer_id).await;
             }

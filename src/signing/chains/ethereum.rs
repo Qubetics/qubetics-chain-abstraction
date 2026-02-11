@@ -808,11 +808,10 @@ impl SigningNode {
         let mut pending_transactions = self.pending.pending_transactions.write().await;
         let primary_intent_hash = intent_hashes.first().cloned();
 
-        // Determine transaction type based on operation_type for this round
-        // For BTC intent manager update, use IntentStatusUpdate (only marks intent as Solved, doesn't update network_to_target_tx_id)
-        // For add_liquidity requests (prefix "addliq:"), use None (vault key, not NetworkToTarget)
-        // For other batch transactions (TICS), use NetworkToTarget (updates network_to_target_tx_id and marks as Solved)
-        let tx_type_for_round = if !intent_hashes.is_empty() {
+        // Prefix-based tx type (like add_liquidity "addliq:"): "peerinv:" => PeerInvalidation
+        let tx_type_for_round = if intent_hashes.iter().any(|h| h.starts_with("peerinv:")) {
+            Some(TransactionType::PeerInvalidation)
+        } else if !intent_hashes.is_empty() {
             // Check if this is an add_liquidity transaction (request_id starts with "addliq:")
             let is_add_liquidity = intent_hashes.iter().any(|h| h.starts_with("addliq:"));
 
@@ -1032,6 +1031,16 @@ impl SigningNode {
                             &group_address,
                             chain_id,
                             "ClaimReward (TICS) transaction",
+                        )
+                        .await?
+                    }
+                    Some(crate::types::TransactionType::PeerInvalidation) => {
+                        let group_key = self.get_vault_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "PeerInvalidation (invalidateSolverIds) transaction",
                         )
                         .await?
                     }

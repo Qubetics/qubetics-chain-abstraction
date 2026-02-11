@@ -41,3 +41,5 @@ pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";
 pub const INTENT_HASH_TO_USER: &str = "intent_to_user:";
 /// Target chain amount (in smallest units) for an intent, computed from prices per node
 pub const INTENT_TARGET_AMOUNT: &str = "intent_target_amount:";
+/// Pending peer disconnections for batch invalidation
+pub const PENDING_DISCONNECTION: &str = "pending_disconnection:";

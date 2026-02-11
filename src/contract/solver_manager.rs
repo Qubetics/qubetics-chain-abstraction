@@ -19,6 +19,7 @@ abigen!(
         function getMinimumLiquidityTICS() view returns (uint256)
         function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
         function isSolverActive(string solverId) view returns (bool)
+        function invalidateSolverIds(string[] solverIds)
     ]"#
 );
 
@@ -117,5 +118,33 @@ impl SolverManagerContract {
             .await
             .map_err(|e| anyhow!("isSolverActive call failed: {}", e))?;
         Ok(is_active)
+    }
+
+    /// Invalidate multiple solver IDs (marks them as inactive)
+    /// This is a state-changing function that requires a transaction
+    pub async fn invalidate_solver_ids(&self, solver_ids: Vec<String>) -> Result<()> {
+        if solver_ids.is_empty() {
+            return Ok(());
+        }
+
+        self.inner
+            .invalidate_solver_ids(solver_ids)
+            .send()
+            .await
+            .map_err(|e| anyhow!("invalidateSolverIds transaction failed: {}", e))?
+            .await
+            .map_err(|e| anyhow!("invalidateSolverIds receipt failed: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Encode call data for invalidateSolverIds function
+    /// This can be used to create batch transactions
+    pub fn encode_invalidate_call_data(&self, solver_ids: Vec<String>) -> Result<Vec<u8>> {
+        let call = self.inner.invalidate_solver_ids(solver_ids);
+        let calldata = call
+            .calldata()
+            .ok_or_else(|| anyhow!("Failed to encode calldata"))?;
+        Ok(calldata.to_vec())
     }
 }

@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { ethers } from 'ethers';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { time } from 'console';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -10,11 +11,14 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '../../.env') });
 
 // -------- CONFIG --------
-const RPC_URL = process.env.RPC_URL;
-const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
+const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL;
+const CONTRACT_ADDRESS = process.env.SOLVER_CONTRACT_ADDRESS;
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
+// Hardcoded fee-payer wallet for all onboard / validate / addLiquidity / role txns.
+// Replace this with your own private key (0x-prefixed) before using in production.
+// const FEE_PAYER_PRIVATE_KEY = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
 const solver1 = new ethers.Wallet(process.env.SOLVER1_PK, provider);
 
 // -------- ABI (ONLY WHAT WE USE) --------
@@ -271,7 +275,7 @@ async function validateSolver(solverId) {
   };
   
   let nonce = await solverManager.getNonce(solver1.address);
-  const deadline = Math.floor(Date.now() / 1000) + 3600;
+  const deadline = Math.floor(Date.now() / 1000) + 3600; // current unix timestamp + 1 hour
   
   console.log("Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
@@ -369,46 +373,87 @@ async function main() {
   console.log("\n" + "=".repeat(80) + "\n");
   
   // ⚠️ CONFIGURE YOUR SOLVER DETAILS HERE
-  const solverId = "SOLVER_002";
-  const solverName = "Alpha_ayush";
-  const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
-  const solverAddresses = [
-    "tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs",  // BTC address (testnet)
-    "0xB1Bd33e2021307FE723C6ad795fE7c37Fab60F26"   // EVM address
+  // You can now configure up to 3 different (peer-id, EVM address) pairs.
+  // Use your node's libp2p peer IDs as solverId strings, and one EVM address per solver.
+  const solverConfigs = [
+    // {
+    //   // Solver 1
+    //   solverId: "12D3KooWG3BLEpXA3HRGiupN6ShTQSUpA1UKNfMUniULZkQrAgF1",
+    //   solverName: "Solver_11",
+    //   // For pure EVM solvers, you typically only need the EVM chain (9029)
+    //   chainIds: [0,9029],
+    //   solverAddresses: [
+    //     // EVM address for solver 1
+    //     "0x70a8cd2123ca1383d60ea0284d5a9c2416d99711",
+    //     "mhXTfUQKHfjvkybjQA4Nbm776Db9kZ9SJo"
+    //   ],
+    // },
+    // {
+    //   // Solver 2
+    //   solverId: "12D3KooWRPJYRDtUimxFxmEgRhVYa8GC7uRMVmvkTVLtTv9tpRYK",
+    //   solverName: "Solver_22",
+    //   chainIds: [0,9029],
+    //   solverAddresses: [
+    //     "0x6cae004444577fcdbc6c55801a60117f126b7e51",
+    //     "mh9fTfU6tsqJLmMjQUZp1WvNvsBsdmLLJB"
+    //   ],
+    // },
+    {
+      // Solver 3
+      solverId: "12D3KooWKofvyRENFGUQKp2UAFVJRBEFVwgh2sXkkp3amPQNPvNJ",
+      solverName: "Solver_123456",
+      chainIds: [0,9029],
+      solverAddresses: [
+        // EVM address for solver 3
+        "0x4E83362442B8d1beC281594cEa3050c8EB01311C",
+        "bc1p0jl4w6nq9l3n9g5t8qg8p4a0r6z6k3p8q7c9w2"
+      ],
+    },
   ];
+
+  // If you still want to work with a single solver, you can reference
+  // solverConfigs[0] directly:
+  const { solverId, solverName, chainIds, solverAddresses } = solverConfigs[0];
   
   // UNCOMMENT THE FUNCTION YOU WANT TO RUN:
   
   // 1. Check solver status (full details)
-  // await checkSolverStatus(solverId);
+  await checkSolverStatus(solverId);
   
-  // 2. Check solver liquidity only (quick check)
-  await checkSolverLiquidity(solverId);
+  // 2. Check solver liquidity only (quick check) for the first solver
+  // await checkSolverLiquidity(solverId);
   
-  // 3. Onboard solver (if not already onboarded)
+  // 3. Onboard a single solver (if not already onboarded)
   // await onboardSolver(solverId, solverName, chainIds, solverAddresses);
   
-  // 4. Validate solver (REQUIRED to make it active!)
-  // Uncomment this after onboarding:
+  // 4. Validate a single solver (REQUIRED to make it active!)
   // await validateSolver(solverId);
+
+  // 5. Onboard & validate ALL configured solvers (3 peer-ids, 3 EVM addresses)
+  // for (const cfg of solverConfigs) {
+  //   console.log(`\n=== Onboard & validate ${cfg.solverId} (${cfg.solverName}) ===\n`);
+  //   await onboardSolver(cfg.solverId, cfg.solverName, cfg.chainIds, cfg.solverAddresses);
+  //   await validateSolver(cfg.solverId);
+  // }
   
-  // 5. Check MPC role for an address
+  // 6. Check MPC role for an address
   // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
   // await checkMPCRole(mpcAddress);
   
-  // 6. Grant MPC role (requires admin privileges)
+  // 7. Grant MPC role (requires admin privileges)
   // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
   // await grantMPCRole(mpcAddress);
   
-  // 7. Test addLiquidityBatch
-  // const deposits = [
-  //   {
-  //     solverId: "SOLVER_002",
-  //     amount: 1000,
-  //     chainType: 1  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
-  //   }
-  // ];
-  // await testAddLiquidityBatch(deposits);
+  // 8. Test addLiquidityBatch
+  const deposits = [
+    {
+      solverId: "12D3KooWKofvyRENFGUQKp2UAFVJRBEFVwgh2sXkkp3amPQNPvNJ",
+      // Use a string for large values to avoid JS number overflow
+      amount: "10000000000000000000",
+      chainType: 1  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
+    }
+  ];
+  await testAddLiquidityBatch(deposits);
   
   console.log("\n" + "=".repeat(80));
   console.log("✅ DONE!");

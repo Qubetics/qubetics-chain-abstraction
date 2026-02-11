@@ -88,6 +88,8 @@ pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
 pub const TOPIC_TICS_USER_TO_VAULT_BATCH: &str = "tics-user-to-vault-batch";
 pub const TOPIC_BTC_USER_TO_VAULT_BATCH: &str = "btc-user-to-vault-batch";
 pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
+pub const TOPIC_PEER_DISCONNECTIONS: &str = "peer-disconnections";
+pub const TOPIC_PEER_INVALIDATION_BATCH: &str = "peer-invalidation-batch";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,6 +120,10 @@ pub enum GossipTopic {
     TransactionBroadcast,
     TransactionFailure,
     BtcIntentManagerTxUpdate,
+    /// Gossip for PeerDisconnection events (each node stores pending_disconnection entries)
+    PeerDisconnections,
+    /// Peer invalidation batch broadcast (final node -> all nodes)
+    PeerInvalidationBatch,
 }
 
 impl GossipTopic {
@@ -148,6 +154,8 @@ impl GossipTopic {
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
         GossipTopic::BtcIntentManagerTxUpdate,
+        GossipTopic::PeerDisconnections,
+        GossipTopic::PeerInvalidationBatch,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -178,6 +186,8 @@ impl GossipTopic {
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
             GossipTopic::BtcIntentManagerTxUpdate => TOPIC_BTC_INTENT_MANAGER_TX_UPDATE,
+            GossipTopic::PeerDisconnections => TOPIC_PEER_DISCONNECTIONS,
+            GossipTopic::PeerInvalidationBatch => TOPIC_PEER_INVALIDATION_BATCH,
         }
     }
 }
@@ -229,6 +239,9 @@ pub struct MpcNetworkLayer {
             >,
         >,
     >,
+    /// Pending peer invalidation: round (string) -> solver_ids. Filled when processing PeerInvalidationBatch;
+    /// used when TransactionBroadcast(peer_invalidation:round) is received to broadcast PeerInvalidationTxConfirmed.
+    pub(crate) peer_invalidation_pending: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl MpcNetworkLayer {

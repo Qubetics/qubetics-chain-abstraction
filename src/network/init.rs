@@ -10,7 +10,7 @@ use tokio::io;
 use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 
-use crate::database::{keys, Database, KeyStore};
+use crate::database::{keys, Database};
 use crate::node_selection::NodeMembership;
 
 use crate::network::config::NetworkConfig;
@@ -20,14 +20,21 @@ use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
 
 impl MpcNetworkLayer {
-    /// Create a new MpcNetworkLayer instance with provided keypair
-    pub async fn new(
+    /// Create a new MpcNetworkLayer instance with provided keypair and optional extra bootstrap peers
+    pub async fn new_with_bootstrap(
         node_manager: Box<dyn NodeMembership>,
         db: Database,
         keypair: libp2p::identity::Keypair,
+        extra_bootstrap: Vec<Multiaddr>,
     ) -> Result<Self> {
         // Load network configuration from config.rs (hardcoded bootstrap nodes)
-        let network_config = NetworkConfig::default();
+        let mut network_config = NetworkConfig::default();
+
+        // Merge CLI-provided bootstrap peers into the config (if any)
+        for addr in extra_bootstrap {
+            network_config.bootstrap_peers.push(addr.clone());
+            network_config.discovery_seeds.push(addr);
+        }
 
         // Log bootstrap node configuration
         info!(
@@ -95,6 +102,7 @@ impl MpcNetworkLayer {
             channel_health,
             outbound_inflight: Arc::new(Mutex::new(HashMap::new())),
             outbound_retry: Arc::new(Mutex::new(HashMap::new())),
+            peer_invalidation_pending: Arc::new(Mutex::new(HashMap::new())),
         };
 
         this.bootstrap_peer_ids = this
@@ -185,6 +193,15 @@ impl MpcNetworkLayer {
         info!("📊 Current gossipsub peer count: {}", peer_count);
 
         Ok(())
+    }
+
+    /// Backwards-compatible constructor without extra bootstrap peers (used in tests)
+    pub async fn new(
+        node_manager: Box<dyn NodeMembership>,
+        db: Database,
+        keypair: libp2p::identity::Keypair,
+    ) -> Result<Self> {
+        Self::new_with_bootstrap(node_manager, db, keypair, Vec::new()).await
     }
 
     /// Build swarm with configured behavior

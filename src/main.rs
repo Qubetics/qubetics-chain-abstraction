@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use dotenv::dotenv;
 use hex::FromHex;
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     commands::CommandProcessor,
@@ -35,6 +35,9 @@ struct Cli {
     /// Generate and save a new peer identity, then exit
     #[arg(long)]
     generate: bool,
+    /// Optional bootstrap peers as multiaddrs (positional args)
+    #[arg(value_name = "BOOTSTRAP_PEER")]
+    bootstrap_peers: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -111,6 +114,8 @@ struct NodeContext {
     keypair: libp2p::identity::Keypair,
     peer_id: PeerId,
     chain_code: [u8; 32],
+    /// Extra bootstrap peers passed on the CLI (if any)
+    cli_bootstrap_peers: Vec<Multiaddr>,
     database_module: Option<DatabaseModule>,
     database: Option<Arc<Database>>,
     network: Option<MpcNetworkLayer>,
@@ -120,12 +125,23 @@ struct NodeContext {
 }
 
 impl NodeContext {
-    fn new(config: Config) -> Result<Self> {
+    fn new(config: Config, cli_bootstrap: Vec<String>) -> Result<Self> {
         // Load existing keypair or generate new one
         let keypair = mpc_node::identity::load_or_generate()
             .context("Failed to load or generate peer identity")?;
         let peer_id = PeerId::from(keypair.public());
         let chain_code = load_chain_code()?;
+
+        // Parse CLI-provided bootstrap peers (if any)
+        let mut cli_bootstrap_peers = Vec::new();
+        for addr_str in cli_bootstrap {
+            match addr_str.parse::<Multiaddr>() {
+                Ok(addr) => cli_bootstrap_peers.push(addr),
+                Err(e) => {
+                    warn!("⚠️ [MAIN] Failed to parse CLI bootstrap peer '{}': {}", addr_str, e);
+                }
+            }
+        }
 
         // Log whether we loaded existing identity or generated new one
         if mpc_node::identity::keypair_exists(&mpc_node::identity::default_keypair_path()) {
@@ -139,6 +155,7 @@ impl NodeContext {
             keypair,
             peer_id,
             chain_code,
+            cli_bootstrap_peers,
             database_module: None,
             database: None,
             network: None,
@@ -283,10 +300,11 @@ impl NodeContext {
 
         info!("Initial node count: {}, threshold: {}", total, threshold);
 
-        let mut network = MpcNetworkLayer::new(
+        let mut network = MpcNetworkLayer::new_with_bootstrap(
             node_manager,
             database.as_ref().clone(),
             self.keypair.clone(),
+            self.cli_bootstrap_peers.clone(),
         )
         .await?;
 
@@ -457,7 +475,7 @@ async fn main() -> Result<()> {
     init_network_type_from_env()?;
 
     let config = ConfigBuilder::new().build()?;
-    let mut context = NodeContext::new(config)?;
+    let mut context = NodeContext::new(config, cli.bootstrap_peers)?;
 
     context.init_logging()?;
 
