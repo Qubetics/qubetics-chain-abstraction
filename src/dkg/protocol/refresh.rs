@@ -1,15 +1,20 @@
 use crate::dkg::{artifacts::DKGMessage, DKGNode};
+use crate::network::transport::types::TOPIC_PEER_DISCONNECTIONS;
 use crate::types::dkg::MSG_TOPIC_DKG;
 use crate::types::{GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar};
 use crate::utils::hmac_helper::hmac_scalar_mod_n;
 use crate::{utils, NodeMembership};
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use ff::{Field, PrimeField};
 use k256::{AffinePoint, ProjectivePoint, Scalar};
 use serde_json;
 use std::collections::HashMap;
 use tokio::time::Duration;
 use tracing::{info, warn};
+
+/// Timeout for a single proactive refresh round before marking missing peers as failed.
+const REFRESH_ROUND_TIMEOUT_SECS: u64 = 120;
 
 impl DKGNode {
     fn generate_zero_constant_polynomial(&self) -> Result<Vec<Scalar>> {
@@ -181,6 +186,15 @@ impl DKGNode {
                 e
             );
         }
+
+        // Set (or reset) the per-round timeout deadline for this refresh round.
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(REFRESH_ROUND_TIMEOUT_SECS);
+        self.set_refresh_deadline(Some(deadline));
+        info!(
+            "⏰ [REFRESH] Set per-round refresh timeout to {} seconds from now",
+            REFRESH_ROUND_TIMEOUT_SECS
+        );
 
         // Get all active nodes and their indices from database (DB-first ordering)
         let active_nodes: Vec<String> = node_manager
@@ -532,6 +546,8 @@ impl DKGNode {
         &mut self,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
+        use std::collections::HashSet;
+
         let expected_active_nodes = node_manager.get_active_nodes().len();
 
         let all_shares_stored = self.storage.get_all_shares().await?;
@@ -551,6 +567,7 @@ impl DKGNode {
             refresh_share_keys
         );
 
+        // Happy path: we have all expected refresh shares for this round.
         if refresh_shares_count >= expected_active_nodes {
             info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
             info!(
@@ -559,13 +576,155 @@ impl DKGNode {
             );
             info!("🎉 [REFRESH-SECURE] Now computing new secret share...");
             info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
+            // Clear the deadline for this round before computing.
+            self.set_refresh_deadline(None);
             self.compute_refreshed_secret().await?;
-        } else {
-            info!(
-                "⏳ [REFRESH-SECURE] Waiting for more refresh shares ({}/{})",
-                refresh_shares_count, expected_active_nodes
-            );
+            return Ok(());
         }
+
+        // Not enough shares yet – check the per-round deadline.
+        if let Some(deadline) = self.refresh_deadline() {
+            if std::time::Instant::now() < deadline {
+                info!(
+                    "⏳ [REFRESH-SECURE] Waiting for more refresh shares ({}/{}) before timeout",
+                    refresh_shares_count, expected_active_nodes
+                );
+                return Ok(());
+            }
+
+            // Deadline has expired: treat non-responding nodes as failed for this round.
+            info!(
+                "⏰ [REFRESH-SECURE] Refresh round timed out; marking missing nodes as failed"
+            );
+
+            let active_peers = node_manager.get_active_nodes();
+            let received_nodes: HashSet<String> = refresh_share_keys
+                .iter()
+                .map(|k| k.trim_start_matches("refresh_").to_string())
+                .collect();
+
+            let mut failed_solver_ids: Vec<String> = Vec::new();
+            for peer in active_peers.iter() {
+                let peer_id_str = peer.to_string();
+                if !received_nodes.contains(&peer_id_str) {
+                    failed_solver_ids.push(peer_id_str);
+                }
+            }
+
+            if failed_solver_ids.is_empty() {
+                info!(
+                    "⏰ [REFRESH-SECURE] Timeout expired but all active nodes have contributed refresh shares; nothing to prune"
+                );
+                return Ok(());
+            }
+
+            info!(
+                "🚫 [REFRESH-SECURE] Failed refresh sharers this round: {:?}",
+                failed_solver_ids
+            );
+
+            // For each failed node:
+            // 1) Broadcast DKG::NodeDisconnected so the network removes it from membership and
+            //    triggers a new proactive refresh with the pruned set.
+            // 2) Broadcast PeerDisconnection so the normal PENDING_DISCONNECTION /
+            //    PeerInvalidationBatch → invalidateSolverIds pipeline can run.
+            for solver_id in failed_solver_ids.iter() {
+                // 1) NodeDisconnected gossip on MSG_TOPIC_DKG
+                let disconnect_msg = DKGMessage::NodeDisconnected {
+                    disconnected_node_id: solver_id.clone(),
+                    broadcaster_node_id: self.id.clone(),
+                };
+                let gossip_wrap = GossipsubMessage::DKG(disconnect_msg);
+                match serde_json::to_vec(&gossip_wrap) {
+                    Ok(bytes) => {
+                        if let Err(e) = self.broadcast(MSG_TOPIC_DKG, &bytes).await {
+                            warn!(
+                                "❌ [REFRESH-SECURE] Failed to broadcast NodeDisconnected for {}: {}",
+                                solver_id, e
+                            );
+                        } else {
+                            info!(
+                                "📡 [REFRESH-SECURE] Broadcasted NodeDisconnected for failed peer {}",
+                                solver_id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "❌ [REFRESH-SECURE] Failed to serialize NodeDisconnected for {}: {}",
+                            solver_id, e
+                        );
+                    }
+                }
+
+                // 2) PeerDisconnection gossip on TOPIC_PEER_DISCONNECTIONS
+                let disconnection_msg = GossipsubMessage::PeerDisconnection {
+                    peer_id: solver_id.clone(),
+                    solver_id: solver_id.clone(),
+                    timestamp: Utc::now().timestamp(),
+                    detector_node_id: self.id.clone(),
+                };
+
+                match serde_json::to_vec(&disconnection_msg) {
+                    Ok(bytes) => {
+                        if let Err(e) = self.broadcast(TOPIC_PEER_DISCONNECTIONS, &bytes).await {
+                            warn!(
+                                "❌ [REFRESH-SECURE] Failed to broadcast PeerDisconnection for {}: {}",
+                                solver_id, e
+                            );
+                        } else {
+                            info!(
+                                "📡 [REFRESH-SECURE] Broadcasted PeerDisconnection for failed peer {}",
+                                solver_id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "❌ [REFRESH-SECURE] Failed to serialize PeerDisconnection for {}: {}",
+                            solver_id, e
+                        );
+                    }
+                }
+            }
+
+            // Decide whether we can safely retry refresh with the remaining nodes, or must hard-abort.
+            let remaining_nodes = expected_active_nodes.saturating_sub(failed_solver_ids.len());
+            let threshold = node_manager.get_threshold();
+
+            if remaining_nodes < threshold {
+                warn!(
+                    "❌ [REFRESH-SECURE] Too many nodes failed refresh (remaining {} < threshold {}); hard-aborting refresh",
+                    remaining_nodes, threshold
+                );
+
+                // Clear in-progress flag so HTTP APIs can resume; keep refresh shares for debugging.
+                if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+                    warn!(
+                        "⚠️ [REFRESH-SECURE] Failed to clear refresh_in_progress on hard abort: {}",
+                        e
+                    );
+                }
+
+                // Clear the deadline so future rounds can install a fresh timeout.
+                self.set_refresh_deadline(None);
+            } else {
+                info!(
+                    "🔄 [REFRESH-SECURE] Refresh will be retried with pruned membership (remaining {} nodes, threshold {})",
+                    remaining_nodes, threshold
+                );
+                // Keep refresh_in_progress = true across retries; the next call to
+                // execute_polynomial_refresh will overwrite the deadline.
+            }
+
+            return Ok(());
+        }
+
+        // No deadline configured: just keep waiting for more shares (legacy behaviour).
+        info!(
+            "⏳ [REFRESH-SECURE] Waiting for more refresh shares ({}/{}) - no timeout configured",
+            refresh_shares_count, expected_active_nodes
+        );
 
         Ok(())
     }
@@ -628,6 +787,8 @@ impl DKGNode {
                         e
                     );
                 }
+                // Clear any outstanding deadline for this failed round.
+                self.set_refresh_deadline(None);
                 return Err(anyhow!("Refresh share has wrong index"));
             }
         }
@@ -772,6 +933,8 @@ impl DKGNode {
                     e
                 );
             }
+            // Clear any outstanding deadline for this failed round.
+            self.set_refresh_deadline(None);
             return Err(anyhow!(
                 "Refresh aborted: public key would have changed (original != new). Secret must be preserved."
             ));
@@ -948,6 +1111,9 @@ impl DKGNode {
                 e
             );
         }
+
+        // Clear any outstanding deadline now that this refresh round has completed successfully.
+        self.set_refresh_deadline(None);
 
         Ok(())
     }

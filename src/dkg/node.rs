@@ -1,16 +1,19 @@
 use anyhow::{anyhow, ensure, Result};
 use k256::{ProjectivePoint, Scalar};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
-use crate::NodeMembership;
 use crate::database::DkgStorage;
-use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar, GossipsubMessage};
-use k256::AffinePoint;
-use crate::DKGMessage::*;
+use crate::types::{
+    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
+};
 use crate::types::dkg::MSG_TOPIC_DKG;
+use crate::DKGMessage::*;
+use crate::NodeMembership;
+use k256::AffinePoint;
 
 #[derive(Clone)]
 struct DKGState {
@@ -19,6 +22,8 @@ struct DKGState {
     total_nodes: usize,
     round: u64,
     my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
+    /// Deadline for the current proactive refresh round (if any). Used to detect timeouts.
+    refresh_deadline: Option<Instant>,
 }
 
 pub struct DKGNode {
@@ -60,6 +65,17 @@ impl DKGNode {
             }
         }
         state.my_permanent_index = Some(index);
+    }
+
+    /// Set or clear the refresh deadline for the current proactive refresh round.
+    pub(crate) fn set_refresh_deadline(&self, deadline: Option<Instant>) {
+        let mut state = self.state.write().unwrap();
+        state.refresh_deadline = deadline;
+    }
+
+    /// Get the current refresh deadline, if any.
+    pub(crate) fn refresh_deadline(&self) -> Option<Instant> {
+        self.state.read().unwrap().refresh_deadline
     }
 
     /// Clear in-memory permanent index (used after clear_state_for_reconnect).
@@ -114,6 +130,7 @@ impl DKGNode {
             total_nodes,
             round: 0,
             my_permanent_index: None,
+            refresh_deadline: None,
         };
         Self {
             id,
