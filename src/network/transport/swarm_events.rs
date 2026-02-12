@@ -109,11 +109,39 @@ impl MpcNetworkLayer {
         }
         // ===== END SOLVER VALIDATION =====
 
+        // Determine whether they dialed us or we dialed them
+        let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
+        let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
+
+        // Check if we already know this peer in our logical cluster membership.
+        let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
+
+        // ===== DKG REFRESH GUARD =====
+        // When a proactive refresh is in progress, we should not accept any NEW peers
+        // (inbound or outbound) into the cluster membership. This prevents the active
+        // participant set from changing mid-refresh, which would otherwise violate the
+        // refresh invariants and can change the secret.
+        if !already_known {
+            if let Some(dkg) = &self.dkg_node {
+                if dkg.is_refresh_in_progress().await {
+                    warn!(
+                        "🚫 [REFRESH] Rejecting NEW connection (listener={}, dialer={}) from/to peer {} ({}) while DKG refresh is in progress",
+                        is_listener,
+                        is_dialer,
+                        peer_id,
+                        remote_addr
+                    );
+                    swarm.disconnect_peer_id(peer_id).ok();
+                    return Ok(());
+                }
+            }
+        }
+        // ===== END DKG REFRESH GUARD =====
+
         // Track connected peer
         self.connected_peers_cache.insert(peer_id);
 
         // Only persist the dialed address when we are the dialer; listener side remote_addr is ephemeral (caller source port).
-        let is_dialer = matches!(endpoint, ConnectedPoint::Dialer { .. });
         if is_dialer {
             self.peer_discovery
                 .peer_multiaddresses
@@ -132,12 +160,6 @@ impl MpcNetworkLayer {
             .behaviour_mut()
             .request_response
             .send_request(&peer_id, RPCRequest::GetPeerInfo);
-
-        // Determine whether they dialed us or we dialed them
-        let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
-
-        // Check if we already know this peer
-        let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
 
         // Add the peer's address to Kademlia
         swarm

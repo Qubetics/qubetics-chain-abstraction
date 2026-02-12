@@ -49,6 +49,19 @@ pub fn create_solver_contract(config: &ContractConfig) -> Result<SolverManagerCo
 /// Returns Ok(true) if active, Ok(false) if inactive or not configured
 /// Returns Err if validation fails (network error, etc.)
 pub async fn validate_solver_active(solver_id: &str, log_prefix: &str) -> Result<bool> {
+    // Fast-path override for local testing: allow ALL solvers when explicitly enabled.
+    // Set SOLVER_VALIDATION_ALWAYS_TRUE=1 in the environment to bypass on-chain checks.
+    if std::env::var("SOLVER_VALIDATION_ALWAYS_TRUE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        info!(
+            "✅ [{}] SOLVER_VALIDATION_ALWAYS_TRUE enabled, accepting solver {} without contract check",
+            log_prefix, solver_id
+        );
+        return Ok(true);
+    }
+
     // Get contract configuration
     let config = match get_solver_contract_config()? {
         Some(cfg) => cfg,
