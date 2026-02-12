@@ -159,6 +159,23 @@ impl MpcNetworkLayer {
         }
 
         if is_listener && !already_known {
+            // ===== DKG REFRESH GUARD =====
+            // When a proactive refresh is in progress, we should not accept any NEW
+            // inbound peers into the cluster membership. This prevents the active
+            // participant set from changing mid-refresh, which would otherwise
+            // violate the refresh invariants.
+            if let Some(dkg) = &self.dkg_node {
+                if dkg.is_refresh_in_progress().await {
+                    warn!(
+                        "🚫 [REFRESH] Rejecting NEW inbound connection from peer {} ({}) while DKG refresh is in progress",
+                        peer_id, remote_addr
+                    );
+                    swarm.disconnect_peer_id(peer_id).ok();
+                    return Ok(());
+                }
+            }
+            // ===== END DKG REFRESH GUARD =====
+
             self.handle_new_peer_connection(swarm, peer_id).await?;
 
             let total = self.node_manager.get_total_nodes();

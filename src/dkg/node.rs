@@ -236,6 +236,22 @@ impl DKGNode {
         self.state.read().unwrap().status.clone()
     }
 
+    /// Check whether a DKG refresh is currently in progress.
+    /// This is used by external components (e.g. the network layer) to
+    /// decide whether to accept new peers while shares are being refreshed.
+    pub async fn is_refresh_in_progress(&self) -> bool {
+        match self.storage.is_refresh_in_progress().await {
+            Ok(flag) => flag,
+            Err(e) => {
+                warn!(
+                    "⚠️ [DKG] Failed to read refresh_in_progress flag from storage: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+
     pub fn update_node_params(&mut self, total_nodes: usize, threshold: usize) -> Result<()> {
         info!(
             "🔄 Updating DKGNode params: total_nodes = {}, threshold = {}",
