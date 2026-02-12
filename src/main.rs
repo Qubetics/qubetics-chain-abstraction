@@ -35,6 +35,11 @@ struct Cli {
     /// Generate and save a new peer identity, then exit
     #[arg(long)]
     generate: bool,
+
+    /// Multiaddr(s) of peer nodes to dial on startup
+    /// (e.g. /ip4/127.0.0.1/tcp/42385/p2p/12D3KooW...)
+    #[arg(trailing_var_arg = true)]
+    dial_addresses: Vec<String>,
 }
 
 #[derive(Clone)]

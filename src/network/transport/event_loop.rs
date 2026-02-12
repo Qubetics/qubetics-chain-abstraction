@@ -81,6 +81,16 @@ impl MpcNetworkLayer {
         self.dial_command_line_addresses(&mut swarm);
 
         loop {
+            // Build a sleep future for the debounced refresh timer.
+            // If a disconnect set a deadline, we sleep until that deadline.
+            // Otherwise we create a far-future sleep that effectively never fires.
+            let refresh_deadline = self
+                .peer_discovery
+                .pending_refresh_deadline
+                .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86400));
+            let refresh_sleep = tokio::time::sleep_until(refresh_deadline);
+            tokio::pin!(refresh_sleep);
+
             tokio::select! {
                 event = swarm.select_next_some() => {
                     // 🛡️ Error recovery for swarm events - prevent node crashes
@@ -101,6 +111,31 @@ impl MpcNetworkLayer {
                             error!("🛡️ [NETWORK] Node continues operating despite message handling failure");
                             error!("🔍 [NETWORK] Error details: {:?}", e);
                             // Continue processing other messages
+                        }
+                    }
+                }
+
+                // Debounced polynomial refresh after node disconnection(s).
+                // The deadline is (re-)set by handle_node_disconnect_internal every
+                // time a peer leaves, so rapid-fire disconnects are coalesced into
+                // a single refresh that runs only after the storm has settled.
+                _ = &mut refresh_sleep, if self.peer_discovery.pending_refresh_deadline.is_some() => {
+                    self.peer_discovery.pending_refresh_deadline = None;
+                    info!("🔄 [DISCONNECT] Debounce period elapsed — executing batched polynomial refresh");
+
+                    if let Some(dkg_node) = &mut self.dkg_node {
+                        let dkg_status = dkg_node.get_status();
+                        if matches!(dkg_status, crate::protocols::DKGStatus::Completed) {
+                            if let Err(e) = dkg_node
+                                .execute_polynomial_refresh(self.node_manager.clone())
+                                .await
+                            {
+                                error!("❌ [DISCONNECT] Failed to execute debounced resharing: {}", e);
+                            } else {
+                                info!("✅ [DISCONNECT] Debounced resharing completed successfully");
+                            }
+                        } else {
+                            warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping debounced resharing");
                         }
                     }
                 }
