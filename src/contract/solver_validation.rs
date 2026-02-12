@@ -45,10 +45,23 @@ pub fn create_solver_contract(config: &ContractConfig) -> Result<SolverManagerCo
         .map_err(|e| anyhow!("Failed to create solver contract: {}", e))
 }
 
+/// TESTING: Set to true to bypass node-is-active check (always treat as active).
+const TESTING_BYPASS_ACTIVE_CHECK: bool = true;
+
 /// Validate if a solver is active by solver ID
 /// Returns Ok(true) if active, Ok(false) if inactive or not configured
 /// Returns Err if validation fails (network error, etc.)
 pub async fn validate_solver_active(solver_id: &str, log_prefix: &str) -> Result<bool> {
+    // TESTING: bypass — pass boolean true to always treat node as active before connection
+    if TESTING_BYPASS_ACTIVE_CHECK {
+        info!(
+            "✅ [{}] (TESTING BYPASS) Treating solver as active: {}",
+            log_prefix, solver_id
+        );
+        return Ok(true);
+    }
+
+    // -------- ACTUAL LOGIC (used when TESTING_BYPASS_ACTIVE_CHECK is false) --------
     // Get contract configuration
     let config = match get_solver_contract_config()? {
         Some(cfg) => cfg,

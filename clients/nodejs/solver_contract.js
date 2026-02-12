@@ -400,13 +400,13 @@ async function main() {
     // },
     {
       // Solver 3
-      solverId: "12D3KooWKofvyRENFGUQKp2UAFVJRBEFVwgh2sXkkp3amPQNPvNJ",
-      solverName: "Solver_123456",
+      solverId: "12D3KooWNgGGMigwBq9cG6mXNiLAMD4ZuX473qN9euY77AJAvsNW",
+      solverName: "Solver_12679",
       chainIds: [0,9029],
       solverAddresses: [
         // EVM address for solver 3
-        "0x4E83362442B8d1beC281594cEa3050c8EB01311C",
-        "bc1p0jl4w6nq9l3n9g5t8qg8p4a0r6z6k3p8q7c9w2"
+        "0x90f8bf6a479f320ead074411a4b0e7944ea8c9c1",
+        "3QJmV3qfvL9SuYo34YihAf3sRCW3qSinyC"
       ],
     },
   ];
@@ -447,10 +447,10 @@ async function main() {
   // 8. Test addLiquidityBatch
   const deposits = [
     {
-      solverId: "12D3KooWKofvyRENFGUQKp2UAFVJRBEFVwgh2sXkkp3amPQNPvNJ",
+      solverId: "12D3KooWNgGGMigwBq9cG6mXNiLAMD4ZuX473qN9euY77AJAvsNW",
       // Use a string for large values to avoid JS number overflow
-      amount: "10000000000000000000",
-      chainType: 1  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
+      amount: "100000000",
+      chainType: 0  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
     }
   ];
   await testAddLiquidityBatch(deposits);
