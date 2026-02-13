@@ -179,6 +179,15 @@ impl DKGNode {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] Node: {}", self.id);
 
+        // Guard: if a refresh is already running, skip to prevent overlapping refreshes
+        // that would use inconsistent participant sets and corrupt the shared secret.
+        if self.storage.is_refresh_in_progress().await.unwrap_or(false) {
+            warn!(
+                "⚠️ [REFRESH] Refresh already in progress, skipping to avoid concurrent refresh race condition"
+            );
+            return Ok(());
+        }
+
         // Mark refresh as in progress so external RPCs can block user actions safely
         if let Err(e) = self.storage.set_refresh_in_progress(true).await {
             warn!(
@@ -221,9 +230,9 @@ impl DKGNode {
 
         // Include local node's permanent index if missing (e.g. after re-join: our index
         // is stored under DKG_MY_PERMANENT_INDEX, not peer_index:)
-        let my_index_opt = self.permanent_index().or(
-            self.storage.get_my_permanent_index().await.ok().flatten(),
-        );
+        let my_index_opt =
+            self.permanent_index()
+                .or(self.storage.get_my_permanent_index().await.ok().flatten());
         if let Some(my_idx) = my_index_opt {
             let self_id = self.id.clone();
             if !nodes_with_indices.iter().any(|(pid, _)| pid == &self_id) {
@@ -248,7 +257,6 @@ impl DKGNode {
             "🔍 [REFRESH] Total nodes: {}, Threshold: {}",
             total_nodes, threshold
         );
-
 
         info!(
             "🔄 [REFRESH] Updating node params: old total_nodes={}, new total_nodes={}",
@@ -338,7 +346,7 @@ impl DKGNode {
         )
         .await?;
 
-        // Broadcast commitments 
+        // Broadcast commitments
         self.broadcast_refresh_commitments(refresh_commitments)
             .await?;
 
@@ -462,7 +470,9 @@ impl DKGNode {
         // Store commitments for verification when we receive the share via RPC
         let raw_commitments: Vec<AffinePoint> = commitments.iter().map(|c| c.0).collect();
         let key = format!("refresh_{}", from);
-        self.storage.store_commitments(&key, &raw_commitments).await?;
+        self.storage
+            .store_commitments(&key, &raw_commitments)
+            .await?;
 
         info!(
             "✅ [REFRESH-SECURE] Stored {} refresh commitments from {} (waiting for unicast share)",
@@ -506,12 +516,12 @@ impl DKGNode {
 
         // Verify the share
         let raw_commitments: Vec<AffinePoint> = commitments.iter().map(|c| c.0).collect();
-        
+
         let share = KeyShare {
             index: share_index,
             value: share_value.clone(),
         };
-        
+
         if !self.verify_shares(&[share.clone()], &raw_commitments) {
             warn!(
                 "❌ [REFRESH-SECURE] Refresh share verification failed from {}",
@@ -528,7 +538,9 @@ impl DKGNode {
         // Store refresh share with "refresh_" prefix
         let key = format!("refresh_{}", from);
         self.storage.store_share(&key, &share).await?;
-        self.storage.store_commitments(&key, &raw_commitments).await?;
+        self.storage
+            .store_commitments(&key, &raw_commitments)
+            .await?;
 
         info!(
             "💾 [REFRESH-SECURE] Stored refresh share from {} with key: {}",
@@ -851,11 +863,16 @@ impl DKGNode {
         // Include local node's refresh commitment if missing (our index is under DKG_MY_PERMANENT_INDEX)
         let self_refresh_key = format!("refresh_{}", self.id);
         if refresh_commitment_entries.contains_key(&self_refresh_key)
-            && !refresh_with_indices.iter().any(|(k, _)| k == &self_refresh_key)
+            && !refresh_with_indices
+                .iter()
+                .any(|(k, _)| k == &self_refresh_key)
         {
-            let my_idx = self.permanent_index().or(
-                self.storage.get_my_permanent_index().await.ok().flatten(),
-            );
+            let my_idx = self.permanent_index().or(self
+                .storage
+                .get_my_permanent_index()
+                .await
+                .ok()
+                .flatten());
             if let Some(idx) = my_idx {
                 info!(
                     "🔍 [REFRESH] Including self refresh commitment in C0 sum (index {})",
