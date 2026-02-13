@@ -110,7 +110,10 @@ impl MpcNetworkLayer {
                 peer_id, e
             );
         } else {
-            info!("✅ [DISCONNECT] Removed commitments for peer {} from database", peer_id);
+            info!(
+                "✅ [DISCONNECT] Removed commitments for peer {} from database",
+                peer_id
+            );
         }
 
         // Update network parameters
@@ -136,27 +139,32 @@ impl MpcNetworkLayer {
             signing_node.set_threshold(new_threshold);
         }
 
-        // Execute proactive resharing
-        info!(
-            "🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes",
-            new_total
-        );
+        // Schedule a debounced refresh instead of triggering immediately.
+        // When multiple nodes disconnect simultaneously, each disconnect resets the
+        // debounce timer. Only after REFRESH_DEBOUNCE_SECS of quiet (no new disconnects)
+        // does the refresh actually execute. This ensures all remaining nodes have
+        // processed ALL disconnects and agree on the same participant set / all_indices,
+        // preventing the Lagrange coefficient mismatch that causes public key divergence.
+        const REFRESH_DEBOUNCE_SECS: u64 = 5;
 
-        if let Some(dkg_node) = &mut self.dkg_node {
+        if let Some(dkg_node) = &self.dkg_node {
             let dkg_status = dkg_node.get_status();
             if matches!(dkg_status, DKGStatus::Completed) {
-                // Add delay to ensure all nodes have processed the broadcast
-                info!("⏰ [DISCONNECT] Waiting 3 seconds for all nodes to sync...");
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                info!("✅ [DISCONNECT] Sync period complete, starting resharing");
+                let deadline = tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(REFRESH_DEBOUNCE_SECS);
+                let had_pending = self.peer_discovery.pending_refresh_deadline.is_some();
+                self.peer_discovery.pending_refresh_deadline = Some(deadline);
 
-                if let Err(e) = dkg_node
-                    .execute_polynomial_refresh(self.node_manager.clone())
-                    .await
-                {
-                    tracing::error!("❌ [DISCONNECT] Failed to execute resharing: {}", e);
+                if had_pending {
+                    info!(
+                        "🔄 [DISCONNECT] Reset refresh debounce timer to {}s (batching with previous disconnect)",
+                        REFRESH_DEBOUNCE_SECS
+                    );
                 } else {
-                    info!("✅ [DISCONNECT] Resharing completed successfully");
+                    info!(
+                        "🔄 [DISCONNECT] Scheduled debounced refresh in {}s with {} remaining nodes",
+                        REFRESH_DEBOUNCE_SECS, new_total
+                    );
                 }
             } else {
                 warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping resharing");
@@ -224,7 +232,7 @@ impl MpcNetworkLayer {
 
             // Update signing node threshold after adding peer
             if let Some(arc) = &self.signing_node {
-            let mut signing_node = arc.lock().await;
+                let mut signing_node = arc.lock().await;
                 let new_threshold = self.node_manager.get_threshold();
                 signing_node.set_threshold(new_threshold);
                 info!("🔄 [THRESHOLD] Updated signing node threshold to {} after Kademlia peer addition", new_threshold);

@@ -62,7 +62,7 @@ impl DatabaseSyncState {
 }
 
 /// Peer discovery subsystem state for MPC networking
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PeerDiscoveryState {
     pub peer_indices: HashMap<PeerId, usize>,
     pub pending_peer_discovery_retry: bool,
@@ -70,6 +70,25 @@ pub struct PeerDiscoveryState {
     pub peer_multiaddresses: HashMap<PeerId, Multiaddr>,
     /// Track if we've already processed a PeerList response to prevent duplicate new node joining checks
     pub peer_list_processed: bool,
+    /// Debounce timer for polynomial refresh after node disconnections.
+    /// When set, the event loop will trigger a single batched refresh once
+    /// this deadline expires. Each new disconnect resets the deadline so that
+    /// near-simultaneous disconnects are coalesced into one refresh, ensuring
+    /// all remaining nodes agree on the same participant set.
+    pub pending_refresh_deadline: Option<tokio::time::Instant>,
+}
+
+impl Default for PeerDiscoveryState {
+    fn default() -> Self {
+        Self {
+            peer_indices: HashMap::new(),
+            pending_peer_discovery_retry: false,
+            processed_disconnects: HashMap::new(),
+            peer_multiaddresses: HashMap::new(),
+            peer_list_processed: false,
+            pending_refresh_deadline: None,
+        }
+    }
 }
 
 impl PeerDiscoveryState {
