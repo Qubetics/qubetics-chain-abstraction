@@ -126,13 +126,32 @@ impl MpcNetworkLayer {
                     if let Some(dkg_node) = &mut self.dkg_node {
                         let dkg_status = dkg_node.get_status();
                         if matches!(dkg_status, crate::protocols::DKGStatus::Completed) {
-                            if let Err(e) = dkg_node
-                                .execute_polynomial_refresh(self.node_manager.clone())
+                            // Use trigger_polynomial_refresh to broadcast an authoritative
+                            // participant list, just like the new-node-join path.  This
+                            // ensures all nodes use the same set of indices even during
+                            // disconnect-triggered refresh.
+                            match dkg_node
+                                .trigger_polynomial_refresh(self.node_manager.as_ref())
                                 .await
                             {
-                                error!("❌ [DISCONNECT] Failed to execute debounced resharing: {}", e);
-                            } else {
-                                info!("✅ [DISCONNECT] Debounced resharing completed successfully");
+                                Ok((should_execute_locally, participants)) => {
+                                    if should_execute_locally {
+                                        if let Err(e) = dkg_node
+                                            .execute_polynomial_refresh(
+                                                self.node_manager.clone(),
+                                                Some(participants),
+                                            )
+                                            .await
+                                        {
+                                            error!("❌ [DISCONNECT] Failed to execute debounced resharing: {}", e);
+                                        } else {
+                                            info!("✅ [DISCONNECT] Debounced resharing completed successfully");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("❌ [DISCONNECT] Failed to trigger debounced resharing: {}", e);
+                                }
                             }
                         } else {
                             warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping debounced resharing");

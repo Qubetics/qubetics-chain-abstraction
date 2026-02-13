@@ -22,8 +22,14 @@ pub enum DKGMessage {
         commitment: Vec<SerializablePoint>,
         new_node_index: usize, // The index calculated by existing nodes for the new node
     },
-    /// Broadcasted to trigger polynomial refresh after new node joins
-    TriggerRefresh { trigger_node: String },
+    /// Broadcasted to trigger polynomial refresh after new node joins.
+    /// `participants` carries the authoritative (peer_id, index) list so all
+    /// nodes use the exact same set – eliminates the gossipsub race where
+    /// TriggerRefresh can arrive before NewNodeJoined on some peers.
+    TriggerRefresh {
+        trigger_node: String,
+        participants: Vec<(String, usize)>,
+    },
     /// Broadcasted when a node disconnects to notify all other nodes
     NodeDisconnected {
         disconnected_node_id: String,

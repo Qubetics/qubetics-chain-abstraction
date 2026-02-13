@@ -68,6 +68,16 @@ impl DKGNode {
         state.my_permanent_index = None;
     }
 
+    /// Returns `true` when a polynomial refresh is currently in progress.
+    /// Used by the disconnect handler to defer peer_index / commitment
+    /// deletion until the refresh completes.
+    pub async fn is_refresh_in_progress(&self) -> bool {
+        self.storage
+            .is_refresh_in_progress()
+            .await
+            .unwrap_or(false)
+    }
+
     fn increment_round(&self) {
         self.state.write().unwrap().round += 1;
     }

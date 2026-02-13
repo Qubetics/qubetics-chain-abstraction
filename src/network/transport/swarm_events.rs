@@ -6,15 +6,14 @@ use libp2p::{
     gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage, PeerId,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::database::{key_utils::peer_addr_key, keys};
-use crate::protocols::DKGMessage;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
 use crate::types::vrf::VrfRoundSyncRequest;
-use crate::types::{ChannelMessage, GossipsubMessage};
+use crate::types::ChannelMessage;
 use tracing::debug;
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer, NetworkEvent, VrfDomain};
@@ -578,7 +577,15 @@ impl MpcNetworkLayer {
         }
     }
 
-    /// Handle connection closed event
+    /// Handle connection closed event.
+    ///
+    /// Instead of immediately broadcasting a disconnect when `num_established`
+    /// drops to 0, we schedule a **deferred check** after a grace period.
+    /// Transient connection drops (UnexpectedEof, ConnectionReset) typically
+    /// recover within 1-2 seconds.  The deferred check re-examines
+    /// `connected_peers_cache`; only if the peer is still absent does the
+    /// disconnect broadcast fire.  This prevents false-disconnect cascades
+    /// that corrupt in-flight DKG refreshes.
     async fn handle_connection_closed(
         &mut self,
         peer_id: PeerId,
@@ -598,42 +605,32 @@ impl MpcNetworkLayer {
             }
         }
 
-        // STEP 1: Detect when a node fully disconnects (no remaining connections)
+        // Only act when no connections remain for this peer
         if num_established == 0 {
-            // Check if this was an active node in our network
             let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
 
             if was_active {
-                warn!(
-                    "⚠️ [DISCONNECT] Active node {} disconnected - broadcasting to all nodes",
-                    peer_id
+                // Grace period: wait before confirming the disconnect is real.
+                // If the peer reconnects within this window, the deferred check
+                // will see it back in connected_peers_cache and skip the broadcast.
+                const DISCONNECT_GRACE_SECS: u64 = 3;
+
+                info!(
+                    "⏳ [DISCONNECT] Active node {} lost all connections — scheduling deferred check in {}s",
+                    peer_id, DISCONNECT_GRACE_SECS
                 );
 
-                // STEP 1: Broadcast disconnect notification to ALL nodes via gossipsub
-                let disconnect_msg = DKGMessage::NodeDisconnected {
-                    disconnected_node_id: peer_id.to_string(),
-                    broadcaster_node_id: self.local_peer_id.to_string(),
-                };
-
-                let gossip_wrap = GossipsubMessage::DKG(disconnect_msg);
-                if let Ok(msg_bytes) = serde_json::to_vec(&gossip_wrap) {
-                    if let Err(e) = self
-                        .message_tx
-                        .send(ChannelMessage::Broadcast {
-                            topic: "dkg".to_string(),
-                            data: msg_bytes,
+                let tx = self.message_tx.clone();
+                let local_peer_id = self.local_peer_id;
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(DISCONNECT_GRACE_SECS)).await;
+                    let _ = tx
+                        .send(ChannelMessage::DeferredDisconnectCheck {
+                            peer_id,
+                            local_peer_id,
                         })
-                        .await
-                    {
-                        error!(
-                            "❌ [DISCONNECT] Failed to send disconnect notification to channel: {}",
-                            e
-                        );
-                    }
-                }
-
-                // STEP 2: Process disconnect locally
-                self.handle_node_disconnect_internal(peer_id).await;
+                        .await;
+                });
             }
         }
     }

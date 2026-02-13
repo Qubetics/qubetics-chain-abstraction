@@ -30,8 +30,17 @@ fi
 echo -e "${GREEN}✅ Found binary: $BINARY_PATH${NC}"
 echo ""
 
+# Clear top-level logs folder
+if [ -d "$SCRIPT_DIR/logs" ]; then
+    rm -rf "$SCRIPT_DIR/logs"/*
+    echo -e "${GREEN}✅ Cleared logs/ contents${NC}"
+else
+    echo -e "${CYAN}ℹ️  No logs/ directory found${NC}"
+fi
+echo ""
+
 # Process each node
-for NODE_NUM in 1 2 3 4; do
+for NODE_NUM in 1 2 3 4 5 6 7 8 9 10 11 12; do
     NODE_DIR="$SCRIPT_DIR/node$NODE_NUM"
 
     echo -e "${YELLOW}📦 Processing node$NODE_NUM...${NC}"

@@ -113,7 +113,7 @@ use crate::{
 use crate::network::transport::types::{
     MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_WITHDRAW_LIQUIDITY,
 };
-use crate::protocols::DKGStatus;
+use crate::protocols::{DKGMessage, DKGStatus};
 
 impl MpcNetworkLayer {
     // ChannelMessage is related to the MPSC channel only
@@ -141,6 +141,63 @@ impl MpcNetworkLayer {
                 } else {
                     self.schedule_peer_discovery_retry(attempt + 1);
                 }
+            }
+            ChannelMessage::DeferredDisconnectCheck {
+                peer_id,
+                local_peer_id,
+            } => {
+                // After the grace period, check if the peer has reconnected.
+                // If it's back in connected_peers_cache, the drop was transient — skip.
+                if self.connected_peers_cache.contains(&peer_id) {
+                    info!(
+                        "✅ [DISCONNECT] Peer {} reconnected within grace period — NOT broadcasting disconnect",
+                        peer_id
+                    );
+                    return Ok(());
+                }
+
+                // Also verify the peer is still considered active (may have been
+                // removed already by another deferred check or a broadcast from
+                // another node).
+                let still_active = self.node_manager.get_active_nodes().contains(&peer_id);
+                if !still_active {
+                    info!(
+                        "ℹ️ [DISCONNECT] Peer {} already removed from active nodes — skipping",
+                        peer_id
+                    );
+                    return Ok(());
+                }
+
+                warn!(
+                    "⚠️ [DISCONNECT] Peer {} still absent after grace period — broadcasting disconnect",
+                    peer_id
+                );
+
+                // Broadcast disconnect notification to ALL nodes via gossipsub
+                let disconnect_msg = DKGMessage::NodeDisconnected {
+                    disconnected_node_id: peer_id.to_string(),
+                    broadcaster_node_id: local_peer_id.to_string(),
+                };
+
+                let gossip_wrap = GossipsubMessage::DKG(disconnect_msg);
+                if let Ok(msg_bytes) = serde_json::to_vec(&gossip_wrap) {
+                    if let Err(e) = self
+                        .message_tx
+                        .send(ChannelMessage::Broadcast {
+                            topic: "dkg".to_string(),
+                            data: msg_bytes,
+                        })
+                        .await
+                    {
+                        error!(
+                            "❌ [DISCONNECT] Failed to send disconnect notification to channel: {}",
+                            e
+                        );
+                    }
+                }
+
+                // Process disconnect locally
+                self.handle_node_disconnect_internal(peer_id).await;
             }
             ChannelMessage::StatusRequest { responder } => {
                 let peer_id = self.local_peer_id.to_string();

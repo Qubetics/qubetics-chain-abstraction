@@ -144,30 +144,96 @@ impl DKGNode {
         Ok(refresh_poly)
     }
 
-    pub async fn trigger_polynomial_refresh(&self) -> Result<bool> {
+    /// Build the authoritative participant list from the triggering node's
+    /// perspective.  This list is embedded in the TriggerRefresh gossipsub
+    /// message so that every receiver uses the exact same (peer_id, index)
+    /// set – eliminating the race where TriggerRefresh arrives before
+    /// NewNodeJoined on some peers.
+    ///
+    /// Returns `Ok((should_execute_locally, participants))`.
+    pub async fn trigger_polynomial_refresh(
+        &self,
+        node_manager: &dyn NodeMembership,
+    ) -> Result<(bool, Vec<(String, usize)>)> {
         info!(
             "🔄 [REFRESH] Triggering polynomial refresh from node {}",
             self.id
         );
 
+        // --- build authoritative participant list (same logic as execute_*) ---
+        let active_nodes: Vec<String> = node_manager
+            .get_active_nodes()
+            .into_iter()
+            .map(|p| p.to_string())
+            .collect();
+
+        let peer_indices_map = self.storage.get_peer_indices().await?;
+
+        let mut participants: Vec<(String, usize)> = active_nodes
+            .into_iter()
+            .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
+            .collect();
+
+        // Ensure self is present with permanent_index
+        let my_index_opt = self
+            .permanent_index()
+            .or(self.storage.get_my_permanent_index().await.ok().flatten());
+        if let Some(my_idx) = my_index_opt {
+            let self_id = self.id.clone();
+            if let Some(entry) = participants.iter_mut().find(|(pid, _)| pid == &self_id) {
+                if entry.1 != my_idx {
+                    warn!(
+                        "⚠️ [REFRESH] FIXING self index in trigger participants: peer_index={} but permanent_index={}, using permanent_index",
+                        entry.1, my_idx
+                    );
+                    entry.1 = my_idx;
+                }
+            } else {
+                info!(
+                    "🔍 [REFRESH] Adding self {} with permanent index {} to trigger participants",
+                    self_id, my_idx
+                );
+                participants.push((self_id, my_idx));
+            }
+        }
+
+        participants.sort_by_key(|(_, idx)| *idx);
+
+        info!(
+            "🔄 [REFRESH] Authoritative participants for refresh: {:?}",
+            participants
+                .iter()
+                .map(|(pid, idx)| format!("{pid}:{idx}"))
+                .collect::<Vec<_>>()
+        );
+
         let msg = DKGMessage::TriggerRefresh {
             trigger_node: self.id.clone(),
+            participants: participants.clone(),
         };
 
         let gossip_wrap = GossipsubMessage::DKG(msg);
         let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
         self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
 
-        info!("✅ [REFRESH] Broadcasted refresh trigger");
+        info!("✅ [REFRESH] Broadcasted refresh trigger with authoritative participants");
         info!("⚠️ [REFRESH] Note: This node won't receive its own broadcast, will execute refresh locally");
 
         // Return true to indicate this node should also execute refresh
-        Ok(true)
+        Ok((true, participants))
     }
 
+    /// Execute polynomial refresh.
+    ///
+    /// `authoritative_participants` — when `Some(...)`, the supplied list is
+    /// used as-is instead of computing one from the local database.  This is
+    /// the key mechanism that ensures every node uses the exact same
+    /// (peer_id, index) set: the triggering node computes the list once and
+    /// embeds it in the `TriggerRefresh` gossipsub message.
     pub async fn execute_polynomial_refresh(
         &mut self,
         node_manager: Box<dyn NodeMembership>,
+        authoritative_participants: Option<Vec<(String, usize)>>,
     ) -> Result<()> {
         info!("🔄 [REFRESH] ═══════════════════════════════════════════════════");
         info!("🔄 [REFRESH] EXECUTING POLYNOMIAL REFRESH");
@@ -191,45 +257,109 @@ impl DKGNode {
             );
         }
 
-        // Get all active nodes and their indices from database (DB-first ordering)
-        let active_nodes: Vec<String> = node_manager
-            .get_active_nodes()
-            .into_iter()
-            .map(|p| p.to_string())
-            .collect();
+        let nodes_with_indices = if let Some(mut participants) = authoritative_participants {
+            info!(
+                "🔍 [REFRESH] Using AUTHORITATIVE participant list from trigger message ({} nodes)",
+                participants.len()
+            );
 
-        info!(
-            "🔍 [REFRESH] Active nodes from node_manager: {:?}",
-            active_nodes
-        );
-
-        let peer_indices_map = self.storage.get_peer_indices().await?;
-        info!(
-            "🔍 [REFRESH] Peer indices in database: {:?}",
-            peer_indices_map
-        );
-
-        let mut nodes_with_indices: Vec<(String, usize)> = active_nodes
-            .into_iter()
-            .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
-            .collect();
-
-        // Include local node's permanent index if missing (e.g. after re-join: our index
-        // is stored under DKG_MY_PERMANENT_INDEX, not peer_index:)
-        let my_index_opt =
-            self.permanent_index()
+            // Even with an authoritative list we still correct our own index
+            // to permanent_index if it diverged in the network layer.
+            let my_index_opt = self
+                .permanent_index()
                 .or(self.storage.get_my_permanent_index().await.ok().flatten());
-        if let Some(my_idx) = my_index_opt {
-            let self_id = self.id.clone();
-            if !nodes_with_indices.iter().any(|(pid, _)| pid == &self_id) {
-                info!(
-                    "🔍 [REFRESH] Including self {} with permanent index {} (not in peer_indices)",
-                    self_id, my_idx
-                );
-                nodes_with_indices.push((self_id, my_idx));
-                nodes_with_indices.sort_by_key(|(_, idx)| *idx);
+            if let Some(my_idx) = my_index_opt {
+                let self_id = self.id.clone();
+                if let Some(entry) = participants.iter_mut().find(|(pid, _)| pid == &self_id) {
+                    if entry.1 != my_idx {
+                        warn!(
+                            "⚠️ [REFRESH] FIXING self index in authoritative list: was {} but permanent_index={}, using permanent_index",
+                            entry.1, my_idx
+                        );
+                        entry.1 = my_idx;
+                    }
+                } else {
+                    // Self not in the authoritative list (shouldn't happen, but be safe)
+                    info!(
+                        "🔍 [REFRESH] Adding self {} with permanent index {} to authoritative list",
+                        self_id, my_idx
+                    );
+                    participants.push((self_id, my_idx));
+                }
             }
-        }
+
+            // Store peer_index for any participants we don't know yet
+            // (handles the race where NewNodeJoined hasn't been processed)
+            for (pid, idx) in &participants {
+                if pid != &self.id {
+                    if let Err(e) = self.storage.set_peer_index(pid, *idx) {
+                        warn!(
+                            "⚠️ [REFRESH] Failed to store authoritative peer_index for {}: {}",
+                            pid, e
+                        );
+                    }
+                }
+            }
+
+            participants.sort_by_key(|(_, idx)| *idx);
+            participants
+        } else {
+            // Fallback: compute from local DB (used for disconnect-triggered refresh)
+            info!("🔍 [REFRESH] No authoritative list provided, computing from local DB");
+
+            let active_nodes: Vec<String> = node_manager
+                .get_active_nodes()
+                .into_iter()
+                .map(|p| p.to_string())
+                .collect();
+
+            info!(
+                "🔍 [REFRESH] Active nodes from node_manager: {:?}",
+                active_nodes
+            );
+
+            let peer_indices_map = self.storage.get_peer_indices().await?;
+            info!(
+                "🔍 [REFRESH] Peer indices in database: {:?}",
+                peer_indices_map
+            );
+
+            let mut nodes_with_indices: Vec<(String, usize)> = active_nodes
+                .into_iter()
+                .filter_map(|pid| peer_indices_map.get(&pid).copied().map(|idx| (pid, idx)))
+                .collect();
+
+            // Ensure local node uses its DKG permanent_index (not the network-layer
+            // peer_index: which can diverge after restart/reconnect).
+            let my_index_opt = self
+                .permanent_index()
+                .or(self.storage.get_my_permanent_index().await.ok().flatten());
+            if let Some(my_idx) = my_index_opt {
+                let self_id = self.id.clone();
+                if let Some(entry) =
+                    nodes_with_indices.iter_mut().find(|(pid, _)| pid == &self_id)
+                {
+                    if entry.1 != my_idx {
+                        warn!(
+                            "⚠️ [REFRESH] FIXING self index mismatch: peer_index={} but permanent_index={}, using permanent_index",
+                            entry.1, my_idx
+                        );
+                        entry.1 = my_idx;
+                    }
+                } else {
+                    info!(
+                        "🔍 [REFRESH] Including self {} with permanent index {} (not in peer_indices)",
+                        self_id, my_idx
+                    );
+                    nodes_with_indices.push((self_id, my_idx));
+                }
+            }
+
+            // Always sort — active_nodes comes from HashSet which has
+            // non-deterministic iteration order.
+            nodes_with_indices.sort_by_key(|(_, idx)| *idx);
+            nodes_with_indices
+        };
 
         info!(
             "🔍 [REFRESH] Nodes with indices (sorted): {:?}",
@@ -539,7 +669,15 @@ impl DKGNode {
         Ok(true)
     }
 
-    /// Check if we have received all refresh shares and compute refreshed secret
+    /// Check if we have received all refresh shares and compute refreshed secret.
+    ///
+    /// This is called from two paths: `handle_unicast_refresh_share` (when a
+    /// share arrives) and `handle_refresh_commitment_broadcast` (when
+    /// commitments arrive and the share was already stored).  Because both
+    /// paths can fire within the same millisecond, we guard against duplicate
+    /// `compute_refreshed_secret` calls by atomically flipping the
+    /// `refresh_in_progress` flag to `false` before computing.  Any concurrent
+    /// invocation will see the flag already cleared and skip.
     async fn check_refresh_completion(
         &mut self,
         node_manager: Box<dyn NodeMembership>,
@@ -564,6 +702,17 @@ impl DKGNode {
         );
 
         if refresh_shares_count >= expected_active_nodes {
+            // Guard: only proceed if refresh is still marked in-progress.
+            // This prevents duplicate compute_refreshed_secret calls when
+            // both the commitment-broadcast and unicast-share paths trigger
+            // check_refresh_completion within the same event loop tick.
+            if !self.storage.is_refresh_in_progress().await.unwrap_or(false) {
+                info!(
+                    "⏭️ [REFRESH-SECURE] Refresh no longer in progress (already computed or aborted), skipping"
+                );
+                return Ok(());
+            }
+
             info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
             info!(
                 "🎉 [REFRESH-SECURE] RECEIVED ALL {} REFRESH SHARES!",
@@ -571,6 +720,14 @@ impl DKGNode {
             );
             info!("🎉 [REFRESH-SECURE] Now computing new secret share...");
             info!("🎉 [REFRESH-SECURE] ═══════════════════════════════════════════════════");
+
+            // Clear the flag BEFORE computing so any concurrent check_refresh_completion
+            // call sees it cleared and skips.  compute_refreshed_secret will set it
+            // back to false again at the end (harmless double-clear).
+            if let Err(e) = self.storage.set_refresh_in_progress(false).await {
+                warn!("⚠️ [REFRESH] Failed to clear refresh_in_progress before compute: {}", e);
+            }
+
             self.compute_refreshed_secret().await?;
         } else {
             info!(
@@ -699,25 +856,33 @@ impl DKGNode {
             })
             .collect();
 
-        // Include local node's refresh commitment if missing (our index is under DKG_MY_PERMANENT_INDEX)
+        // Ensure local node's refresh commitment uses permanent_index (not stale peer_index:)
         let self_refresh_key = format!("refresh_{}", self.id);
-        if refresh_commitment_entries.contains_key(&self_refresh_key)
-            && !refresh_with_indices
-                .iter()
-                .any(|(k, _)| k == &self_refresh_key)
-        {
-            let my_idx = self.permanent_index().or(self
-                .storage
-                .get_my_permanent_index()
-                .await
-                .ok()
-                .flatten());
+        let my_idx = self.permanent_index().or(self
+            .storage
+            .get_my_permanent_index()
+            .await
+            .ok()
+            .flatten());
+        if refresh_commitment_entries.contains_key(&self_refresh_key) {
             if let Some(idx) = my_idx {
-                info!(
-                    "🔍 [REFRESH] Including self refresh commitment in C0 sum (index {})",
-                    idx
-                );
-                refresh_with_indices.push((self_refresh_key, idx));
+                if let Some(entry) = refresh_with_indices.iter_mut().find(|(k, _)| k == &self_refresh_key) {
+                    // Present but may have wrong index from peer_index: DB
+                    if entry.1 != idx {
+                        warn!(
+                            "⚠️ [REFRESH] FIXING self commitment index mismatch: peer_index={} but permanent_index={}, using permanent_index",
+                            entry.1, idx
+                        );
+                        entry.1 = idx;
+                    }
+                } else {
+                    // Not present (peer_index: deleted) — add with permanent_index
+                    info!(
+                        "🔍 [REFRESH] Including self refresh commitment in C0 sum (index {})",
+                        idx
+                    );
+                    refresh_with_indices.push((self_refresh_key, idx));
+                }
             }
         }
         refresh_with_indices.sort_by_key(|(_, idx)| *idx);

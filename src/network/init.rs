@@ -198,9 +198,22 @@ impl MpcNetworkLayer {
         let swarm = libp2p::SwarmBuilder::with_existing_identity(self.local_key.clone())
             .with_tokio()
             .with_tcp(
-                tcp::Config::default(),
+                tcp::Config::default().nodelay(true),
                 noise::Config::new,
-                yamux::Config::default,
+                || {
+                    let mut yamux_cfg = yamux::Config::default();
+                    // Increase receive window per stream from 256 KiB to 1 MiB.
+                    // With 10+ peers each sending DKG shares, VRF syncs, gossipsub
+                    // messages, and RPC requests simultaneously, the default 256 KiB
+                    // window causes backpressure that triggers UnexpectedEof /
+                    // ConnectionReset on multiplexed streams.
+                    yamux_cfg.set_receive_window_size(1024 * 1024);
+                    // Increase max buffer size to match (prevents stalling when a
+                    // single large message — e.g. commitment broadcast — exceeds
+                    // the default 256 KiB buffer).
+                    yamux_cfg.set_max_buffer_size(1024 * 1024);
+                    yamux_cfg
+                },
             )?
             .with_quic()
             .with_behaviour(|key| {

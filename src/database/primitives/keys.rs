@@ -28,6 +28,7 @@ pub const DKG_MY_PERMANENT_INDEX: &str = "dkg_my_permanent_index";
 pub const DKG_RECEIVED_SHARE: &str = "dkg_received_share:";
 pub const DKG_EXPECTED_SHARES: &str = "dkg_expected_shares";
 pub const DKG_REFRESH_IN_PROGRESS: &str = "dkg_refresh_in_progress";
+pub const DKG_REFRESH_EXPECTED_NODES: &str = "dkg_refresh_expected_nodes";
 pub const PEER_INDEX: &str = "peer_index:";
 pub const SOLVER_AMOUNTS: &str = "solver_amounts:";
 pub const PEER_KEYPAIR: &str = "peer_keypair";

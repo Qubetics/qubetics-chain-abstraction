@@ -5,6 +5,7 @@ use crate::dkg::{
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
+use tokio::time::Duration;
 use tracing::{info, warn};
 
 use crate::types::dkg::MSG_TOPIC_DKG;
@@ -339,17 +340,28 @@ impl DKGNode {
 
             info!("🏦 [NEW_NODE] === VAULT GENERATION COMPLETED ===");
 
-            // Trigger polynomial refresh after new node completes
-            info!("🔄 [NEW_NODE] New node setup complete, triggering polynomial refresh");
+            // Trigger polynomial refresh after new node completes.
+            // Wait a few seconds before triggering so that:
+            //   1. All existing nodes have fully processed NewNodeJoined and stored peer_index
+            //   2. Gossipsub subscriptions are fully established for the new node
+            //   3. RPC connections to all peers are ready
+            // Without this delay, the refresh can race with NewNodeJoined processing,
+            // causing different nodes to use different all_indices arrays.
+            info!("🔄 [NEW_NODE] New node setup complete, waiting before triggering refresh...");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            info!("🔄 [NEW_NODE] Delay complete, triggering polynomial refresh");
 
-            // Broadcast trigger to other nodes
-            match self.trigger_polynomial_refresh().await {
-                Ok(should_execute_locally) => {
+            // Broadcast trigger to other nodes (includes authoritative participant list)
+            match self.trigger_polynomial_refresh(node_manager.as_ref()).await {
+                Ok((should_execute_locally, participants)) => {
                     if should_execute_locally {
                         info!(
                             "🔄 [NEW_NODE] Executing refresh locally (won't receive own broadcast)"
                         );
-                        if let Err(e) = self.execute_polynomial_refresh(node_manager).await {
+                        if let Err(e) = self
+                            .execute_polynomial_refresh(node_manager, Some(participants))
+                            .await
+                        {
                             warn!("⚠️ [NEW_NODE] Failed to execute local refresh: {}", e);
                         }
                     }

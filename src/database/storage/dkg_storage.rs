@@ -340,6 +340,28 @@ impl DkgStorage {
         Ok(result)
     }
 
+    /// Store the expected number of refresh participants.
+    /// This is set once at the start of a refresh and never changes mid-refresh,
+    /// so that `check_refresh_completion` uses a stable count even if nodes
+    /// disconnect while the refresh is in-flight.
+    pub async fn set_refresh_expected_nodes(&self, count: usize) -> Result<()> {
+        self.db
+            .put_string(keys::DKG_REFRESH_EXPECTED_NODES, &count)?;
+        tracing::info!(
+            "🔄 [DKG_STORAGE] Set refresh_expected_nodes: {}",
+            count
+        );
+        Ok(())
+    }
+
+    /// Get the expected number of refresh participants (set at refresh start).
+    pub async fn get_refresh_expected_nodes(&self) -> Result<Option<usize>> {
+        let result = self
+            .db
+            .get_string::<usize>(keys::DKG_REFRESH_EXPECTED_NODES)?;
+        Ok(result)
+    }
+
     /// Set the initial DKG completion flag (marks that the initial 4-node DKG is complete)
     pub async fn set_initial_dkg_complete(&self, is_complete: bool) -> Result<()> {
         self.db

@@ -91,29 +91,47 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Remove from database as well (peer index and commitments so share_pubkey recompute doesn't fail)
-        let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
-        if let Err(e) = self.db.delete_string(&peer_index_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove peer {} from database: {}",
-                peer_id, e
-            );
+        // Check if a refresh is currently in progress.  If so, DEFER the
+        // peer_index and commitment deletion — the in-flight refresh still
+        // needs them to compute the commitment C0 sum correctly.  The
+        // debounced refresh that fires after the disconnect storm settles
+        // will operate on the updated (post-removal) participant set.
+        let refresh_in_progress = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.is_refresh_in_progress().await
         } else {
-            info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
-        }
+            false
+        };
 
-        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
-        let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
-        if let Err(e) = self.db.delete_string(&commitment_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
-                peer_id, e
-            );
-        } else {
+        if refresh_in_progress {
             info!(
-                "✅ [DISCONNECT] Removed commitments for peer {} from database",
+                "⏳ [DISCONNECT] Refresh in progress — deferring peer_index and commitment deletion for {} (will be cleaned up after refresh completes)",
                 peer_id
             );
+        } else {
+            // Remove from database (peer index and commitments so share_pubkey recompute doesn't fail)
+            let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
+            if let Err(e) = self.db.delete_string(&peer_index_key) {
+                warn!(
+                    "⚠️ [DISCONNECT] Failed to remove peer {} from database: {}",
+                    peer_id, e
+                );
+            } else {
+                info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
+            }
+
+            // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
+            let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
+            if let Err(e) = self.db.delete_string(&commitment_key) {
+                warn!(
+                    "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
+                    peer_id, e
+                );
+            } else {
+                info!(
+                    "✅ [DISCONNECT] Removed commitments for peer {} from database",
+                    peer_id
+                );
+            }
         }
 
         // Update network parameters

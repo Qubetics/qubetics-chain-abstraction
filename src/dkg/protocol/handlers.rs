@@ -63,12 +63,17 @@ impl DKGNode {
                     .await?;
                 }
             }
-            DKGMessage::TriggerRefresh { trigger_node } => {
+            DKGMessage::TriggerRefresh {
+                trigger_node,
+                participants,
+            } => {
                 info!(
-                    "🔄 [REFRESH] Received refresh trigger from {}",
-                    trigger_node
+                    "🔄 [REFRESH] Received refresh trigger from {} with {} authoritative participants",
+                    trigger_node,
+                    participants.len()
                 );
-                self.execute_polynomial_refresh(node_manager).await?;
+                self.execute_polynomial_refresh(node_manager, Some(participants))
+                    .await?;
             }
             DKGMessage::NodeDisconnected { .. } => {
                 info!("📢 [DISCONNECT] Notification handled at network layer");

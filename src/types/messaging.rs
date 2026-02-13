@@ -276,6 +276,14 @@ pub enum ChannelMessage {
     PeerDiscoveryRetry {
         attempt: u8,
     },
+    /// Deferred disconnect check: after a grace period, verify the peer is
+    /// still gone before broadcasting NodeDisconnected and processing removal.
+    /// This prevents transient connection drops (UnexpectedEof, ConnectionReset)
+    /// from triggering false disconnect cascades.
+    DeferredDisconnectCheck {
+        peer_id: PeerId,
+        local_peer_id: PeerId,
+    },
     /// Send a DKG share to a specific peer via P2P RPC unicast
     UnicastShareDKG {
         target_peer_id: String,
