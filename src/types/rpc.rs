@@ -95,14 +95,6 @@ pub enum RPCRequest {
         round: u64,
     },
 
-    /// Unicast a single refresh share to a specific participant (P2P, not broadcast)
-    SendRefreshShare {
-        from_node_id: String,
-        share_index: usize,
-        share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
-    },
-
     /// Unicast an ECDSA signature to the final node (P2P, not broadcast)
     SendECDSASignature {
         from_node_id: String,
@@ -140,6 +132,8 @@ pub enum RPCResponse {
         peers: Vec<SerializablePeerId>,
         indices: Vec<Option<usize>>,    // index per peer, None if unknown
         addresses: Vec<Option<String>>, // multiaddr per peer, None if unknown
+        #[serde(default)]
+        dkg_signer_count: Option<usize>, // number of initial DKG signers (for HRW filtering)
     },
     Custom {
         id: String,
@@ -192,14 +186,6 @@ pub enum RPCResponse {
 
     /// Acknowledge receipt of a DKG share via unicast
     DKGShareReceived {
-        from_node_id: String,
-        receiver_node_id: String,
-        share_index: usize,
-        success: bool,
-    },
-
-    /// Acknowledge receipt of a refresh share via unicast
-    RefreshShareReceived {
         from_node_id: String,
         receiver_node_id: String,
         share_index: usize,

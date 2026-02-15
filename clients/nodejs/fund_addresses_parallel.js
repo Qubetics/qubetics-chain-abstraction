@@ -14,7 +14,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // Configuration
 const RPC_URL = 'https://rpc-testnet.qubetics.work';
-const AMOUNT = process.env.AMOUNT || "70";
+const AMOUNT = process.env.AMOUNT || "2";
 
 // 10 Funding wallets for parallel transfers
 const FUNDING_WALLETS = [

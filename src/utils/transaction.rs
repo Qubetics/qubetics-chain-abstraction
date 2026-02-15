@@ -1823,6 +1823,9 @@ pub fn encode_claim_rewards_batch_calldata(
     if claims.is_empty() {
         return None;
     }
+    // Contract ABI: claimRewardsBatch(RewardClaim[] claims)
+    // where RewardClaim = { address solver, uint256 amount, uint8 chainType }
+    // chainType is INSIDE each tuple, not a separate parameter.
     #[allow(deprecated)]
     let f = Function {
         name: "claimRewardsBatch".to_owned(),
@@ -1830,15 +1833,11 @@ pub fn encode_claim_rewards_batch_calldata(
             Param {
                 name: "claims".into(),
                 kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
-                    ParamType::Address,
-                    ParamType::Uint(256),
+                    ParamType::Address,     // solver
+                    ParamType::Uint(256),   // amount
+                    ParamType::Uint(8),     // chainType (enum as uint8)
                 ]))),
                 internal_type: Some("struct SolverManager.RewardClaim[]".into()),
-            },
-            Param {
-                name: "chainType".into(),
-                kind: ParamType::Uint(8),
-                internal_type: Some("enum SolverManager.ChainType".into()),
             },
         ],
         outputs: vec![],
@@ -1852,7 +1851,13 @@ pub fn encode_claim_rewards_batch_calldata(
             solver_addr_str
                 .parse::<ethers::types::Address>()
                 .ok()
-                .map(|addr| Token::Tuple(vec![Token::Address(addr), Token::Uint(*amount)]))
+                .map(|addr| {
+                    Token::Tuple(vec![
+                        Token::Address(addr),
+                        Token::Uint(*amount),
+                        Token::Uint(U256::from(chain_type)),
+                    ])
+                })
         })
         .collect();
 
@@ -1860,10 +1865,7 @@ pub fn encode_claim_rewards_batch_calldata(
         return None;
     }
 
-    let tokens = vec![
-        Token::Array(claim_tokens),
-        Token::Uint(U256::from(chain_type)),
-    ];
+    let tokens = vec![Token::Array(claim_tokens)];
 
     f.encode_input(&tokens).ok()
 }

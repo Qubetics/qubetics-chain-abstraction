@@ -21,6 +21,10 @@ const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 // const FEE_PAYER_PRIVATE_KEY = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
 const solver1 = new ethers.Wallet(process.env.SOLVER1_PK, provider);
 
+// SOLVER_004's private key for self-validation
+const SOLVER_004_PK = '0x4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
+const solver4 = new ethers.Wallet(SOLVER_004_PK, provider);
+
 // -------- ABI (ONLY WHAT WE USE) --------
 const ABI = [
   "function getNonce(address) view returns (uint256)",
@@ -260,26 +264,28 @@ async function checkSolverLiquidity(solverId) {
 
 /**
  * Validate a solver (makes it active)
+ * The solver must validate themselves using their own wallet
  */
-async function validateSolver(solverId) {
+async function validateSolver(solverId, solverWallet = solver1) {
   console.log(`\n🔐 Validating solver: ${solverId}\n`);
-  
+  console.log(`Using wallet: ${solverWallet.address}\n`);
+
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
-  
+
   const domain = {
     name: "SolverManager",
     version: "1",
     chainId,
     verifyingContract: CONTRACT_ADDRESS
   };
-  
-  let nonce = await solverManager.getNonce(solver1.address);
-  const deadline = Math.floor(Date.now() / 1000) + 3600; // current unix timestamp + 1 hour
-  
+
+  let nonce = await solverManager.getNonce(solverWallet.address);
+  const deadline = Math.floor(Date.now() / 1000) + 3600;
+
   console.log("Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
-  
+
   const validateTypes = {
     ValidateSolver: [
       { name: "solverId", type: "string" },
@@ -287,31 +293,31 @@ async function validateSolver(solverId) {
       { name: "deadline", type: "uint256" }
     ]
   };
-  
+
   const validateMessage = {
     solverId,
     nonce,
     deadline
   };
-  
-  const validateSig = await solver1._signTypedData(domain, validateTypes, validateMessage);
+
+  const validateSig = await solverWallet._signTypedData(domain, validateTypes, validateMessage);
   console.log("Validate Signature:", validateSig);
-  
+
   console.log("\n🚀 Sending validate transaction...\n");
-  
-  const solverManagerWithSigner = solverManager.connect(solver1);
+
+  const solverManagerWithSigner = solverManager.connect(solverWallet);
   const tx = await solverManagerWithSigner.validateSolverId(deadline, validateSig);
-  
+
   console.log("Transaction Hash:", tx.hash);
   console.log("Waiting for confirmation...");
-  
+
   const receipt = await tx.wait();
   console.log("✅ Validated! Block:", receipt.blockNumber);
   console.log("Gas Used:", receipt.gasUsed.toString());
-  
+
   // Check if solver is now active
   await checkSolverStatus(solverId);
-  
+
   return true;
 }
 
@@ -416,7 +422,7 @@ async function main() {
   const { solverId, solverName, chainIds, solverAddresses } = solverConfigs[0];
   
   // UNCOMMENT THE FUNCTION YOU WANT TO RUN:
-  
+
   // 1. Check solver status (full details)
   await checkSolverStatus(solverId);
   

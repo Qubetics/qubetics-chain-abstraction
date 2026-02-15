@@ -3,8 +3,9 @@ use crate::dkg::{
     DKGNode,
 };
 use crate::types::{KeyShare, SerializablePoint, SerializableScalar};
+use crate::utils;
 use crate::utils::hmac_helper::hmac_scalar_mod_n;
-use crate::{utils, NodeMembership};
+use crate::NodeMembership;
 use anyhow::{anyhow, Result};
 use ff::PrimeField;
 use k256::{AffinePoint, ProjectivePoint, Scalar};
@@ -30,46 +31,6 @@ impl DKGNode {
                 self.handle_share_validation(from, to, is_valid, node_manager)
                     .await?;
             }
-            DKGMessage::NewNodeJoined {
-                new_node_id,
-                new_node_index,
-            } => {
-                info!(
-                    "🆕 New node {} joined at index {}",
-                    new_node_id, new_node_index
-                );
-                self.handle_new_node_joined(new_node_id, new_node_index)
-                    .await?;
-            }
-            DKGMessage::NewNodeShare {
-                from,
-                to,
-                share,
-                commitment,
-                new_node_index,
-            } => {
-                info!(
-                    "📨 Received new node share from {} to {} (new_node_index: {})",
-                    from, to, new_node_index
-                );
-                if to == self.id {
-                    self.handle_new_node_share_received(
-                        from,
-                        share,
-                        commitment,
-                        new_node_index,
-                        node_manager.clone(),
-                    )
-                    .await?;
-                }
-            }
-            DKGMessage::TriggerRefresh { trigger_node } => {
-                info!(
-                    "🔄 [REFRESH] Received refresh trigger from {}",
-                    trigger_node
-                );
-                self.execute_polynomial_refresh(node_manager).await?;
-            }
             DKGMessage::NodeDisconnected { .. } => {
                 info!("📢 [DISCONNECT] Notification handled at network layer");
             }
@@ -83,14 +44,6 @@ impl DKGNode {
                     from, round
                 );
                 self.handle_commitment_broadcast(from, commitments).await?;
-            }
-            DKGMessage::RefreshCommitmentBroadcast { from, commitments } => {
-                info!(
-                    "🔐 [REFRESH-SECURE] Received refresh commitment broadcast from {}",
-                    from
-                );
-                self.handle_refresh_commitment_broadcast(from, commitments, node_manager)
-                    .await?;
             }
         }
         Ok(())
@@ -370,6 +323,14 @@ impl DKGNode {
         }
 
         self.transition_status(DKGStatus::Completed)?;
+
+        // Store the initial DKG signer count (used by HRW to exclude observer nodes)
+        let signer_count = commitments.len();
+        if let Err(e) = self.storage.set_dkg_signer_count(signer_count) {
+            warn!("⚠️ [DKG] Failed to store DKG signer count: {}", e);
+        } else {
+            info!("🔢 [DKG] Stored initial DKG signer count: {}", signer_count);
+        }
 
         info!("🎯 [DKG] DKG COMPLETED for node {}!", self.id);
         info!(

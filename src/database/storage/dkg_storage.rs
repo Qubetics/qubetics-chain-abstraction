@@ -316,29 +316,6 @@ impl DkgStorage {
         Ok(())
     }
 
-    /// Mark whether a DKG refresh is currently in progress
-    pub async fn set_refresh_in_progress(&self, in_progress: bool) -> Result<()> {
-        self.db
-            .put_string(keys::DKG_REFRESH_IN_PROGRESS, &in_progress)?;
-        tracing::info!(
-            "🔄 [DKG_STORAGE] Set refresh_in_progress flag: {}",
-            in_progress
-        );
-        Ok(())
-    }
-
-    /// Check if a DKG refresh is currently in progress
-    pub async fn is_refresh_in_progress(&self) -> Result<bool> {
-        let result = self
-            .db
-            .get_string::<bool>(keys::DKG_REFRESH_IN_PROGRESS)?
-            .unwrap_or(false);
-        tracing::debug!(
-            "🔍 [DKG_STORAGE] refresh_in_progress flag: {}",
-            result
-        );
-        Ok(result)
-    }
 
     /// Set the initial DKG completion flag (marks that the initial 4-node DKG is complete)
     pub async fn set_initial_dkg_complete(&self, is_complete: bool) -> Result<()> {
@@ -360,6 +337,18 @@ impl DkgStorage {
 
         tracing::debug!("🔍 [DKG_STORAGE] Initial DKG complete flag: {}", result);
         Ok(result)
+    }
+
+    /// Store the number of initial DKG signers (used by HRW to exclude observer nodes)
+    pub fn set_dkg_signer_count(&self, count: usize) -> Result<()> {
+        self.db.put_string(keys::DKG_SIGNER_COUNT, &count)?;
+        tracing::info!("🔢 [DKG_STORAGE] Stored DKG signer count: {}", count);
+        Ok(())
+    }
+
+    /// Get the number of initial DKG signers (sync, for HRW candidate filtering)
+    pub fn get_dkg_signer_count(&self) -> Result<Option<usize>> {
+        self.db.get_string::<usize>(keys::DKG_SIGNER_COUNT)
     }
 
     /// Store the node's permanent index (assigned during initial DKG or resharing)

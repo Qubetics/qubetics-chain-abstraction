@@ -5,6 +5,7 @@ pub mod dkg;
 pub mod intent;
 pub mod messaging;
 pub mod network;
+pub mod nonce;
 pub mod p2p;
 pub mod rpc;
 pub mod rpc_server;
@@ -39,6 +40,8 @@ pub use user_intent::{
     IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
 };
 pub use vrf::{NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage};
+
+pub use nonce::{NonceGenState, NonceGenStatus, NoncePoolConfig, NoncePoolMetrics, NonceTuple};
 
 pub use network::{
     init_network_type_from_env, is_testnet, network_type, qubetics_rpc_url_from_env, NetworkType,

@@ -20,8 +20,8 @@ import path from 'path';
 // Configuration
 const RPC_NODES = [
   'http://127.0.0.1:8082',
-  'http://127.0.0.1:8083',
-  'http://127.0.0.1:8084',
+  // 'http://127.0.0.1:8083',
+  // 'http://127.0.0.1:8084',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -37,22 +37,43 @@ function getNodeForUser(userId) {
 // Then run: KEYS_FILE=private_keys.json node test_sequencer_parallel.js step1
 // To limit number of keys: KEY_LIMIT=100 KEYS_FILE=private_keys_100k.json node test_sequencer_parallel.js step1
 // To force re-registration (ignore local cache): FRESH=1 KEY_LIMIT=100 KEYS_FILE=private_keys_100k.json node test_sequencer_parallel.js step1
+// To use specific user IDs: USER_ID=55,101,500 KEYS_FILE=private_keys_100k.json node test_sequencer_parallel.js step2
 const KEYS_FILE = process.env.KEYS_FILE || null;
 const KEY_LIMIT = process.env.KEY_LIMIT ? parseInt(process.env.KEY_LIMIT, 10) : null;
+const USER_IDS = process.env.USER_ID ? process.env.USER_ID.split(',').map(id => parseInt(id.trim(), 10)).filter(id => id > 0) : [];
 const FRESH_START = process.env.FRESH === '1' || process.env.FRESH === 'true';
 
 let PRIVATE_KEYS = [];
+let USER_ID_MAP = []; // Maps index to original user ID for logging
 
 if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   try {
     const keysData = JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8'));
-    PRIVATE_KEYS = keysData.keys.map(k => k.privateKey);
-    console.log(`✅ Loaded ${PRIVATE_KEYS.length} private keys from ${KEYS_FILE}`);
+    const allKeys = keysData.keys.map(k => k.privateKey);
+    console.log(`✅ Loaded ${allKeys.length} private keys from ${KEYS_FILE}`);
 
+    // Use specific user IDs if specified (1-indexed)
+    if (USER_IDS.length > 0) {
+      PRIVATE_KEYS = [];
+      USER_ID_MAP = [];
+      for (const userId of USER_IDS) {
+        if (userId > 0 && userId <= allKeys.length) {
+          PRIVATE_KEYS.push(allKeys[userId - 1]);
+          USER_ID_MAP.push(userId);
+        } else {
+          console.warn(`⚠️ User ID ${userId} is out of range (1-${allKeys.length}), skipping`);
+        }
+      }
+      console.log(`👤 Using ${PRIVATE_KEYS.length} specific users: ${USER_IDS.join(', ')}`);
+    }
     // Apply key limit if specified
-    if (KEY_LIMIT && KEY_LIMIT > 0 && KEY_LIMIT < PRIVATE_KEYS.length) {
-      PRIVATE_KEYS = PRIVATE_KEYS.slice(0, KEY_LIMIT);
+    else if (KEY_LIMIT && KEY_LIMIT > 0 && KEY_LIMIT < allKeys.length) {
+      PRIVATE_KEYS = allKeys.slice(0, KEY_LIMIT);
+      USER_ID_MAP = Array.from({ length: KEY_LIMIT }, (_, i) => i + 1);
       console.log(`🔢 Limited to first ${KEY_LIMIT} keys`);
+    } else {
+      PRIVATE_KEYS = allKeys;
+      USER_ID_MAP = Array.from({ length: allKeys.length }, (_, i) => i + 1);
     }
   } catch (error) {
     console.error(`❌ Error loading keys from ${KEYS_FILE}: ${error.message}`);
@@ -65,37 +86,37 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
   // 'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1',
   // "b61b1415e8b5e5a3144c0d7b8c556b23baed0366586931011c9d858ecf39bd37",
-  // "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
-  // "03c2a0cbaf3a88ddbca8aec76259ff01c9165816794dbcda330ecda5c6008c80",
-  // "f44356ec40eea5d9f21c7bd2f29bbedb0269d11168bce2ac38f12b4ef5949156",
-  // "ab71a0afb1ffe76973336a105e14573255863dd4ac5692fac9e5b887ef050555",
-  // "d12a02464e11ba3d596380d6a2cb854eff3e537c597c69bb9d90639daf85e2c1",
-  // "bb6ae158bb718b25645f1a545dcf301672c1b10a2bf49b3a08b7bcba62415814",
-  // "f9a70e39839c17e74af530a7325e55a8796473f32ece2c8284c4c098880a0d28",
-  // "72321624c6643bd5bbb40be800e063cf4af1d94fd2e2f9ed21321d75a5f8bc25",
-  // "7f99aa35bc07f235f4bd4688377e5ea865a77f968a1f1669e5de0f05aec2d445",
-  // "4cf33839b011a638b2a84dcc61fdd2e78320ea49b9acaf661376fb94556cf30d",
-  // "bec774d1a84f121ffade69bf45a23ddc54278f8fbc4e59680e2835e4185ef896",
-  // "4592debf089c3019b53f8098f3f1c4ed629e8740a4370caaf6a11a9c85338482",
-  // "b4221f4b4335926192a4b3a957ca5f0198d7f35f17fa321973bce3be0a5b7db5",
-  // "e643708c58446c9e3513d11a3bc7531c385f2ee2205037b47dd0dba96239f41e",
-  // "d9aa82c8b5429c65d0dda7ee04bc2026da4d376bc2d4a305a39af3c45f1b578a",
-  // "c22462f3e6fe4e288a00a3453f3f93ca5a48cdb29379f8d51394c2c7c91414cc",
-  // "b83650df6acbe6266fcf52c5288d23d25a2fdc2f2b3564a5825d3a67172c6610",
-  // "25d16229200a6f13b13548ddd39f104f5336b0cfd984fee6253456efd8bffdd5",
-  // "728c87ca02ebe88db24398b18437b4a71525808b17158a9bc8fad7005c1ebc84",
-  // "329625232fe2001268a33c0a2a7523edfeb04138d8db0c18a7697221b4100620",
-  // "63a9da98227c2efd52498e6a51ccf5640aa707e5bee59e8b5848b3a547e9ab27",
-  // "01998933eb0d0aa0b51dc41796b29af3142f9039c2138947aa330bfff17ce8b2",
-  // "a5d6d05532a0f6ee1de3586a2da787429a8b62289d776ca084783c8dc9ffa5a7",
-  // "15d5488130680e229fb5edceadec7c9a58b6236b5b5c08e339f89236f3ef59b2",
-  // "4289ba4c078eb7c639b72f3b253e03fe6420d64a3e2f60b2a6f6046b9e6d5010",
-  // "a28400d43f5f00f95f5ffbfcd1868fd2412685a4695a7dff65ed486488f651b0",
-  // "8484b8df03e271b07278d61bd97360079f109dfa9bc32af2166873dfaa790415",
-  // "11ee773c87f7be24e590648091da68546d2273596ad4d0c941e9df078e06e3df",
-  // "d59977f42a29d6604c97ece9e514e890c4d635537c82acfb6b28856f9195eb9f",
-  // "21bb33fee6969b26a87f777f77b7c206f3259015db5305eb0e3b2a7dd42d36f1",
-  // "94bac31302d892ae2c1e474ecb0483475577ff716df6bd383a2094395345fdcf",
+  "005c880d2bc9c6f560eef60faa20991b68ee25b3b24f3a037c4af5e078cda77a",
+  "03c2a0cbaf3a88ddbca8aec76259ff01c9165816794dbcda330ecda5c6008c80",
+  "f44356ec40eea5d9f21c7bd2f29bbedb0269d11168bce2ac38f12b4ef5949156",
+  "ab71a0afb1ffe76973336a105e14573255863dd4ac5692fac9e5b887ef050555",
+  "d12a02464e11ba3d596380d6a2cb854eff3e537c597c69bb9d90639daf85e2c1",
+  "bb6ae158bb718b25645f1a545dcf301672c1b10a2bf49b3a08b7bcba62415814",
+  "f9a70e39839c17e74af530a7325e55a8796473f32ece2c8284c4c098880a0d28",
+  "72321624c6643bd5bbb40be800e063cf4af1d94fd2e2f9ed21321d75a5f8bc25",
+  "7f99aa35bc07f235f4bd4688377e5ea865a77f968a1f1669e5de0f05aec2d445",
+  "4cf33839b011a638b2a84dcc61fdd2e78320ea49b9acaf661376fb94556cf30d",
+  "bec774d1a84f121ffade69bf45a23ddc54278f8fbc4e59680e2835e4185ef896",
+  "4592debf089c3019b53f8098f3f1c4ed629e8740a4370caaf6a11a9c85338482",
+  "b4221f4b4335926192a4b3a957ca5f0198d7f35f17fa321973bce3be0a5b7db5",
+  "e643708c58446c9e3513d11a3bc7531c385f2ee2205037b47dd0dba96239f41e",
+  "d9aa82c8b5429c65d0dda7ee04bc2026da4d376bc2d4a305a39af3c45f1b578a",
+  "c22462f3e6fe4e288a00a3453f3f93ca5a48cdb29379f8d51394c2c7c91414cc",
+  "b83650df6acbe6266fcf52c5288d23d25a2fdc2f2b3564a5825d3a67172c6610",
+  "25d16229200a6f13b13548ddd39f104f5336b0cfd984fee6253456efd8bffdd5",
+  "728c87ca02ebe88db24398b18437b4a71525808b17158a9bc8fad7005c1ebc84",
+  "329625232fe2001268a33c0a2a7523edfeb04138d8db0c18a7697221b4100620",
+  "63a9da98227c2efd52498e6a51ccf5640aa707e5bee59e8b5848b3a547e9ab27",
+  "01998933eb0d0aa0b51dc41796b29af3142f9039c2138947aa330bfff17ce8b2",
+  "a5d6d05532a0f6ee1de3586a2da787429a8b62289d776ca084783c8dc9ffa5a7",
+  "15d5488130680e229fb5edceadec7c9a58b6236b5b5c08e339f89236f3ef59b2",
+  "4289ba4c078eb7c639b72f3b253e03fe6420d64a3e2f60b2a6f6046b9e6d5010",
+  "a28400d43f5f00f95f5ffbfcd1868fd2412685a4695a7dff65ed486488f651b0",
+  "8484b8df03e271b07278d61bd97360079f109dfa9bc32af2166873dfaa790415",
+  "11ee773c87f7be24e590648091da68546d2273596ad4d0c941e9df078e06e3df",
+  "d59977f42a29d6604c97ece9e514e890c4d635537c82acfb6b28856f9195eb9f",
+  "21bb33fee6969b26a87f777f77b7c206f3259015db5305eb0e3b2a7dd42d36f1",
+  "94bac31302d892ae2c1e474ecb0483475577ff716df6bd383a2094395345fdcf",
   // "9bb89847d2252cfd377d89e0ff64fb71d32b18d1dd70be86169ae15fb780e7b4",
   // // // Additional accounts (36-100) - Properly generated random keys
   // "83ed11e04b47ea2ddf6130d1d1e57e7a63078c7d5f3b0dfd136054335459997d",
@@ -237,7 +258,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "0442bded36c12f32810ad0bc750cdaf8897af24d44a63bda2cea8f2d1f4c067d",
   // "f4a264db00d16db2741baf29c75583c9f01221da8afd97210ee62160168e0d2b",
   // "09aa9303de1daa31cb1ee442b6299442e82b49ca75cd2c314ca78439b2f01f3b",
-  "39ec755dc5faa69bbd3bb2e3bd714ecbe6323beb6cee9d19db5ac0bc85b0ac94",
+  // "39ec755dc5faa69bbd3bb2e3bd714ecbe6323beb6cee9d19db5ac0bc85b0ac94",
   // "4ab1ebee4ca749ab56657a518c1640e6512741166f28c8f8d14aa758c4d715a7",
   // "834ea2678934b410e7cb4cde11e52168567a12ec3968312b44d65a4f75a2d4b6",
   // "6cfbeab194ccd49247b77dfd5e1b0e2ed48195c452d57498fc86df751f86f544",
@@ -387,20 +408,6 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}[${timestamp}] ${message}${colors.reset}`);
 }
 
-/** Serialize deposit intent for signing; must match server serde_json key order and amount-as-string. */
-function serializeDepositIntentForSigning(intent) {
-  return JSON.stringify({
-    source_address: intent.source_address,
-    target_address: intent.target_address,
-    source_chain: intent.source_chain,
-    target_chain: intent.target_chain,
-    amount: String(intent.amount),
-    source_token: intent.source_token,
-    target_token: intent.target_token,
-    timestamp: typeof intent.timestamp === 'number' ? intent.timestamp : Number(intent.timestamp),
-  });
-}
-
 // Register a user (like test_register_user.js)
 async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
   try {
@@ -528,13 +535,15 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      source_address: userInfo.data.derived_btc_address,  // ETH address
+      source_address: userInfo.data.derived_eth_address,  // ETH address
+      // source_address: userInfo.data.derived_btc_address,  // ETH address
       // target_address: userInfo.data.derived_eth_address,
-      target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
+      // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
+      target_address: "0x95385e34d72d376f9e021fe02f91a35dbae261d4",
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
       target_chain: 'qubetics',
-      amount: String(amount),
+      amount: amount,
       source_token: 'TICS',
       target_token: 'TICS',
       timestamp: intentTimestamp,
@@ -542,8 +551,10 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
 
     log(`[User ${userId}]   Deposit Intent: ${JSON.stringify(depositIntent)}`, 'cyan');
 
-    // Sign the serialized intent (same bytes the server uses for hash/recovery)
-    const msg = serializeDepositIntentForSigning(depositIntent);
+    // Serialize DepositIntent for signing
+    const msg = JSON.stringify(depositIntent);
+
+    // EIP-191 personal_sign  
     const signature = await wallet.signMessage(msg);
     log(`[User ${userId}]   Signature: ${signature}`, 'cyan');
 
@@ -769,11 +780,8 @@ async function step1_RegisterUsers() {
         }
       }
 
-      // Save to file once per batch (much faster than per-registration)
-      saveAddressesToFile(registeredAddresses);
-
       log(`   ✅ Batch ${batchNum} complete: ${batchSuccess}/${batch.length} users registered`, 'green');
-      log(`   💾 Total saved to file: ${registeredAddresses.length}`, 'cyan');
+      log(`   📊 Total registered so far: ${registeredAddresses.length}`, 'cyan');
 
       // Wait between batches (except after the last batch)
       if (i + BATCH_SIZE < walletsToRegister.length) {
@@ -786,8 +794,11 @@ async function step1_RegisterUsers() {
     log(`✅ Total registered in this run: ${successfulRegistrations}/${walletsToRegister.length} users`, 'green');
   }
 
+  // Save to file ONCE after all registrations complete
   log('', 'reset');
-  log(`💾 Total addresses in file: ${registeredAddresses.length}`, 'green');
+  log(`💾 Saving ${registeredAddresses.length} addresses to file...`, 'yellow');
+  saveAddressesToFile(registeredAddresses);
+  log(`✅ Saved to: ${REGISTERED_ADDRESSES_FILE}`, 'green');
   log('', 'reset');
 
   // Verify total registered users via API
@@ -837,8 +848,10 @@ async function step2_SubmitTransactions() {
   const wallets = validPrivateKeys.map((pk, i) => {
     const privKey = pk.startsWith('0x') ? pk : `0x${pk}`;
     const wallet = new Wallet(privKey);
-    log(`   User ${i + 1}: ${wallet.address}`, 'cyan');
-    return { userId: i + 1, wallet, address: wallet.address };
+    // Use actual user ID from USER_ID_MAP if available, otherwise use index+1
+    const userId = USER_ID_MAP.length > 0 ? USER_ID_MAP[i] : i + 1;
+    log(`   User ${userId}: ${wallet.address}`, 'cyan');
+    return { userId, wallet, address: wallet.address };
   });
   log('', 'reset');
 
@@ -851,7 +864,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "12000000000000000000";  // 5 TICS (reduced from 44 to fit 10 TICS balance)
+    const amount = "5000000000000000000";  // 12 TICS
     // const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });

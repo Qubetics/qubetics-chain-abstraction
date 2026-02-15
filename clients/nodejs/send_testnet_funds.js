@@ -16,11 +16,11 @@ const api = axios.create({
 // Configuration
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'mkHXnwMCbjRRv1RFw9a6fZgffDw3GgsgTJ',
+    targetAddress: 'mgZAXKuNoAN5SwPruw6HoyHaSHh1w8LFRg',
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
-    rpcEndpoint: 'https://mempool.space/testnet/api',
+    rpcEndpoint: 'https://blockstream.info/testnet/api',
     amountPerTx: 1000, // satoshis
-    numberOfTx: 10,
+    numberOfTx: 3,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
 

@@ -130,6 +130,31 @@ impl MpcNetworkLayer {
                                 from, slot_id, round, signatures.len()
                             );
                         }
+                        // Nonce protocol messages for random k generation
+                        SigningMessage::NonceCommitment { from, batch_id, round, .. } => {
+                            info!(
+                                "📥 [NONCE] Received commitment from {} for batch {} round {}",
+                                from, batch_id, round
+                            );
+                        }
+                        SigningMessage::NonceReveal { from, batch_id, round, .. } => {
+                            info!(
+                                "📥 [NONCE] Received reveal from {} for batch {} round {}",
+                                from, batch_id, round
+                            );
+                        }
+                        SigningMessage::RequestNonceGeneration { coordinator_id, batch_id, batch_size, .. } => {
+                            info!(
+                                "📥 [NONCE] Received generation request from {} for batch {} (size: {})",
+                                coordinator_id, batch_id, batch_size
+                            );
+                        }
+                        SigningMessage::NonceGenerationComplete { from, batch_id, tuples_count, success, .. } => {
+                            info!(
+                                "📥 [NONCE] Generation complete from {} for batch {} ({} tuples, success: {})",
+                                from, batch_id, tuples_count, success
+                            );
+                        }
                         _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;
@@ -1089,23 +1114,29 @@ impl MpcNetworkLayer {
 
                         // Contract sequencer removed
 
-                        // Update signing node threshold to match current network state
-                        if let Some(arc) = &self.signing_node {
-                            let mut signing_node = arc.lock().await;
-                            let new_threshold = self.node_manager.get_threshold();
-                            signing_node.set_threshold(new_threshold);
-                            info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
+                        // Do NOT update signing threshold when new nodes join after initial DKG
+                        // Threshold is fixed based on the initial DKG participants only
+                        // New nodes are passive observers and cannot sign
+                        if let Some(dkg_node_ref) = &self.dkg_node {
+                            let initial_dkg_complete = dkg_node_ref.is_initial_dkg_complete().await;
+                            if !initial_dkg_complete {
+                                // During initial DKG setup, update threshold as nodes join
+                                if let Some(arc) = &self.signing_node {
+                                    let mut signing_node = arc.lock().await;
+                                    let new_threshold = self.node_manager.get_threshold();
+                                    signing_node.set_threshold(new_threshold);
+                                    info!("🔄 [THRESHOLD] Updated signing node threshold to {} (total nodes: {})", new_threshold, total);
+                                }
+                            } else {
+                                info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged - new node joined after initial DKG (observer only)");
+                            }
                         }
 
-                        // If initial DKG is completed, existing nodes are aware of the new node
-                        // Note: The new node itself won't receive this PeerDiscovery message (gossipsub doesn't echo)
-                        // The new node handles resharing in ConnectionEstablished (dialer section)
+                        // New nodes join as passive observers - no share distribution or refresh
                         if let Some(dkg_node) = &mut self.dkg_node {
                             let initial_dkg_complete = dkg_node.is_initial_dkg_complete().await;
-
                             if initial_dkg_complete {
-                                info!("🔄 [EXISTING_NODE] New peer {} joined network, will respond to share requests", peer);
-                                // Existing nodes will handle the NewNodeJoined DKG message when the new node broadcasts it
+                                info!("ℹ️ [EXISTING_NODE] New peer {} joined network as observer (no share distribution)", peer);
                             } else {
                                 info!("ℹ️ [NEW_NODE] Initial DKG not yet completed (waiting for 3 nodes)");
                             }
@@ -1200,6 +1231,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
+                nonce_tuple_id,
             } => {
                 info!(
                     "📦 [INTENT_BATCH] Received intent batch broadcast from node {} (round {})",
@@ -1249,6 +1281,21 @@ impl MpcNetworkLayer {
                         batch_intents.len(),
                         batch_type
                     );
+
+                    // Observer nodes (no DKG share) should not build chain TXs or sign.
+                    let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.has_dkg_share().await
+                    } else {
+                        false
+                    };
+                    if !is_dkg_participant {
+                        info!(
+                            "ℹ️ [INTENT_BATCH] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                            round
+                        );
+                        return Ok(());
+                    }
 
                     // DIFFERENT: Process based on batch type
                     if batch_type == "BTC" {
@@ -1564,6 +1611,7 @@ impl MpcNetworkLayer {
                                     signing_key,
                                     None, // No solver
                                     signing_key,
+                                    nonce_tuple_id.clone(), // coordinated nonce
                                 )
                                 .await?;
 
@@ -1764,12 +1812,14 @@ impl MpcNetworkLayer {
                                         None,
                                         None, // tics_withdraw_identifiers (not applicable)
                                         None, // tics_claim_reward_identifiers (not applicable)
+                                        nonce_tuple_id.clone(), // COORDINATED nonce from coordinator
                                     )
                                     .await?;
 
                                 info!(
-                                    "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents)",
-                                    intent_hashes.len()
+                                    "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, nonce: {:?})",
+                                    intent_hashes.len(),
+                                    nonce_tuple_id
                                 );
                                 info!(
                                     "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
@@ -1795,6 +1845,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp: _,
                 node_id,
+                nonce_assignments,
             } => {
                 info!(
                     "📦 [TICS_UTV_BATCH] Received TICS UserToVault intent batch from node {} (round {}, {} intents)",
@@ -1828,6 +1879,22 @@ impl MpcNetworkLayer {
                                 );
                             }
                         }
+                    }
+
+                    // Observer nodes (no DKG share) should not build chain TXs or sign;
+                    // they already marked intents as Batched above for DB consistency.
+                    let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.has_dkg_share().await
+                    } else {
+                        false
+                    };
+                    if !is_dkg_participant {
+                        info!(
+                            "ℹ️ [TICS_UTV_BATCH] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                            round
+                        );
+                        return Ok(());
                     }
 
                     let mut batch_intents = Vec::new();
@@ -1990,7 +2057,8 @@ impl MpcNetworkLayer {
                         use crate::signing::chains::EthereumSigner;
                         let mut eth_signer = EthereumSigner::new(&mut signing_node);
                         let n_slots = batch.len();
-                        if let Err(e) = eth_signer.sign_tics_user_to_vault_batch(round, batch).await
+                        // Use coordinated nonces if available
+                        if let Err(e) = eth_signer.sign_tics_user_to_vault_batch_with_nonces(round, batch, nonce_assignments.clone()).await
                         {
                             warn!(
                                 "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
@@ -1998,8 +2066,8 @@ impl MpcNetworkLayer {
                             );
                         } else {
                             info!(
-                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
-                                round, n_slots
+                                "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots, coordinated: {})",
+                                round, n_slots, !nonce_assignments.is_empty()
                             );
                         }
                     } else {
@@ -2014,6 +2082,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp: _,
                 node_id,
+                nonce_assignments,
             } => {
                 info!(
                     "📦 [BTC_UTV_BATCH] Received BTC UserToVault intent batch from node {} (round {}, {} intents)",
@@ -2047,6 +2116,22 @@ impl MpcNetworkLayer {
                                 );
                             }
                         }
+                    }
+
+                    // Observer nodes (no DKG share) should not build chain TXs or sign;
+                    // they already marked intents as Batched above for DB consistency.
+                    let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.has_dkg_share().await
+                    } else {
+                        false
+                    };
+                    if !is_dkg_participant {
+                        info!(
+                            "ℹ️ [BTC_UTV_BATCH] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                            round
+                        );
+                        return Ok(());
                     }
 
                     let mut batch_intents = Vec::new();
@@ -2213,7 +2298,7 @@ impl MpcNetworkLayer {
                         use crate::signing::chains::BitcoinSigner;
                         let mut btc_signer = BitcoinSigner::new(&mut signing_node);
                         let n_slots = batch.len();
-                        if let Err(e) = btc_signer.sign_btc_user_to_vault_batch(round, batch).await
+                        if let Err(e) = btc_signer.sign_btc_user_to_vault_batch(round, batch, &nonce_assignments).await
                         {
                             warn!(
                                 "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
@@ -2238,6 +2323,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use crate::signing::chains::bitcoin_batch::{
                     build_batch_unsigned_tx, select_utxos_for_batch,
@@ -2249,6 +2335,21 @@ impl MpcNetworkLayer {
                     "📦 [BTC_WITHDRAW] Received BTC withdraw batch {} from node {} (round {}, timestamp {})",
                     batch_id, node_id, round, timestamp
                 );
+
+                // Observer nodes (no DKG share) should not build chain TXs or sign.
+                let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.has_dkg_share().await
+                } else {
+                    false
+                };
+                if !is_dkg_participant {
+                    info!(
+                        "ℹ️ [BTC_WITHDRAW] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                        round
+                    );
+                    return Ok(());
+                }
 
                 // Load all pending withdraw records so we can look up each request
                 let db = &self.db;
@@ -2566,6 +2667,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None, // No per-withdraw solver address; encoded in identifiers
                             signing_key,
+                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                         )
                         .await?;
 
@@ -2580,6 +2682,7 @@ impl MpcNetworkLayer {
                 round: _round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::signing::chains::bitcoin_batch::{
@@ -2593,6 +2696,21 @@ impl MpcNetworkLayer {
                     "📦 [BTC_CLAIM_REWARD] Received BTC claim-reward batch {} from node {} (timestamp {})",
                     batch_id, node_id, timestamp
                 );
+
+                // Observer nodes (no DKG share) should not build chain TXs or sign.
+                let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.has_dkg_share().await
+                } else {
+                    false
+                };
+                if !is_dkg_participant {
+                    info!(
+                        "ℹ️ [BTC_CLAIM_REWARD] Observer node skipping chain TX creation and signing for batch {} (no DKG share)",
+                        batch_id
+                    );
+                    return Ok(());
+                }
 
                 let db = &self.db;
                 let all_claims: Vec<(String, PendingClaimRewardRequest)> = match db
@@ -2876,6 +2994,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None,
                             signing_key,
+                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                         )
                         .await?;
                     info!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
@@ -2889,6 +3008,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use crate::types::rpc_server::PendingWithdrawRequest;
                 use crate::utils::transaction::RemoveLiquidityBatchRequest;
@@ -2901,6 +3021,21 @@ impl MpcNetworkLayer {
 
                 if requests.is_empty() {
                     info!("ℹ️  [TICS_WITHDRAW] Empty TicsWithdrawBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                // Observer nodes (no DKG share) should not build chain TXs or sign.
+                let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.has_dkg_share().await
+                } else {
+                    false
+                };
+                if !is_dkg_participant {
+                    info!(
+                        "ℹ️ [TICS_WITHDRAW] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                        round
+                    );
                     return Ok(());
                 }
 
@@ -3171,6 +3306,7 @@ impl MpcNetworkLayer {
                                 None,
                                 Some(used_identifiers.clone()), // for tx-id broadcast to update each request
                                 None, // tics_claim_reward_identifiers (not applicable)
+                                nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                             )
                             .await?;
 
@@ -3193,6 +3329,7 @@ impl MpcNetworkLayer {
                 round: _round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::types::rpc_server::PendingClaimRewardRequest;
@@ -3208,6 +3345,21 @@ impl MpcNetworkLayer {
 
                 if requests.is_empty() {
                     info!("ℹ️  [TICS_CLAIM_REWARD] Empty TicsClaimRewardBatch received, nothing to do");
+                    return Ok(());
+                }
+
+                // Observer nodes (no DKG share) should not build chain TXs or sign.
+                let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.has_dkg_share().await
+                } else {
+                    false
+                };
+                if !is_dkg_participant {
+                    info!(
+                        "ℹ️ [TICS_CLAIM_REWARD] Observer node skipping chain TX creation and signing for batch {} (no DKG share)",
+                        batch_id
+                    );
                     return Ok(());
                 }
 
@@ -3475,6 +3627,7 @@ impl MpcNetworkLayer {
                                 None,
                                 None, // tics_withdraw_identifiers (not applicable)
                                 Some(used_identifiers.clone()), // for tx-id broadcast: store tx_id on TICS, mark done for all
+                                nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                             )
                             .await
                         {
@@ -3627,16 +3780,18 @@ impl MpcNetworkLayer {
                 update_round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 info!(
                     "🔄 [BTC_INTENT_MANAGER] Received BTC intent manager update batch from node {} (round {})",
                     node_id, update_round
                 );
                 info!(
-                    "🔄 [BTC_INTENT_MANAGER] {} intents, BTC batch round: {}, BTC txid: {}",
+                    "🔄 [BTC_INTENT_MANAGER] {} intents, BTC batch round: {}, BTC txid: {}, nonce: {:?}",
                     intent_hashes.len(),
                     btc_batch_round,
-                    btc_txid
+                    btc_txid,
+                    nonce_tuple_id
                 );
 
                 // Process the batch - create contract call
@@ -3650,6 +3805,7 @@ impl MpcNetworkLayer {
                         update_round,
                         timestamp,
                         node_id,
+                        nonce_tuple_id,
                     )
                     .await
                 {
@@ -3900,19 +4056,35 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 info!(
                     "💧 [ADD_LIQUIDITY_BATCH] Received solver_add_liquidity batch from node {} (round {})",
                     node_id, round
                 );
                 info!(
-                    "💧 [ADD_LIQUIDITY_BATCH] {} requests to process (will look up from RocksDB), timestamp: {}",
-                    request_ids.len(), timestamp
+                    "💧 [ADD_LIQUIDITY_BATCH] {} requests to process (will look up from RocksDB), timestamp: {}, nonce: {:?}",
+                    request_ids.len(), timestamp, nonce_tuple_id
                 );
+
+                // Observer nodes (no DKG share) should not build chain TXs or sign.
+                let is_dkg_participant = if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    node.has_dkg_share().await
+                } else {
+                    false
+                };
+                if !is_dkg_participant {
+                    info!(
+                        "ℹ️ [ADD_LIQUIDITY_BATCH] Observer node skipping chain TX creation and signing for round {} (no DKG share)",
+                        round
+                    );
+                    return Ok(());
+                }
 
                 // Process the batch - all nodes look up full details from RocksDB and participate in signing
                 if let Err(e) = self
-                    .handle_solver_add_liquidity_batch(request_ids, round, timestamp, node_id)
+                    .handle_solver_add_liquidity_batch(request_ids, round, timestamp, node_id, nonce_tuple_id)
                     .await
                 {
                     error!(
@@ -4060,6 +4232,44 @@ impl MpcNetworkLayer {
 
                 // Note: For add_liquidity, failed transactions won't reach here since gas estimation
                 // failures are caught earlier and marked as "Failed" in RocksDB
+            }
+            GossipsubMessage::NonceTupleBroadcast {
+                batch_id,
+                tuples,
+                node_id,
+            } => {
+                // Store broadcasted nonce tuples locally.
+                // Observer nodes need these so they can reserve nonce IDs when
+                // acting as the final node for batch coordination.
+                // DKG nodes already stored them during generation, so duplicates
+                // are harmlessly overwritten.
+                info!(
+                    "📥 [NONCE] Received {} nonce tuples from node {} (batch {})",
+                    tuples.len(), node_id, batch_id
+                );
+
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    if let Some(nm) = node.nonce_manager() {
+                        let nm_guard = nm.lock().await;
+                        let total = tuples.len();
+                        let mut stored = 0usize;
+                        for tuple in tuples {
+                            if let Err(e) = nm_guard.store_received_nonce_tuple(tuple).await {
+                                warn!(
+                                    "⚠️ [NONCE] Failed to store nonce tuple from batch {}: {}",
+                                    batch_id, e
+                                );
+                            } else {
+                                stored += 1;
+                            }
+                        }
+                        info!(
+                            "✅ [NONCE] Stored {}/{} nonce tuples from batch {}",
+                            stored, total, batch_id
+                        );
+                    }
+                }
             }
         }
         Ok(())

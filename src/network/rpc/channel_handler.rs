@@ -308,6 +308,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -317,6 +318,7 @@ impl MpcNetworkLayer {
                     timestamp,
                     round,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -370,6 +372,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -378,6 +381,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -434,6 +438,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -442,6 +447,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -504,6 +510,7 @@ impl MpcNetworkLayer {
                 update_round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -514,6 +521,7 @@ impl MpcNetworkLayer {
                     update_round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_tuple_id: nonce_tuple_id.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -573,6 +581,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -582,6 +591,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -635,6 +645,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -644,6 +655,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -755,6 +767,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -764,6 +777,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -817,6 +831,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -826,6 +841,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -1133,6 +1149,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -1141,6 +1158,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_tuple_id: nonce_tuple_id.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -1386,196 +1404,6 @@ impl MpcNetworkLayer {
 
                 info!(
                     "✅ [DKG-SECURE] Share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
-                    share_index, target_peer_id, request_id, is_connected
-                );
-            }
-            // SECURE REFRESH SHARE DISTRIBUTION - sends refresh share to specific peer via P2P RPC
-            ChannelMessage::UnicastRefreshShare {
-                target_peer_id,
-                from_node_id,
-                share_index,
-                share_value,
-                commitments,
-                retry_count,
-            } => {
-                const MAX_RETRIES: u8 = 10;
-
-                info!(
-                    "🔐 [REFRESH-SECURE] Sending refresh share index {} via UNICAST to peer {} (attempt {})",
-                    share_index, target_peer_id, retry_count + 1
-                );
-
-                // Parse the target peer ID
-                let peer_id = match target_peer_id.parse::<PeerId>() {
-                    Ok(pid) => pid,
-                    Err(e) => {
-                        warn!(
-                            "❌ [REFRESH-SECURE] Invalid peer ID '{}': {}",
-                            target_peer_id, e
-                        );
-                        return Err(anyhow!("Invalid peer ID: {}", e));
-                    }
-                };
-
-                // Attempt to dial if not connected
-                let mut is_connected = swarm.is_connected(&peer_id);
-                info!(
-                    "🔐 [REFRESH-SECURE] Target Peer {} connected: {}",
-                    target_peer_id, is_connected
-                );
-
-                if !is_connected {
-                    if let Some(addr) = self
-                        .peer_discovery
-                        .peer_multiaddresses
-                        .get(&peer_id)
-                        .cloned()
-                    {
-                        info!(
-                            "📞 [REFRESH-SECURE] Not connected to {}, dialing before send: {}",
-                            target_peer_id, addr
-                        );
-                        let address: Multiaddr = if addr
-                            .to_string()
-                            .contains(&format!("/p2p/{}", target_peer_id))
-                        {
-                            addr.clone()
-                        } else {
-                            format!("{}/p2p/{}", addr, target_peer_id)
-                                .parse()
-                                .expect("valid multiaddr")
-                        };
-                        if let Err(e) = swarm.dial(address.clone()) {
-                            warn!(
-                                "⚠️ [REFRESH-SECURE] Dial to {} failed: {}",
-                                target_peer_id, e
-                            );
-                        } else {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                            is_connected = swarm.is_connected(&peer_id);
-                            info!(
-                                "🔐 [REFRESH-SECURE] Dial to {} successful: {}",
-                                target_peer_id, is_connected
-                            );
-                        }
-                    } else {
-                        warn!(
-                            "⚠️ [REFRESH-SECURE] No known address to dial peer {}; will rely on retries",
-                            target_peer_id
-                        );
-                    }
-                }
-
-                if !is_connected && retry_count < MAX_RETRIES {
-                    let delay_ms = 1000 * (1 << retry_count.min(5));
-                    info!(
-                        "🔄 [REFRESH-SECURE] Peer {} not connected - scheduling retry {} in {}ms",
-                        target_peer_id,
-                        retry_count + 1,
-                        delay_ms
-                    );
-
-                    let tx = self.message_tx.clone();
-                    let retry_msg = ChannelMessage::UnicastRefreshShare {
-                        target_peer_id: target_peer_id.clone(),
-                        from_node_id,
-                        share_index,
-                        share_value,
-                        commitments,
-                        retry_count: retry_count + 1,
-                    };
-
-                    tokio::spawn(async move {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                        if let Err(e) = tx.send(retry_msg).await {
-                            tracing::warn!(
-                                "❌ [REFRESH-SECURE] Failed to schedule retry for refresh share {}: {}",
-                                share_index, e
-                            );
-                        }
-                    });
-
-                    return Ok(());
-                }
-
-                if !is_connected {
-                    warn!(
-                        "❌ [REFRESH-SECURE] Peer {} still not connected after {} retries - giving up",
-                        target_peer_id, MAX_RETRIES
-                    );
-                }
-
-                // PACING: Check per-peer in-flight count before sending
-                {
-                    use crate::network::rpc::MAX_OUTBOUND_INFLIGHT_PER_PEER;
-                    let mut inflight = self.outbound_inflight.lock().await;
-                    let count = inflight.get(&peer_id).copied().unwrap_or(0);
-                    
-                    if count >= MAX_OUTBOUND_INFLIGHT_PER_PEER {
-                        // At capacity - re-queue with delay
-                        info!(
-                            "⏸️ [REFRESH-SECURE] Peer {} at capacity ({}/{}), re-queuing share {}",
-                            target_peer_id, count, MAX_OUTBOUND_INFLIGHT_PER_PEER, share_index
-                        );
-                        let tx = self.message_tx.clone();
-                        let msg = ChannelMessage::UnicastRefreshShare {
-                            target_peer_id: target_peer_id.clone(),
-                            from_node_id: from_node_id.clone(),
-                            share_index,
-                            share_value: share_value.clone(),
-                            commitments: commitments.clone(),
-                            retry_count,
-                        };
-                        tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                            let _ = tx.send(msg).await;
-                        });
-                        return Ok(());
-                    }
-                    
-                    // Increment in-flight count
-                    *inflight.entry(peer_id).or_insert(0) += 1;
-                }
-
-                // Clone values for retry registry before creating RPC request
-                let from_node_id_clone = from_node_id.clone();
-                let share_value_clone = share_value.clone();
-                let commitments_clone = commitments.clone();
-
-                // Create the RPC request
-                let request = RPCRequest::SendRefreshShare {
-                    from_node_id,
-                    share_index,
-                    share_value,
-                    commitments,
-                };
-
-                // Send via request-response protocol (unicast, not broadcast)
-                let request_id = swarm
-                    .behaviour_mut()
-                    .request_response
-                    .send_request(&peer_id, request);
-
-                // RETRY: Insert into outbound_retry registry
-                {
-                    use crate::network::rpc::{OutboundRetryEntry, RetryableUnicast};
-                    let retry_msg = RetryableUnicast::UnicastRefreshShare {
-                        target_peer_id: target_peer_id.clone(),
-                        from_node_id: from_node_id_clone,
-                        share_index,
-                        share_value: share_value_clone,
-                        commitments: commitments_clone,
-                    };
-                    let entry = OutboundRetryEntry {
-                        peer: peer_id,
-                        retry_count,
-                        msg: retry_msg,
-                    };
-                    self.outbound_retry.lock().await.insert(request_id, entry);
-                }
-
-                info!(
-                    "✅ [REFRESH-SECURE] Refresh share index {} sent via P2P RPC to {} (request_id: {:?}, connected: {})",
                     share_index, target_peer_id, request_id, is_connected
                 );
             }
@@ -2983,6 +2811,7 @@ impl MpcNetworkLayer {
         update_round: u64,
         timestamp: String,
         _node_id: String,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         info!(
             "🔄 [BTC_INTENT_MANAGER] Processing contract update batch: {} intents, BTC txid: {}",
@@ -3242,6 +3071,7 @@ impl MpcNetworkLayer {
                         None,
                         None, // tics_withdraw_identifiers (not applicable)
                         None, // tics_claim_reward_identifiers (not applicable)
+                        nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
 
@@ -3274,12 +3104,14 @@ impl MpcNetworkLayer {
         round: u64,
         _timestamp: String,
         node_id: String,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "💧 [ADD_LIQUIDITY_BATCH] Processing batch: {} requests, round {}, from node {}",
+            "💧 [ADD_LIQUIDITY_BATCH] Processing batch: {} requests, round {}, from node {}, nonce: {:?}",
             request_ids.len(),
             round,
-            node_id
+            node_id,
+            nonce_tuple_id
         );
 
         if request_ids.is_empty() {
@@ -3490,6 +3322,7 @@ impl MpcNetworkLayer {
                         None,     // original_request
                         None,     // tics_withdraw_identifiers (not applicable)
                         None,     // tics_claim_reward_identifiers (not applicable)
+                        nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
 

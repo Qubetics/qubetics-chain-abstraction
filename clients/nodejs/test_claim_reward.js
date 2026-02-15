@@ -14,16 +14,16 @@ import keccak from 'keccak';
 
 
 // Configuration
-const RPC_BASE_URL = 'http://127.0.0.1:8083'; // Default RPC port
+const RPC_BASE_URL = 'http://127.0.0.1:8082'; // Default RPC port
 const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
-// Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
+// SOLVER_003 private key
 const TEST_PRIVATE_KEY = 'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
 
-// Test addresses - REPLACE THESE WITH YOUR ACTUAL TEST ADDRESSES
-const TEST_ETH_ADDRESS = '0xf71736a05f5673da815c1853378ff12c1aad4ff6';
-const TEST_BTC_ADDRESS = null //'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
+// SOLVER_003 addresses
+const TEST_ETH_ADDRESS = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+const TEST_BTC_ADDRESS = 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
 
 // Colors for console output
 const colors = {

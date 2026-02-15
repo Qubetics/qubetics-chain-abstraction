@@ -29,15 +29,16 @@ import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
-const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
+const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
 const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
+// SOLVER_004's private key
 const SOLVER_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  '0x4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
 const ETH_ADDRESS = process.env.ETH_ADDRESS ?? null;
-const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'mhF1CH8uxvYLhMzzGGqrxWYi4cWceXMEYB';
+const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42';
 const AMOUNT_TICS = process.env.AMOUNT_TICS ?? null;
 const AMOUNT_BTC = process.env.AMOUNT_BTC ?? null;
 

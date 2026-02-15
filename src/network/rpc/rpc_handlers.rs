@@ -91,21 +91,6 @@ impl MpcNetworkLayer {
                 )
                 .await
             }
-            // SECURE REFRESH SHARE - receive unicast refresh share via P2P RPC
-            RPCRequest::SendRefreshShare {
-                from_node_id,
-                share_index,
-                share_value,
-                commitments,
-            } => {
-                self.handle_incoming_refresh_share(
-                    from_node_id,
-                    share_index,
-                    share_value,
-                    commitments,
-                )
-                .await
-            }
             RPCRequest::SendECDSASignature {
                 from_node_id,
                 signature_data,
@@ -408,10 +393,18 @@ impl MpcNetworkLayer {
             addresses.push(None);
         }
 
+        // Include DKG signer count so observer nodes can filter HRW candidates
+        let dkg_signer_count = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.get_dkg_signer_count()
+        } else {
+            None
+        };
+
         RPCResponse::PeerList {
             peers,
             indices,
             addresses,
+            dkg_signer_count,
         }
     }
 
@@ -530,63 +523,6 @@ impl MpcNetworkLayer {
                     share_index, from_node_id, e
                 );
                 RPCResponse::Error(format!("Failed to process share: {}", e))
-            }
-        }
-    }
-
-    /// Handle incoming refresh share from unicast P2P RPC
-    async fn handle_incoming_refresh_share(
-        &mut self,
-        from_node_id: String,
-        share_index: usize,
-        share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
-    ) -> RPCResponse {
-        let dkg_node = match &mut self.dkg_node {
-            Some(node) => node,
-            None => {
-                warn!("❌ [REFRESH-SECURE] DKG node not initialized");
-                return RPCResponse::Error("DKG not initialized".to_string());
-            }
-        };
-
-        let receiver_node_id = dkg_node.get_id().to_string();
-
-        // Use the public method to process the refresh share
-        match dkg_node
-            .handle_unicast_refresh_share(
-                from_node_id.clone(),
-                share_index,
-                share_value,
-                commitments,
-                self.node_manager.clone(),
-            )
-            .await
-        {
-            Ok(true) => RPCResponse::RefreshShareReceived {
-                from_node_id,
-                receiver_node_id,
-                share_index,
-                success: true,
-            },
-            Ok(false) => {
-                warn!(
-                    "❌ [REFRESH-SECURE] Refresh share index {} from {} was rejected",
-                    share_index, from_node_id
-                );
-                RPCResponse::RefreshShareReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    share_index,
-                    success: false,
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "❌ [REFRESH-SECURE] Error processing refresh share index {} from {}: {}",
-                    share_index, from_node_id, e
-                );
-                RPCResponse::Error(format!("Failed to process refresh share: {}", e))
             }
         }
     }
@@ -819,7 +755,7 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round) =
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_eth_address) =
             match signing_message {
                 SigningMessage::TransactionDataForFinalNode {
                     from,
@@ -828,6 +764,8 @@ impl MpcNetworkLayer {
                     intent_hash,
                     transaction_type,
                     request_id,
+                    chain_tx_json,
+                    user_eth_address,
                 } => (
                     from,
                     tx_bytes,
@@ -835,6 +773,8 @@ impl MpcNetworkLayer {
                     transaction_type,
                     request_id,
                     round,
+                    chain_tx_json,
+                    user_eth_address,
                 ),
                 _ => {
                     warn!(
@@ -861,6 +801,8 @@ impl MpcNetworkLayer {
                     intent_hash,
                     transaction_type,
                     request_id,
+                    chain_tx_json,
+                    user_eth_address,
                 )
                 .await
         } else {
@@ -992,7 +934,20 @@ impl MpcNetworkLayer {
                 peers,
                 indices,
                 addresses,
+                dkg_signer_count,
             } => {
+                // Store DKG signer count if provided (needed for HRW filtering on observer nodes)
+                if let Some(count) = dkg_signer_count {
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if dkg_node.get_dkg_signer_count().is_none() {
+                            if let Err(e) = dkg_node.set_dkg_signer_count(count) {
+                                warn!("⚠️ [PEER_LIST] Failed to store DKG signer count: {}", e);
+                            } else {
+                                info!("🔢 [PEER_LIST] Stored DKG signer count from peer: {}", count);
+                            }
+                        }
+                    }
+                }
                 self.handle_peer_list_response(swarm, peers, indices, addresses)
                     .await?;
             }
@@ -1200,12 +1155,20 @@ impl MpcNetworkLayer {
             }
         }
 
-        // 2️⃣ Update threshold **only if new peers were added**
+        // 2️⃣ Update threshold **only if new peers were added** and initial DKG is not yet complete
+        // After initial DKG, threshold is fixed based on initial DKG participants only
         if new_peers_added {
-            let new_threshold = self.node_manager.get_threshold(); // Compute once
-            if let Some(arc) = &self.signing_node {
-                let mut signing_node = arc.lock().await;
-                signing_node.set_threshold(new_threshold);
+          let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+                dkg_node.is_initial_dkg_complete().await
+            } else {
+                false
+            };
+            if !initial_dkg_complete {
+                let new_threshold = self.node_manager.get_threshold();
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    signing_node.set_threshold(new_threshold);
+                }
             }
         }
 
@@ -1261,7 +1224,7 @@ impl MpcNetworkLayer {
         let threshold = self.node_manager.get_threshold();
         let new_node_index = self.resolve_new_node_index().await;
 
-        let (should_sync, sync_peer_opt, new_node_index_opt, needs_retry) = if let Some(dkg_node) =
+        let (should_sync, sync_peer_opt, _new_node_index_opt, needs_retry) = if let Some(dkg_node) =
             &mut self.dkg_node
         {
             dkg_node.update_node_params(total, threshold)?;
@@ -1322,12 +1285,6 @@ impl MpcNetworkLayer {
             if let Some(sync_peer) = sync_peer_opt {
                 if let Err(e) = self.sync_database_from_peer(swarm, sync_peer).await {
                     warn!("❌ [NEW_NODE] Failed to start database sync: {:?}", e);
-                }
-            }
-            if let (Some(dkg_node), Some(new_node_index)) = (&mut self.dkg_node, new_node_index_opt)
-            {
-                if let Err(e) = dkg_node.request_shares_as_new_node(new_node_index).await {
-                    warn!("❌ [NEW_NODE] Failed to request shares: {:?}", e);
                 }
             }
         }

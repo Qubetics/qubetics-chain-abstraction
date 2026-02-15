@@ -81,6 +81,7 @@ impl<'a> EthereumSigner<'a> {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -95,6 +96,7 @@ impl<'a> EthereumSigner<'a> {
                 original_request,
                 tics_withdraw_identifiers,
                 tics_claim_reward_identifiers,
+                nonce_tuple_id,
             )
             .await
     }
@@ -111,8 +113,29 @@ impl<'a> EthereumSigner<'a> {
             Option<Scalar>,
         )>,
     ) -> Result<()> {
+        // DEPRECATED: Empty nonce assignments will cause all intents to be SKIPPED
+        // Use sign_tics_user_to_vault_batch_with_nonces with proper nonce assignments
+        warn!("⚠️ [TICS_UTV_BATCH] sign_tics_user_to_vault_batch called without nonce assignments - all intents will be SKIPPED");
         self.node
-            .sign_tics_user_to_vault_batch(round, batch)
+            .sign_tics_user_to_vault_batch_with_nonces(round, batch, std::collections::HashMap::new())
+            .await
+    }
+
+    /// TICS UserToVault batch with nonce assignments for coordinated signing.
+    pub async fn sign_tics_user_to_vault_batch_with_nonces(
+        &mut self,
+        round: u64,
+        batch: Vec<(
+            String,
+            String,
+            crate::chain_abstraction::ChainTransaction,
+            Vec<u8>,
+            Option<Scalar>,
+        )>,
+        nonce_assignments: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        self.node
+            .sign_tics_user_to_vault_batch_with_nonces(round, batch, nonce_assignments)
             .await
     }
 }
@@ -442,9 +465,9 @@ impl SigningNode {
             );
         }
 
-        // Create ECDSA signature using secp256k1
+        // Create ECDSA signature using secp256k1 (with random nonce if available)
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, &signing_key)?;
+        let signature = self.create_ecdsa_signature_with_key_async(&msg, transaction, &signing_key).await?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         info!(
@@ -605,6 +628,7 @@ impl SigningNode {
 
     /// Sign a contract transaction message (overload for ContractTransaction)
     /// When tics_withdraw_identifiers is Some(non-empty), stores in withdraw_pending_transactions_tics for batch TICS withdraw.
+    /// When nonce_tuple_id is Some, uses coordinated nonce from the pool (required for threshold signing).
     pub async fn sign_contract_message(
         &mut self,
         _message: Vec<u8>,
@@ -618,6 +642,7 @@ impl SigningNode {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         // Determine which key to use for signing
         // Redacted user_tweaked_share from logs
@@ -706,10 +731,57 @@ impl SigningNode {
             );
         }
 
-        // Create ECDSA signature using secp256k1
+        // Create ECDSA signature using secp256k1 with COORDINATED nonce
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature =
-            self.create_ecdsa_signature_with_key_contract(&msg, transaction, &signing_key)?;
+        let signature = if let Some(ref tuple_id) = nonce_tuple_id {
+            // Use coordinated nonce - all nodes will use the same k value
+            info!(
+                "🔐 [SIGNING] Using coordinated nonce {} for contract signing",
+                tuple_id
+            );
+
+            // Acquire the specific nonce from the pool
+            if let Some(nm) = &self.nonce_manager {
+                let nm_guard = nm.lock().await;
+                match nm_guard.acquire_specific_nonce(tuple_id).await {
+                    Ok(Some(nonce_tuple)) => {
+                        info!(
+                            "🔐 [CONTRACT_SIGN] Acquired coordinated nonce {} (r_scalar: 0x{}...)",
+                            tuple_id,
+                            hex::encode(&nonce_tuple.r_scalar.0.to_bytes()[..4])
+                        );
+                        drop(nm_guard); // Release lock before signing
+                        self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?
+                    }
+                    Ok(None) => {
+                        error!(
+                            "🔴 [CONTRACT_SIGN] Nonce {} not found or already consumed",
+                            tuple_id
+                        );
+                        return Err(anyhow!("Nonce {} not found or already consumed", tuple_id));
+                    }
+                    Err(e) => {
+                        error!(
+                            "🔴 [CONTRACT_SIGN] Failed to acquire nonce {}: {}",
+                            tuple_id, e
+                        );
+                        return Err(anyhow!("Failed to acquire nonce {}: {}", tuple_id, e));
+                    }
+                }
+            } else {
+                error!("🔴 [CONTRACT_SIGN] Nonce manager not available");
+                return Err(anyhow!("Nonce manager not available for coordinated signing"));
+            }
+        } else {
+            // No nonce_tuple_id provided - this is a BUG in the caller
+            error!(
+                "🔴 [SIGNING] No nonce_tuple_id provided for contract signing - this is a coordination bug!"
+            );
+            return Err(anyhow!(
+                "No nonce_tuple_id provided. All signing operations must use coordinated nonces. \
+                The coordinator must reserve a nonce and include the tuple_id in the broadcast message."
+            ));
+        };
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         info!(
@@ -894,6 +966,11 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
+        };
+
         let user_eth_address = {
             let signatures_by_round = self.signatures.signatures_by_round.read().await;
             if let Some(round_signatures) = signatures_by_round.get(&round) {
@@ -917,6 +994,22 @@ impl SigningNode {
                 _request_id,
                 _original_request,
             )) = withdraw_pending_transactions.get(&round)
+            {
+                (Some(chain_tx.clone()), transaction_type.clone())
+            } else {
+                (None, None)
+            }
+        } else if is_claim_reward_round {
+            let claim_reward_pending =
+                self.pending.claim_reward_pending_transactions_tics.read().await;
+            if let Some((
+                chain_tx,
+                _tx_bytes,
+                _identifiers,
+                transaction_type,
+                _request_id,
+                _original_request,
+            )) = claim_reward_pending.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {
@@ -1217,20 +1310,136 @@ impl SigningNode {
         _transaction: &EthereumTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
-        self.create_ecdsa_signature_with_signing_key(message, signing_key)
+        // Synchronous version - uses fixed k (for backward compatibility)
+        // Prefer create_ecdsa_signature_with_key_async for random nonces
+        self.create_ecdsa_signature_with_optional_nonce(message, signing_key, None)
     }
 
+    /// DEPRECATED: Synchronous version uses fixed k which is a SECURITY VULNERABILITY.
+    /// Use create_ecdsa_signature_with_key_contract_async instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Fixed k is insecure. Use create_ecdsa_signature_with_key_contract_async instead."
+    )]
     pub fn create_ecdsa_signature_with_key_contract(
         &self,
         message: &Message,
         _transaction: &ContractTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
-        self.create_ecdsa_signature_with_signing_key(message, signing_key)
+        // SECURITY: This function now returns an error - nonces are mandatory
+        error!("🔴 [SIGNING] create_ecdsa_signature_with_key_contract called - this uses fixed k which is INSECURE");
+        self.create_ecdsa_signature_with_optional_nonce(message, signing_key, None)
     }
 
-    /// Create a single partial ECDSA for a TICS UserToVault batch slot. Does not advance VRF or store state.
-    pub fn create_partial_ecdsa_for_tics_slot(
+    /// Async version of create_ecdsa_signature_with_key that acquires a random nonce.
+    ///
+    /// Acquires a nonce from the pool for secure random signing.
+    /// SECURITY: Fixed k fallback has been removed.
+    pub async fn create_ecdsa_signature_with_key_async(
+        &self,
+        message: &Message,
+        _transaction: &EthereumTransaction,
+        signing_key: &SecretKey,
+    ) -> Result<RecoverableSignature> {
+        // Acquire nonce from pool
+        let nonce_tuple = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.acquire_nonce().await {
+                Ok(Some(tuple)) => {
+                    info!(
+                        "🔐 [SIGNING] Acquired nonce {} for contract signing",
+                        tuple.tuple_id
+                    );
+                    tuple
+                }
+                Ok(None) => {
+                    error!("🔴 [SIGNING] No nonce available - CANNOT SIGN (fixed k removed for security)");
+                    return Err(anyhow!("Nonce is required for signing - fixed k fallback has been removed for security"));
+                }
+                Err(e) => {
+                    error!("🔴 [SIGNING] Failed to acquire nonce: {} - CANNOT SIGN (fixed k removed for security)", e);
+                    return Err(anyhow!("Failed to acquire nonce: {} - fixed k fallback has been removed for security", e));
+                }
+            }
+        } else {
+            error!("🔴 [SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
+            return Err(anyhow!("NonceManager not available - fixed k fallback has been removed for security"));
+        };
+
+        self.create_ecdsa_signature_with_nonce(message, signing_key, &nonce_tuple)
+    }
+
+    /// Async version of create_ecdsa_signature_with_key_contract that acquires a random nonce.
+    ///
+    /// Acquires a nonce from the pool for secure random signing.
+    /// SECURITY: Fixed k fallback has been removed.
+    pub async fn create_ecdsa_signature_with_key_contract_async(
+        &self,
+        message: &Message,
+        _transaction: &ContractTransaction,
+        signing_key: &SecretKey,
+    ) -> Result<RecoverableSignature> {
+        // Acquire nonce from pool
+        let nonce_tuple = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.acquire_nonce().await {
+                Ok(Some(tuple)) => {
+                    info!(
+                        "🔐 [SIGNING] Acquired nonce {} for contract signing",
+                        tuple.tuple_id
+                    );
+                    tuple
+                }
+                Ok(None) => {
+                    error!("🔴 [SIGNING] No nonce available - CANNOT SIGN (fixed k removed for security)");
+                    return Err(anyhow!("Nonce is required for signing - fixed k fallback has been removed for security"));
+                }
+                Err(e) => {
+                    error!("🔴 [SIGNING] Failed to acquire nonce: {} - CANNOT SIGN (fixed k removed for security)", e);
+                    return Err(anyhow!("Failed to acquire nonce: {} - fixed k fallback has been removed for security", e));
+                }
+            }
+        } else {
+            error!("🔴 [SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
+            return Err(anyhow!("NonceManager not available - fixed k fallback has been removed for security"));
+        };
+
+        self.create_ecdsa_signature_with_nonce(message, signing_key, &nonce_tuple)
+    }
+
+    /// DEPRECATED: Synchronous version uses fixed k which is insecure.
+    /// Use create_partial_ecdsa_for_tics_slot_with_nonce instead.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Fixed k is insecure. Use create_partial_ecdsa_for_tics_slot_with_nonce instead."
+    )]
+    #[allow(dead_code)]
+    fn create_partial_ecdsa_for_tics_slot_deprecated(
+        &self,
+        tx_bytes: &[u8],
+        transaction: &EthereumTransaction,
+        signing_key: &SecretKey,
+        user_eth_address: Option<String>,
+    ) -> Result<ECDSASignature> {
+        // SECURITY: This function is deprecated - uses fixed k
+        error!("🔴 [SIGNING] create_partial_ecdsa_for_tics_slot_DEPRECATED called - this uses fixed k which is INSECURE");
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(tx_bytes);
+        let tx_hash = hasher.finalize();
+        let msg = Message::from_digest_slice(tx_hash.as_slice())?;
+        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, signing_key)?;
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        Ok(ECDSASignature {
+            signature: signature_bytes.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address,
+        })
+    }
+
+    /// Async version of create_partial_ecdsa_for_tics_slot that acquires a random nonce
+    pub async fn create_partial_ecdsa_for_tics_slot_async(
         &self,
         tx_bytes: &[u8],
         transaction: &EthereumTransaction,
@@ -1241,7 +1450,7 @@ impl SigningNode {
         hasher.update(tx_bytes);
         let tx_hash = hasher.finalize();
         let msg = Message::from_digest_slice(tx_hash.as_slice())?;
-        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, signing_key)?;
+        let signature = self.create_ecdsa_signature_with_key_async(&msg, transaction, signing_key).await?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
         Ok(ECDSASignature {
             signature: signature_bytes.to_vec(),
@@ -1314,12 +1523,12 @@ impl SigningNode {
                     continue;
                 }
             };
-            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot(
+            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_async(
                 &tx_bytes,
                 eth_tx,
                 &signing_key,
                 Some(user_eth.clone()),
-            )?;
+            ).await?;
 
             let slot_key: RoundSlotKey = (round, intent_hash.clone());
             {
@@ -1328,12 +1537,13 @@ impl SigningNode {
                 entry.insert(self.id.clone(), ecdsa_sig.clone());
             }
 
+            let user_eth_clone = user_eth.clone();
             let signature_msg = SigningMessage::ECDSASignature {
                 from: self.id.clone(),
                 signature: ecdsa_sig,
                 round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth),
+                user_eth_address: Some(user_eth_clone),
                 slot_id: Some(intent_hash.clone()),
             };
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -1343,7 +1553,241 @@ impl SigningNode {
                 "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
                 intent_hash, round, final_node_id
             );
+
+            // Send TX data for this slot to the final node for threshold verification.
+            {
+                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash: Some(intent_hash.clone()),
+                    transaction_type: Some("UserToVault".to_string()),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: Some(user_eth),
+                };
+                let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                self.broadcast("signing", &tx_data_bytes).await?;
+            }
         }
         Ok(())
+    }
+
+    /// TICS UserToVault batch with nonce assignments for coordinated signing.
+    ///
+    /// When nonce_assignments contains an entry for an intent_hash, all nodes will use
+    /// the same nonce tuple, enabling proper threshold signature aggregation with random k.
+    pub async fn sign_tics_user_to_vault_batch_with_nonces(
+        &mut self,
+        round: u64,
+        batch: Vec<(
+            String,
+            String,
+            ChainTransaction,
+            Vec<u8>,
+            Option<Scalar>,
+        )>,
+        nonce_assignments: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        use crate::signing::state::RoundSlotKey;
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let has_nonce_assignments = !nonce_assignments.is_empty();
+        if has_nonce_assignments {
+            info!(
+                "🔐 [TICS_UTV_BATCH] Using coordinated nonces for {} intents",
+                nonce_assignments.len()
+            );
+        }
+
+        let final_node_id = {
+            let final_nodes = self.signatures.final_nodes_by_round.read().await;
+            final_nodes
+                .get(&round)
+                .cloned()
+                .ok_or_else(|| anyhow!("No final node for TICS UserToVault batch round {}", round))?
+        };
+
+        let batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>)> = batch
+            .iter()
+            .map(|(h, u, tx, bytes, _key)| (h.clone(), u.clone(), tx.clone(), bytes.clone()))
+            .collect();
+        {
+            let mut store = self.pending.user_to_vault_tics_batch.write().await;
+            store.insert(round, batch_storage);
+        }
+
+        info!(
+            "📦 [TICS_UTV_BATCH] Node {} signing {} slots for round {} (final node: {}, coordinated: {})",
+            self.id,
+            batch.len(),
+            round,
+            final_node_id,
+            has_nonce_assignments
+        );
+
+        for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
+            let signing_key = match key_opt {
+                Some(scalar) => Self::derive_secp_secret(&scalar)?,
+                None => {
+                    warn!(
+                        "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",
+                        intent_hash, user_eth
+                    );
+                    continue;
+                }
+            };
+            let eth_tx = match &chain_tx {
+                ChainTransaction::Ethereum(t) => t,
+                _ => {
+                    warn!(
+                        "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
+                        intent_hash
+                    );
+                    continue;
+                }
+            };
+
+            // Get the assigned nonce for this intent - REQUIRED for security
+            let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
+                info!(
+                    "🔍 [TICS_UTV_BATCH] Intent {} has nonce assignment: {}",
+                    intent_hash, tuple_id
+                );
+                // Acquire the specific nonce assigned by coordinator
+                if let Some(nm) = &self.nonce_manager {
+                    let nm_guard = nm.lock().await;
+                    match nm_guard.acquire_specific_nonce(tuple_id).await {
+                        Ok(Some(tuple)) => {
+                            info!(
+                                "🔐 [TICS_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
+                                tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
+                            );
+                            tuple
+                        }
+                        Ok(None) => {
+                            error!(
+                                "🔴 [TICS_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
+                                tuple_id, intent_hash
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                "🔴 [TICS_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
+                                tuple_id, intent_hash, e
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    error!(
+                        "🔴 [TICS_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                        intent_hash
+                    );
+                    continue;
+                }
+            } else {
+                error!(
+                    "🔴 [TICS_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
+                    intent_hash
+                );
+                continue;
+            };
+
+            // Sign with coordinated nonce (fixed k fallback removed for security)
+            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_with_nonce(
+                &tx_bytes,
+                eth_tx,
+                &signing_key,
+                Some(user_eth.clone()),
+                &nonce_tuple,
+            ).await?;
+
+            let slot_key: RoundSlotKey = (round, intent_hash.clone());
+            {
+                let mut by_slot = self.signatures.signatures_by_round_slot.write().await;
+                let entry = by_slot.entry(slot_key).or_default();
+                entry.insert(self.id.clone(), ecdsa_sig.clone());
+            }
+
+            let user_eth_clone = user_eth.clone();
+            let signature_msg = SigningMessage::ECDSASignature {
+                from: self.id.clone(),
+                signature: ecdsa_sig,
+                round,
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                user_eth_address: Some(user_eth_clone),
+                slot_id: Some(intent_hash.clone()),
+            };
+            let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
+            let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+            self.broadcast("signing", &signature_data).await?;
+            info!(
+                "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
+                intent_hash, round, final_node_id
+            );
+
+            // Send TX data for this slot to the final node for threshold verification.
+            // All DKG nodes broadcast their TX data; the final node accepts it once
+            // threshold matching copies arrive. This enables observer final nodes to
+            // reconstruct signed transactions without building TXs locally.
+            {
+                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash: Some(intent_hash.clone()),
+                    transaction_type: Some("UserToVault".to_string()),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: Some(user_eth),
+                };
+                let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                self.broadcast("signing", &tx_data_bytes).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Create partial ECDSA signature for a TICS UserToVault slot using a specific nonce tuple.
+    /// Uses the existing create_ecdsa_signature_with_optional_nonce which handles both
+    /// random nonces and fallback to fixed-k.
+    async fn create_partial_ecdsa_for_tics_slot_with_nonce(
+        &self,
+        tx_bytes: &[u8],
+        _transaction: &EthereumTransaction,
+        signing_key: &SecretKey,
+        user_eth_address: Option<String>,
+        nonce_tuple: &crate::types::nonce::NonceTuple,
+    ) -> Result<ECDSASignature> {
+        use sha3::Digest;
+
+        let mut hasher = sha3::Keccak256::new();
+        hasher.update(tx_bytes);
+        let tx_hash = hasher.finalize();
+        let msg = Message::from_digest_slice(tx_hash.as_slice())?;
+
+        // Use the existing signing function with the nonce tuple
+        // This function handles the signature creation correctly with random nonces
+        let signature = self.create_ecdsa_signature_with_optional_nonce(
+            &msg,
+            signing_key,
+            Some(nonce_tuple),
+        )?;
+
+        let (recovery_id, signature_bytes) = signature.serialize_compact();
+        Ok(ECDSASignature {
+            signature: signature_bytes.to_vec(),
+            signer_id: self.id.clone(),
+            recovery_id: recovery_id.to_i32() as u8,
+            user_eth_address,
+        })
     }
 }
