@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
 use ethers::{
     contract::abigen,
-    providers::{Http, Provider},
-    types::Address,
+    providers::{Http, Middleware, Provider},
+    types::{Address, Bytes, TransactionRequest},
 };
 use std::sync::Arc;
+use tracing::info;
 
 use super::ContractConfig;
 
@@ -90,20 +91,117 @@ impl SolverManagerContract {
     }
 
     /// Returns (solver_id, btc_unclaimed, tics_unclaimed) per solver.
+    ///
+    /// Uses manual eth_call + ethabi decoding instead of abigen because ethers-rs v2
+    /// incorrectly decodes arrays of structs containing dynamic types (string),
+    /// returning ABI offset values instead of the actual uint256 amounts.
     pub async fn get_solvers_unclaimed_rewards(
         &self,
         solver_ids: Vec<String>,
     ) -> Result<Vec<(String, ethers::types::U256, ethers::types::U256)>> {
+        use ethabi::{Function, Param, ParamType, StateMutability, Token};
+
         if solver_ids.is_empty() {
             return Ok(vec![]);
         }
-        let rewards = self
-            .inner
-            .get_solvers_unclaimed_rewards(solver_ids)
-            .call()
+
+        // Build calldata: getSolversUnclaimedRewards(string[] solverIds)
+        #[allow(deprecated)]
+        let func = Function {
+            name: "getSolversUnclaimedRewards".to_owned(),
+            inputs: vec![Param {
+                name: "solverIds".into(),
+                kind: ParamType::Array(Box::new(ParamType::String)),
+                internal_type: None,
+            }],
+            outputs: vec![Param {
+                name: "rewards".into(),
+                kind: ParamType::Array(Box::new(ParamType::Tuple(vec![
+                    ParamType::String,    // solverId
+                    ParamType::Uint(256), // btcUnclaimed
+                    ParamType::Uint(256), // ticsUnclaimed
+                ]))),
+                internal_type: None,
+            }],
+            constant: None,
+            state_mutability: StateMutability::View,
+        };
+
+        let input_tokens: Vec<Token> = solver_ids
+            .iter()
+            .map(|s| Token::String(s.clone()))
+            .collect();
+        let calldata = func
+            .encode_input(&[Token::Array(input_tokens)])
+            .map_err(|e| anyhow!("Failed to encode getSolversUnclaimedRewards calldata: {}", e))?;
+
+        // Make raw eth_call via the provider
+        let provider = self.inner.client();
+        let contract_addr = self.inner.address();
+
+        let tx = TransactionRequest::new()
+            .to(contract_addr)
+            .data(Bytes::from(calldata));
+
+        let raw_output = provider
+            .call(&tx.into(), None)
             .await
-            .map_err(|e| anyhow!("getSolversUnclaimedRewards failed: {}", e))?;
-        // ethers may return a single tuple for array of structs; normalize to Vec
-        Ok(vec![rewards])
+            .map_err(|e| anyhow!("getSolversUnclaimedRewards eth_call failed: {}", e))?;
+
+        // Decode the raw output using ethabi
+        let decoded = func
+            .decode_output(&raw_output)
+            .map_err(|e| anyhow!("Failed to decode getSolversUnclaimedRewards output: {}", e))?;
+
+        // decoded[0] should be Token::Array of Token::Tuple
+        let rewards_array = match decoded.into_iter().next() {
+            Some(Token::Array(arr)) => arr,
+            other => {
+                return Err(anyhow!(
+                    "Unexpected decoded output shape: {:?}",
+                    other
+                ));
+            }
+        };
+
+        let mut results = Vec::with_capacity(rewards_array.len());
+        for token in rewards_array {
+            match token {
+                Token::Tuple(fields) if fields.len() == 3 => {
+                    let solver_id = match &fields[0] {
+                        Token::String(s) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let btc_unclaimed = match &fields[1] {
+                        Token::Uint(v) => {
+                            let mut buf = [0u8; 32];
+                            v.to_big_endian(&mut buf);
+                            ethers::types::U256::from_big_endian(&buf)
+                        }
+                        _ => ethers::types::U256::zero(),
+                    };
+                    let tics_unclaimed = match &fields[2] {
+                        Token::Uint(v) => {
+                            let mut buf = [0u8; 32];
+                            v.to_big_endian(&mut buf);
+                            ethers::types::U256::from_big_endian(&buf)
+                        }
+                        _ => ethers::types::U256::zero(),
+                    };
+
+                    info!(
+                        "📊 [CONTRACT] getSolversUnclaimedRewards: solver={}, btc_unclaimed={}, tics_unclaimed={}",
+                        solver_id, btc_unclaimed, tics_unclaimed
+                    );
+
+                    results.push((solver_id, btc_unclaimed, tics_unclaimed));
+                }
+                _ => {
+                    return Err(anyhow!("Unexpected tuple shape in rewards array"));
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

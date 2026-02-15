@@ -967,6 +967,11 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
+        let is_claim_reward_round = {
+            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+            claim_reward_rounds.contains(&round)
+        };
+
         let user_eth_address = {
             let signatures_by_round = self.signatures.signatures_by_round.read().await;
             if let Some(round_signatures) = signatures_by_round.get(&round) {
@@ -990,6 +995,22 @@ impl SigningNode {
                 _request_id,
                 _original_request,
             )) = withdraw_pending_transactions.get(&round)
+            {
+                (Some(chain_tx.clone()), transaction_type.clone())
+            } else {
+                (None, None)
+            }
+        } else if is_claim_reward_round {
+            let claim_reward_pending =
+                self.pending.claim_reward_pending_transactions_tics.read().await;
+            if let Some((
+                chain_tx,
+                _tx_bytes,
+                _identifiers,
+                transaction_type,
+                _request_id,
+                _original_request,
+            )) = claim_reward_pending.get(&round)
             {
                 (Some(chain_tx.clone()), transaction_type.clone())
             } else {
@@ -1507,12 +1528,13 @@ impl SigningNode {
                 entry.insert(self.id.clone(), ecdsa_sig.clone());
             }
 
+            let user_eth_clone = user_eth.clone();
             let signature_msg = SigningMessage::ECDSASignature {
                 from: self.id.clone(),
                 signature: ecdsa_sig,
                 round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth),
+                user_eth_address: Some(user_eth_clone),
                 slot_id: Some(intent_hash.clone()),
             };
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -1522,6 +1544,24 @@ impl SigningNode {
                 "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
                 intent_hash, round, final_node_id
             );
+
+            // Send TX data for this slot to the final node for threshold verification.
+            {
+                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash: Some(intent_hash.clone()),
+                    transaction_type: Some("UserToVault".to_string()),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: Some(user_eth),
+                };
+                let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                self.broadcast("signing", &tx_data_bytes).await?;
+            }
         }
         Ok(())
     }
@@ -1666,12 +1706,13 @@ impl SigningNode {
                 entry.insert(self.id.clone(), ecdsa_sig.clone());
             }
 
+            let user_eth_clone = user_eth.clone();
             let signature_msg = SigningMessage::ECDSASignature {
                 from: self.id.clone(),
                 signature: ecdsa_sig,
                 round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth),
+                user_eth_address: Some(user_eth_clone),
                 slot_id: Some(intent_hash.clone()),
             };
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -1681,6 +1722,27 @@ impl SigningNode {
                 "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
                 intent_hash, round, final_node_id
             );
+
+            // Send TX data for this slot to the final node for threshold verification.
+            // All DKG nodes broadcast their TX data; the final node accepts it once
+            // threshold matching copies arrive. This enables observer final nodes to
+            // reconstruct signed transactions without building TXs locally.
+            {
+                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash: Some(intent_hash.clone()),
+                    transaction_type: Some("UserToVault".to_string()),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: Some(user_eth),
+                };
+                let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                self.broadcast("signing", &tx_data_bytes).await?;
+            }
         }
         Ok(())
     }

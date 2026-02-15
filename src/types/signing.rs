@@ -97,6 +97,13 @@ pub enum SigningMessage {
         intent_hash: Option<String>,
         transaction_type: Option<String>,
         request_id: Option<String>,
+        /// Serialized ChainTransaction for batch slot reconstruction (observer final nodes).
+        /// Only set for per-slot batch flows (TICS_UTV_BATCH, BTC_UTV_BATCH).
+        #[serde(default)]
+        chain_tx_json: Option<String>,
+        /// User ETH address associated with this slot (for batch slot reconstruction).
+        #[serde(default)]
+        user_eth_address: Option<String>,
     },
 
     // ============================================================

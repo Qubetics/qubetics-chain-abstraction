@@ -240,6 +240,16 @@ impl SigningNode {
         self.key_store.has_private_key()
     }
 
+    /// Check if this node has a DKG secret share in storage.
+    /// Returns true for initial DKG participants, false for observer nodes.
+    pub async fn has_dkg_share(&self) -> bool {
+        if let Some(dkg_storage) = &self.dkg_storage {
+            dkg_storage.get_final_secret().await.ok().flatten().is_some()
+        } else {
+            false
+        }
+    }
+
     /// Create DER-encoded ECDSA signature with SIGHASH_ALL (based on working implementation)
     pub fn create_der_signature_p2wpkh(r32: &[u8; 32], s32: &[u8; 32]) -> Vec<u8> {
         // Encode integer with proper DER rules
@@ -806,6 +816,8 @@ impl SigningNode {
                 intent_hash,
                 transaction_type,
                 request_id,
+                chain_tx_json,
+                user_eth_address,
             } => {
                 info!(
                     "📥 [SIGNING] Node {} received transaction data for round {} from {}",
@@ -818,12 +830,19 @@ impl SigningNode {
                     intent_hash,
                     transaction_type,
                     request_id,
+                    chain_tx_json,
+                    user_eth_address,
                 )
                 .await?;
             }
 
             // Nonce protocol messages - forward to NonceManager
+            // Observer nodes (without DKG shares) skip nonce processing entirely
+            // since they cannot sign and don't need nonces
             SigningMessage::NonceCommitment { ref from, ref batch_id, round, batch_size, .. } => {
+                if !self.has_dkg_share().await {
+                    return Ok(()); // Observer node - skip nonce processing
+                }
                 info!(
                     "📥 [SIGNING] Node {} received nonce commitment from {} for batch {} round {} (batch_size: {})",
                     self.id, from, batch_id, round, batch_size
@@ -836,6 +855,9 @@ impl SigningNode {
                 }
             }
             SigningMessage::NonceReveal { ref from, ref batch_id, round, .. } => {
+                if !self.has_dkg_share().await {
+                    return Ok(());
+                }
                 info!(
                     "📥 [SIGNING] Node {} received nonce reveal from {} for batch {} round {}",
                     self.id, from, batch_id, round
@@ -848,6 +870,9 @@ impl SigningNode {
                 }
             }
             SigningMessage::RequestNonceGeneration { ref batch_id, round: _, ref coordinator_id, batch_size } => {
+                if !self.has_dkg_share().await {
+                    return Ok(());
+                }
                 info!(
                     "📥 [SIGNING] Node {} received nonce generation request from {} for batch {} (size: {})",
                     self.id, coordinator_id, batch_id, batch_size
@@ -860,6 +885,9 @@ impl SigningNode {
                 }
             }
             SigningMessage::NonceGenerationComplete { ref from, ref batch_id, round: _, tuples_count, success } => {
+                if !self.has_dkg_share().await {
+                    return Ok(());
+                }
                 info!(
                     "📥 [SIGNING] Node {} received nonce generation complete from {} for batch {} ({} tuples, success: {})",
                     self.id, from, batch_id, tuples_count, success
@@ -2093,7 +2121,7 @@ impl SigningNode {
             let batch_timestamp = chrono::Utc::now().to_rfc3339();
 
             // Reserve a nonce for this batch BEFORE broadcasting
-            // This ensures all nodes use the same coordinated nonce for signing
+            // SECURITY: Nonces are REQUIRED - abort batch if unavailable
             let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
                 let nm_guard = nm.lock().await;
                 // Reserve one nonce for the entire batch (it's a single contract call)
@@ -2105,20 +2133,20 @@ impl SigningNode {
                                 tuple_id,
                                 target_chain.to_uppercase()
                             );
-                            Some(tuple_id.clone())
+                            tuple_id.clone()
                         } else {
-                            warn!("⚠️ [CLOCK] No nonce available for intent batch, pool may be empty");
-                            None
+                            tracing::error!("🔴 [CLOCK] No nonce available for {} intent batch - aborting (will retry next cycle)", target_chain.to_uppercase());
+                            return Ok(());
                         }
                     }
                     Err(e) => {
-                        warn!("⚠️ [CLOCK] Failed to reserve nonce for intent batch: {}", e);
-                        None
+                        tracing::error!("🔴 [CLOCK] Failed to reserve nonce for {} intent batch: {} - aborting (will retry next cycle)", target_chain.to_uppercase(), e);
+                        return Ok(());
                     }
                 }
             } else {
-                warn!("⚠️ [CLOCK] Nonce manager not available for intent batch coordination");
-                None
+                tracing::error!("🔴 [CLOCK] NonceManager not available for {} intent batch - aborting (will retry next cycle)", target_chain.to_uppercase());
+                return Ok(());
             };
 
             // Send via channel so the origin node processes the batch locally AND gossips it
@@ -2130,7 +2158,7 @@ impl SigningNode {
                     timestamp: batch_timestamp.clone(),
                     round,
                     node_id: self.id.clone(),
-                    nonce_tuple_id, // Coordinated nonce reserved above
+                    nonce_tuple_id: Some(nonce_tuple_id), // Coordinated nonce reserved above
                 })
                 .await?;
             
@@ -2225,10 +2253,35 @@ impl SigningNode {
                     let batch_timestamp = chrono::Utc::now().to_rfc3339();
                     let batch_id = format!("btc_withdraw_batch:{}:{}", round, chrono::Utc::now().timestamp_millis());
 
+                    // Reserve a coordinated nonce for this BTC withdraw batch
+                    // SECURITY: Nonces are REQUIRED - abort batch if unavailable
+                    let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+                        let nm_guard = nm.lock().await;
+                        match nm_guard.reserve_nonces_for_batch(&[batch_id.clone()]).await {
+                            Ok(assignments) => {
+                                if let Some(tuple_id) = assignments.get(&batch_id) {
+                                    info!("🔐 [BTC_WITHDRAW] Reserved nonce {} for batch {}", tuple_id, batch_id);
+                                    tuple_id.clone()
+                                } else {
+                                    tracing::error!("🔴 [BTC_WITHDRAW] No nonce assignment returned for batch {} - aborting (will retry next epoch)", batch_id);
+                                    return Ok(());
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("🔴 [BTC_WITHDRAW] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", batch_id, e);
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        tracing::error!("🔴 [BTC_WITHDRAW] NonceManager not available - aborting batch (will retry next epoch)");
+                        return Ok(());
+                    };
+
                     info!(
-                        "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests",
+                        "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests (nonce: {})",
                         batch_id,
-                        requests.len()
+                        requests.len(),
+                        nonce_tuple_id
                     );
 
                     self.message_tx
@@ -2238,6 +2291,7 @@ impl SigningNode {
                             round,
                             timestamp: batch_timestamp.clone(),
                             node_id: self.id.clone(),
+                            nonce_tuple_id: Some(nonce_tuple_id),
                         })
                         .await?;
                 }
@@ -2308,37 +2362,40 @@ impl SigningNode {
         );
 
         // Reserve nonces for each intent in the batch (coordinator assigns nonces)
-        // SECURITY: Nonces are REQUIRED - intents without nonces will be skipped
+        // SECURITY: Nonces are REQUIRED - abort batch if none available
         let nonce_assignments = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
             match nm_guard.reserve_nonces_for_batch(&intent_hashes).await {
                 Ok(assignments) => {
+                    if assignments.is_empty() {
+                        tracing::error!("🔴 [TICS_UTV_BATCH] No nonces available - aborting batch (will retry next cycle)");
+                        return Ok(());
+                    }
                     if assignments.len() == intent_hashes.len() {
                         info!(
                             "🔐 [TICS_UTV_BATCH] Reserved {} nonces for batch",
                             assignments.len()
                         );
-                        assignments
                     } else {
                         tracing::error!(
-                            "🔴 [TICS_UTV_BATCH] Partial nonce reservation: {}/{} - intents without nonces will be SKIPPED (fixed k removed for security)",
+                            "🔴 [TICS_UTV_BATCH] Partial nonce reservation: {}/{} - intents without nonces will be SKIPPED",
                             assignments.len(),
                             intent_hashes.len()
                         );
-                        assignments // Use partial assignments, intents without will be skipped
                     }
+                    assignments
                 }
                 Err(e) => {
                     tracing::error!(
-                        "🔴 [TICS_UTV_BATCH] Failed to reserve nonces: {} - ALL intents will be SKIPPED (fixed k removed for security)",
+                        "🔴 [TICS_UTV_BATCH] Failed to reserve nonces: {} - aborting batch (will retry next cycle)",
                         e
                     );
-                    std::collections::HashMap::new()
+                    return Ok(());
                 }
             }
         } else {
-            tracing::error!("🔴 [TICS_UTV_BATCH] NonceManager not available - ALL intents will be SKIPPED (fixed k removed for security)");
-            std::collections::HashMap::new()
+            tracing::error!("🔴 [TICS_UTV_BATCH] NonceManager not available - aborting batch (will retry next cycle)");
+            return Ok(());
         };
 
         self.message_tx
@@ -2422,37 +2479,40 @@ impl SigningNode {
         );
 
         // Reserve nonces for each intent in the batch (coordinator assigns nonces)
-        // SECURITY: Nonces are REQUIRED - intents without nonces will be skipped
+        // SECURITY: Nonces are REQUIRED - abort batch if none available
         let nonce_assignments = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
             match nm_guard.reserve_nonces_for_batch(&intent_hashes).await {
                 Ok(assignments) => {
+                    if assignments.is_empty() {
+                        tracing::error!("🔴 [BTC_UTV_BATCH] No nonces available - aborting batch (will retry next cycle)");
+                        return Ok(());
+                    }
                     if assignments.len() == intent_hashes.len() {
                         info!(
                             "🔐 [BTC_UTV_BATCH] Reserved {} nonces for batch",
                             assignments.len()
                         );
-                        assignments
                     } else {
                         tracing::error!(
-                            "🔴 [BTC_UTV_BATCH] Partial nonce reservation: {}/{} - intents without nonces will be SKIPPED (fixed k removed for security)",
+                            "🔴 [BTC_UTV_BATCH] Partial nonce reservation: {}/{} - intents without nonces will be SKIPPED",
                             assignments.len(),
                             intent_hashes.len()
                         );
-                        assignments // Use partial assignments, intents without will be skipped
                     }
+                    assignments
                 }
                 Err(e) => {
                     tracing::error!(
-                        "🔴 [BTC_UTV_BATCH] Failed to reserve nonces: {} - ALL intents will be SKIPPED (fixed k removed for security)",
+                        "🔴 [BTC_UTV_BATCH] Failed to reserve nonces: {} - aborting batch (will retry next cycle)",
                         e
                     );
-                    std::collections::HashMap::new()
+                    return Ok(());
                 }
             }
         } else {
-            tracing::error!("🔴 [BTC_UTV_BATCH] NonceManager not available - ALL intents will be SKIPPED (fixed k removed for security)");
-            std::collections::HashMap::new()
+            tracing::error!("🔴 [BTC_UTV_BATCH] NonceManager not available - aborting batch (will retry next cycle)");
+            return Ok(());
         };
 
         self.message_tx
@@ -2526,10 +2586,36 @@ impl SigningNode {
             round,
             chrono::Utc::now().timestamp_millis()
         );
+
+        // Reserve a coordinated nonce for this BTC claim-reward batch
+        // SECURITY: Nonces are REQUIRED - abort batch if unavailable
+        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.reserve_nonces_for_batch(&[claim_batch_id.clone()]).await {
+                Ok(assignments) => {
+                    if let Some(tuple_id) = assignments.get(&claim_batch_id) {
+                        info!("🔐 [BTC_CLAIM_REWARD] Reserved nonce {} for batch {}", tuple_id, claim_batch_id);
+                        tuple_id.clone()
+                    } else {
+                        tracing::error!("🔴 [BTC_CLAIM_REWARD] No nonce assignment returned for batch {} - aborting (will retry next epoch)", claim_batch_id);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("🔴 [BTC_CLAIM_REWARD] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", claim_batch_id, e);
+                    return Ok(());
+                }
+            }
+        } else {
+            tracing::error!("🔴 [BTC_CLAIM_REWARD] NonceManager not available - aborting batch (will retry next epoch)");
+            return Ok(());
+        };
+
         info!(
-            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (epoch_1)",
+            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (nonce: {})",
             claim_batch_id,
-            claim_requests.len()
+            claim_requests.len(),
+            nonce_tuple_id
         );
         self.message_tx
             .send(crate::types::ChannelMessage::BtcClaimRewardBatch {
@@ -2538,6 +2624,7 @@ impl SigningNode {
                 round,
                 timestamp: claim_batch_timestamp,
                 node_id: self.id.clone(),
+                nonce_tuple_id: Some(nonce_tuple_id),
             })
             .await
             .map_err(|e| anyhow!("Failed to send BtcClaimRewardBatch: {}", e))?;
@@ -2682,26 +2769,27 @@ impl SigningNode {
         let batch_timestamp = chrono::Utc::now().to_rfc3339();
 
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
+        // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
             match nm_guard.reserve_nonces_for_batch(&["btc_contract_update".to_string()]).await {
                 Ok(assignments) => {
                     if let Some(tuple_id) = assignments.get("btc_contract_update") {
                         info!("🔐 [BTC_CONTRACT_UPDATE] Reserved nonce {} for contract update batch", tuple_id);
-                        Some(tuple_id.clone())
+                        tuple_id.clone()
                     } else {
-                        warn!("⚠️ [BTC_CONTRACT_UPDATE] No nonce assigned for btc_contract_update key");
-                        None
+                        tracing::error!("🔴 [BTC_CONTRACT_UPDATE] No nonce assigned - aborting batch (will retry next cycle)");
+                        return Ok(());
                     }
                 }
                 Err(e) => {
-                    warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to reserve nonce for batch: {}", e);
-                    None
+                    tracing::error!("🔴 [BTC_CONTRACT_UPDATE] Failed to reserve nonce: {} - aborting batch (will retry next cycle)", e);
+                    return Ok(());
                 }
             }
         } else {
-            warn!("⚠️ [BTC_CONTRACT_UPDATE] Nonce manager not available");
-            None
+            tracing::error!("🔴 [BTC_CONTRACT_UPDATE] NonceManager not available - aborting batch (will retry next cycle)");
+            return Ok(());
         };
 
         // Broadcast via btc-intent-manager-tx-update topic
@@ -2715,7 +2803,7 @@ impl SigningNode {
             update_round: round,
             timestamp: batch_timestamp,
             node_id: self.id.clone(),
-            nonce_tuple_id,
+            nonce_tuple_id: Some(nonce_tuple_id),
         };
 
         self.message_tx
@@ -2841,26 +2929,27 @@ impl SigningNode {
         let batch_timestamp = chrono::Utc::now().to_rfc3339();
 
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
+        // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
             match nm_guard.reserve_nonces_for_batch(&["add_liquidity_batch".to_string()]).await {
                 Ok(assignments) => {
                     if let Some(tuple_id) = assignments.get("add_liquidity_batch") {
                         info!("🔐 [ADD_LIQUIDITY] Reserved nonce {} for add_liquidity batch", tuple_id);
-                        Some(tuple_id.clone())
+                        tuple_id.clone()
                     } else {
-                        warn!("⚠️ [ADD_LIQUIDITY] No nonce assigned for add_liquidity_batch key");
-                        None
+                        tracing::error!("🔴 [ADD_LIQUIDITY] No nonce assigned - aborting batch (will retry next epoch)");
+                        return Ok(());
                     }
                 }
                 Err(e) => {
-                    warn!("⚠️ [ADD_LIQUIDITY] Failed to reserve nonce for batch: {}", e);
-                    None
+                    tracing::error!("🔴 [ADD_LIQUIDITY] Failed to reserve nonce: {} - aborting batch (will retry next epoch)", e);
+                    return Ok(());
                 }
             }
         } else {
-            warn!("⚠️ [ADD_LIQUIDITY] Nonce manager not available");
-            None
+            tracing::error!("🔴 [ADD_LIQUIDITY] NonceManager not available - aborting batch (will retry next epoch)");
+            return Ok(());
         };
 
         // Only send request_ids - all nodes have the full records in RocksDB
@@ -2869,7 +2958,7 @@ impl SigningNode {
             round,
             timestamp: batch_timestamp.clone(),
             node_id: self.id.clone(),
-            nonce_tuple_id,
+            nonce_tuple_id: Some(nonce_tuple_id),
         };
 
         self.message_tx
@@ -3024,7 +3113,7 @@ impl SigningNode {
             );
 
             // Reserve a single nonce for this batch signing
-            // SECURITY: Nonces are REQUIRED - batch will fail without one
+            // SECURITY: Nonces are REQUIRED - abort batch if unavailable
             // NOTE: Use reserve_nonces_for_batch() NOT acquire_nonce() - the coordinator must NOT
             // consume the nonce, only reserve it. Each node consumes their own copy when signing.
             let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
@@ -3033,20 +3122,20 @@ impl SigningNode {
                     Ok(assignments) => {
                         if let Some(tuple_id) = assignments.get(&batch_id) {
                             info!("🔐 [WITHDRAW_SETTLE] Reserved nonce {} for batch {}", tuple_id, batch_id);
-                            Some(tuple_id.clone())
+                            tuple_id.clone()
                         } else {
-                            tracing::error!("🔴 [WITHDRAW_SETTLE] No nonce assignment returned for batch {} - batch will FAIL", batch_id);
-                            None
+                            tracing::error!("🔴 [WITHDRAW_SETTLE] No nonce assignment returned for batch {} - aborting batch (will retry next epoch)", batch_id);
+                            return Ok(());
                         }
                     }
                     Err(e) => {
-                        tracing::error!("🔴 [WITHDRAW_SETTLE] Failed to reserve nonce: {} - batch will FAIL (fixed k removed for security)", e);
-                        None
+                        tracing::error!("🔴 [WITHDRAW_SETTLE] Failed to reserve nonce for batch {}: {} - aborting batch (will retry next epoch)", batch_id, e);
+                        return Ok(());
                     }
                 }
             } else {
-                tracing::error!("🔴 [WITHDRAW_SETTLE] NonceManager not available - batch will FAIL (fixed k removed for security)");
-                None
+                tracing::error!("🔴 [WITHDRAW_SETTLE] NonceManager not available - aborting batch (will retry next epoch)");
+                return Ok(());
             };
 
             let message = ChannelMessage::TicsWithdrawBatch {
@@ -3055,7 +3144,7 @@ impl SigningNode {
                 round,
                 timestamp: batch_timestamp,
                 node_id: self.id.clone(),
-                nonce_tuple_id,
+                nonce_tuple_id: Some(nonce_tuple_id),
             };
 
             if let Err(e) = self.message_tx.send(message).await {
@@ -3185,7 +3274,7 @@ impl SigningNode {
             );
 
             // Reserve a single nonce for this batch signing
-            // SECURITY: Nonces are REQUIRED - batch will fail without one
+            // SECURITY: Nonces are REQUIRED - abort batch if unavailable
             // NOTE: Use reserve_nonces_for_batch() NOT acquire_nonce() - the coordinator must NOT
             // consume the nonce, only reserve it. Each node consumes their own copy when signing.
             let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
@@ -3194,20 +3283,20 @@ impl SigningNode {
                     Ok(assignments) => {
                         if let Some(tuple_id) = assignments.get(&batch_id) {
                             info!("🔐 [TICS_CLAIM] Reserved nonce {} for batch {}", tuple_id, batch_id);
-                            Some(tuple_id.clone())
+                            tuple_id.clone()
                         } else {
-                            tracing::error!("🔴 [TICS_CLAIM] No nonce assignment returned for batch {} - batch will FAIL", batch_id);
-                            None
+                            tracing::error!("🔴 [TICS_CLAIM] No nonce assignment returned for batch {} - aborting batch (will retry next epoch)", batch_id);
+                            return Ok(());
                         }
                     }
                     Err(e) => {
-                        tracing::error!("🔴 [TICS_CLAIM] Failed to reserve nonce: {} - batch will FAIL (fixed k removed for security)", e);
-                        None
+                        tracing::error!("🔴 [TICS_CLAIM] Failed to reserve nonce for batch {}: {} - aborting batch (will retry next epoch)", batch_id, e);
+                        return Ok(());
                     }
                 }
             } else {
-                tracing::error!("🔴 [TICS_CLAIM] NonceManager not available - batch will FAIL (fixed k removed for security)");
-                None
+                tracing::error!("🔴 [TICS_CLAIM] NonceManager not available - aborting batch (will retry next epoch)");
+                return Ok(());
             };
 
             let message = ChannelMessage::TicsClaimRewardBatch {
@@ -3216,7 +3305,7 @@ impl SigningNode {
                 round,
                 timestamp: batch_timestamp,
                 node_id: self.id.clone(),
-                nonce_tuple_id,
+                nonce_tuple_id: Some(nonce_tuple_id),
             };
 
             if let Err(e) = self.message_tx.send(message).await {
@@ -3507,48 +3596,101 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Send transaction data to final node (for reconstruction)
+    /// Send transaction data to final node (for reconstruction).
+    /// Includes serialized ChainTransaction so observer final nodes can reconstruct TXs
+    /// without building them locally. The final node collects TX data from threshold DKG nodes
+    /// before trusting and using it.
+    /// Checks all TICS pending stores: pending_transactions, withdraw, and claim-reward.
     async fn send_transaction_data_to_final_node(
         &self,
         final_node_id: &str,
         round: u64,
     ) -> Result<()> {
-        // Check if we have transaction data for this round
-        let pending_transactions = self.pending.pending_transactions.read().await;
-        
-        if let Some((_, tx_bytes, intent_hash, transaction_type, request_id, _original_request)) = pending_transactions.get(&round) {
-            info!(
-                "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes, request_id: {:?})",
-                round, final_node_id, tx_bytes.len(), request_id
-            );
-            
-            let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
-                from: self.id.clone(),
-                round,
-                tx_bytes: tx_bytes.clone(),
-                intent_hash: intent_hash.clone(),
-                transaction_type: transaction_type.as_ref().map(|t| format!("{:?}", t)),
-                request_id: request_id.clone(),
-            };
-            
-            // Wrap and broadcast via gossipsub (final node picks from topic)
-            let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
-            let data = serde_json::to_vec(&gossipsub_msg)?;
-            
-            self.broadcast("signing", &data).await?;
-            
-            info!(
-                "✅ [SIGNING] Broadcast transaction data for round {} (final node picks from gossipsub)",
-                round
-            );
-        } else {
-            // No transaction data - this is expected if we also weren't selected
-            debug!(
-                "⚠️ [SIGNING] No transaction data found for round {} to send to final node",
-                round
-            );
+        // Helper: broadcast TX data message
+        macro_rules! broadcast_tx_data {
+            ($chain_tx:expr, $tx_bytes:expr, $intent_hash:expr, $tx_type:expr, $request_id:expr) => {{
+                let chain_tx_json = serde_json::to_string($chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: $tx_bytes.clone(),
+                    intent_hash: $intent_hash.clone(),
+                    transaction_type: $tx_type,
+                    request_id: $request_id,
+                    chain_tx_json,
+                    user_eth_address: None,
+                };
+                let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                let data = serde_json::to_vec(&gossipsub_msg)?;
+                self.broadcast("signing", &data).await?;
+                info!(
+                    "✅ [SIGNING] Broadcast transaction data for round {} (final node picks from gossipsub)",
+                    round
+                );
+                return Ok(());
+            }};
         }
-        
+
+        // Check pending_transactions (single ETH TX: UserToVault, NetworkToTarget, etc.)
+        {
+            let pending = self.pending.pending_transactions.read().await;
+            if let Some((chain_tx, tx_bytes, intent_hash, transaction_type, request_id, _)) = pending.get(&round) {
+                info!(
+                    "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes)",
+                    round, final_node_id, tx_bytes.len()
+                );
+                broadcast_tx_data!(
+                    chain_tx,
+                    tx_bytes,
+                    intent_hash,
+                    transaction_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id.clone()
+                );
+            }
+        }
+
+        // Check withdraw_pending_transactions_tics
+        {
+            let withdraw = self.pending.withdraw_pending_transactions_tics.read().await;
+            if let Some((chain_tx, tx_bytes, identifiers, tx_type, request_id, _)) = withdraw.get(&round) {
+                let intent_hash = identifiers.as_ref().and_then(|v| v.first().cloned());
+                info!(
+                    "📤 [SIGNING] Sending TICS withdraw TX data for round {} to final node {}",
+                    round, final_node_id
+                );
+                broadcast_tx_data!(
+                    chain_tx,
+                    tx_bytes,
+                    &intent_hash,
+                    tx_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id.clone()
+                );
+            }
+        }
+
+        // Check claim_reward_pending_transactions_tics
+        {
+            let claim = self.pending.claim_reward_pending_transactions_tics.read().await;
+            if let Some((chain_tx, tx_bytes, identifiers, tx_type, request_id, _)) = claim.get(&round) {
+                let intent_hash = identifiers.as_ref().and_then(|v| v.first().cloned());
+                info!(
+                    "📤 [SIGNING] Sending TICS claim-reward TX data for round {} to final node {}",
+                    round, final_node_id
+                );
+                broadcast_tx_data!(
+                    chain_tx,
+                    tx_bytes,
+                    &intent_hash,
+                    tx_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id.clone()
+                );
+            }
+        }
+
+        debug!(
+            "⚠️ [SIGNING] No TICS transaction data found for round {} to send to final node",
+            round
+        );
         Ok(())
     }
 
@@ -3566,14 +3708,24 @@ impl SigningNode {
 
         // Only send signature if we're not the final node
         if final_node_id != self.id {
-            // Send signature to the final node
-            self.send_signature_to_final_node(&final_node_id, round)
-                .await?;
-            
-            // CRITICAL FIX: Also send transaction data to the final node
-            // This ensures the final node can reconstruct the transaction even if it wasn't selected to sign
-            self.send_transaction_data_to_final_node(&final_node_id, round)
-                .await?;
+            // Check if this node has a DKG secret share (can produce partial signatures)
+            // Nodes that joined after initial DKG are observers and cannot sign
+            let has_signing_key = self.has_dkg_share().await;
+            if has_signing_key {
+                // Send signature to the final node
+                self.send_signature_to_final_node(&final_node_id, round)
+                    .await?;
+
+                // CRITICAL FIX: Also send transaction data to the final node
+                // This ensures the final node can reconstruct the transaction even if it wasn't selected to sign
+                self.send_transaction_data_to_final_node(&final_node_id, round)
+                    .await?;
+            } else {
+                info!("ℹ️ [SIGNING] Node {} is an observer (no DKG share) - skipping partial signature for round {}", self.id, round);
+                // Still send transaction data if we have it, so the final node can use it
+                self.send_transaction_data_to_final_node(&final_node_id, round)
+                    .await?;
+            }
         } else {
             info!("🔄 [SIGNING] This node is the final node, no need to send signature to self");
         }
@@ -5609,7 +5761,11 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Handle transaction data received for final node (to enable reconstruction even if not selected to sign)
+    /// Handle transaction data received for final node (to enable reconstruction even if not selected to sign).
+    ///
+    /// Universal threshold verification: collects TX data from DKG nodes and accepts it once
+    /// threshold matching copies of tx_bytes arrive. Works for ALL transaction types (batch and non-batch).
+    /// If this node already has TX data locally (DKG final node), incoming data is ignored.
     pub async fn handle_transaction_data_for_final_node(
         &mut self,
         from: String,
@@ -5618,12 +5774,9 @@ impl SigningNode {
         intent_hash: Option<String>,
         transaction_type: Option<String>,
         request_id: Option<String>,
+        chain_tx_json: Option<String>,
+        user_eth_address: Option<String>,
     ) -> Result<()> {
-        info!(
-            "📥 [SIGNING] Final node {} received transaction data from {} for round {} (tx_bytes: {} bytes)",
-            self.id, from, round, tx_bytes.len()
-        );
-
         // Check if this node is the final node for the specific round
         let is_final_node = {
             let final_nodes = self.signatures.final_nodes_by_round.read().await;
@@ -5641,69 +5794,190 @@ impl SigningNode {
             return Ok(());
         }
 
-        // Check if we already have transaction data for this round
-        let already_have_data = {
+        // Determine the slot key: for batch flows use intent_hash as slot_id, for non-batch use ""
+        let slot_id = intent_hash.clone().unwrap_or_default();
+        let tx_data_key: crate::signing::state::TxDataKey = (round, slot_id.clone());
+
+        // If this node already has the TX data locally (DKG final node that built it), skip
+        let already_has_local_data = if slot_id.is_empty() {
+            // Non-batch: check pending_transactions
             let pending = self.pending.pending_transactions.read().await;
             pending.contains_key(&round)
+        } else {
+            // Batch slot: check appropriate batch store
+            let tics_batch = self.pending.user_to_vault_tics_batch.read().await;
+            let btc_batch = self.pending.user_to_vault_btc_batch.read().await;
+            let in_tics = tics_batch
+                .get(&round)
+                .map(|entries| entries.iter().any(|(h, ..)| h == &slot_id))
+                .unwrap_or(false);
+            let in_btc = btc_batch
+                .get(&round)
+                .map(|entries| entries.iter().any(|(h, ..)| h == &slot_id))
+                .unwrap_or(false);
+            in_tics || in_btc
         };
 
-        if already_have_data {
+        if already_has_local_data {
             debug!(
-                "ℹ️ [SIGNING] Already have transaction data for round {}, ignoring duplicate from {}",
-                round, from
+                "ℹ️ [SIGNING] Already have local TX data for round {} slot {:?}, ignoring from {}",
+                round, intent_hash, from
             );
             return Ok(());
         }
 
-        // CRITICAL FIX: Store the transaction data so we can reconstruct later
-        info!(
-            "💾 [SIGNING] Storing received transaction data for round {} from {} (was not selected to sign but is final node)",
-            round, from
-        );
-
-        // Parse transaction type if provided
-        let parsed_tx_type = transaction_type.as_ref().and_then(|t| {
-            // Try to parse the string back to TransactionType
-            // This is a simple mapping - you may need to adjust based on actual format
-            match t.as_str() {
-                "UserToVault" => Some(crate::types::TransactionType::UserToVault),
-                "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
-
-                "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
-                _ => None,
+        // chain_tx_json is required for the universal approach
+        let chain_json = match &chain_tx_json {
+            Some(json) => json.clone(),
+            None => {
+                debug!(
+                    "⚠️ [SIGNING] Received TX data from {} for round {} without chain_tx_json, ignoring",
+                    from, round
+                );
+                return Ok(());
             }
-        });
-
-        // We need to reconstruct a ChainTransaction from the tx_bytes
-        // For now, we'll create a placeholder Ethereum transaction since we mainly need the tx_bytes for reconstruction
-        let eth_tx = crate::chain_abstraction::EthereumTransaction {
-            to: String::new(), // Will be populated during reconstruction
-            value: "0".to_string(),
-            gas_limit: 0,
-            gas_price: "0".to_string(),
-            nonce: 0,
-            data: Some(tx_bytes.clone()),
-            chain_id: 0,
         };
-        let chain_tx = crate::chain_abstraction::ChainTransaction::Ethereum(eth_tx);
 
-        let mut pending = self.pending.pending_transactions.write().await;
-        pending.insert(
-            round,
-            (
-                chain_tx,
-                tx_bytes,
-                intent_hash.clone(),
-                parsed_tx_type,
-                request_id, // Store request_id from received data
-                None, // No original_request available in this context
-            ),
-        );
+        // Collect this TX data for threshold verification
+        let received = crate::signing::state::ReceivedTxData {
+            from: from.clone(),
+            tx_bytes: tx_bytes.clone(),
+            chain_tx_json: chain_json,
+            intent_hash: intent_hash.clone(),
+            transaction_type: transaction_type.clone(),
+            request_id: request_id.clone(),
+            user_eth_address: user_eth_address.clone(),
+        };
+
+        let mut received_store = self.pending.received_tx_data.write().await;
+        let entries = received_store.entry(tx_data_key.clone()).or_insert_with(Vec::new);
+
+        // Don't accept duplicate from same node
+        if entries.iter().any(|e| e.from == from) {
+            debug!(
+                "ℹ️ [SIGNING] Already received TX data from {} for round {} slot {:?}",
+                from, round, intent_hash
+            );
+            return Ok(());
+        }
+
+        entries.push(received);
+
+        // Count how many nodes sent matching tx_bytes
+        let matching_count = entries
+            .iter()
+            .filter(|e| e.tx_bytes == tx_bytes)
+            .count();
 
         info!(
-            "✅ [SIGNING] Stored transaction data for round {} - final node can now reconstruct when signatures arrive",
-            round
+            "📥 [SIGNING] Collected TX data from {} for round {} slot {:?} ({}/{} threshold)",
+            from, round, intent_hash, matching_count, self.threshold
         );
+
+        // Check if we've reached threshold
+        if matching_count < self.threshold {
+            return Ok(());
+        }
+
+        // Threshold reached! Use the first matching entry's data (all tx_bytes are identical)
+        let verified_entry = entries
+            .iter()
+            .find(|e| e.tx_bytes == tx_bytes)
+            .unwrap()
+            .clone();
+
+        info!(
+            "✅ [SIGNING] Threshold reached for round {} slot {:?} - {} matching copies from DKG nodes",
+            round, intent_hash, matching_count
+        );
+
+        // Drop the write lock before storing
+        drop(received_store);
+
+        // Deserialize the verified ChainTransaction
+        let chain_tx = match serde_json::from_str::<crate::chain_abstraction::ChainTransaction>(
+            &verified_entry.chain_tx_json,
+        ) {
+            Ok(ct) => ct,
+            Err(e) => {
+                warn!(
+                    "⚠️ [SIGNING] Failed to deserialize chain_tx_json for round {} slot {:?}: {}",
+                    round, intent_hash, e
+                );
+                return Ok(());
+            }
+        };
+
+        // Store in appropriate pending store based on whether this is batch or non-batch
+        if !slot_id.is_empty() {
+            // Batch slot: determine if TICS or BTC from the ChainTransaction variant
+            match &chain_tx {
+                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                    let user_eth = verified_entry.user_eth_address.unwrap_or_default();
+                    let mut store = self.pending.user_to_vault_tics_batch.write().await;
+                    let batch_entries = store.entry(round).or_insert_with(Vec::new);
+                    if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
+                        batch_entries.push((
+                            slot_id.clone(),
+                            user_eth,
+                            chain_tx,
+                            tx_bytes,
+                        ));
+                        info!(
+                            "💾 [SIGNING] Stored verified TICS batch slot {} (round {}) after threshold verification",
+                            slot_id, round
+                        );
+                    }
+                }
+                crate::chain_abstraction::ChainTransaction::Bitcoin(_) => {
+                    let user_eth = verified_entry.user_eth_address.unwrap_or_default();
+                    let mut store = self.pending.user_to_vault_btc_batch.write().await;
+                    let batch_entries = store.entry(round).or_insert_with(Vec::new);
+                    if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
+                        batch_entries.push((
+                            slot_id.clone(),
+                            user_eth,
+                            chain_tx,
+                            tx_bytes,
+                            None, // BtcRoundExtras will be computed during finalization if needed
+                        ));
+                        info!(
+                            "💾 [SIGNING] Stored verified BTC batch slot {} (round {}) after threshold verification",
+                            slot_id, round
+                        );
+                    }
+                }
+            }
+        } else {
+            // Non-batch: store in pending_transactions
+            let parsed_tx_type = transaction_type.as_ref().and_then(|t| {
+                match t.as_str() {
+                    "UserToVault" => Some(crate::types::TransactionType::UserToVault),
+                    "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
+                    "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
+                    _ => None,
+                }
+            });
+
+            let mut pending = self.pending.pending_transactions.write().await;
+            if !pending.contains_key(&round) {
+                pending.insert(
+                    round,
+                    (
+                        chain_tx,
+                        tx_bytes,
+                        intent_hash,
+                        parsed_tx_type,
+                        request_id,
+                        None,
+                    ),
+                );
+                info!(
+                    "💾 [SIGNING] Stored verified TX data for round {} after threshold verification",
+                    round
+                );
+            }
+        }
 
         Ok(())
     }

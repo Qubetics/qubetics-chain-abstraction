@@ -1215,8 +1215,18 @@ impl NonceManager {
                 drop(batches); // Release lock before async calls
 
                 // Store all tuples
+                let tuples_for_broadcast = tuples.clone();
                 for tuple in tuples {
                     self.storage.store_nonce_tuple(&tuple).await?;
+                }
+
+                // Broadcast finalized tuples to all nodes (including observers)
+                // so they can reserve nonce IDs when acting as final node.
+                if let Err(e) = self.broadcast_nonce_tuples(batch_id, tuples_for_broadcast).await {
+                    warn!(
+                        "⚠️ [NONCE] Failed to broadcast nonce tuples for batch {}: {}",
+                        batch_id, e
+                    );
                 }
 
                 // Cleanup batch
@@ -1384,6 +1394,43 @@ impl NonceManager {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to broadcast: {}", e))?;
 
+        Ok(())
+    }
+
+    /// Broadcast finalized nonce tuples to all nodes via gossipsub.
+    /// Observer nodes store these so they can reserve nonce IDs as final node.
+    async fn broadcast_nonce_tuples(&self, batch_id: &str, tuples: Vec<NonceTuple>) -> Result<()> {
+        let gossipsub_msg = crate::types::GossipsubMessage::NonceTupleBroadcast {
+            batch_id: batch_id.to_string(),
+            tuples,
+            node_id: self.id.clone(),
+        };
+        let data = serde_json::to_vec(&gossipsub_msg)?;
+
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "signing".to_string(),
+                data,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to broadcast nonce tuples: {}", e))?;
+
+        info!(
+            "📤 [NONCE] Broadcasted finalized nonce tuples for batch {} to all nodes",
+            batch_id
+        );
+        Ok(())
+    }
+
+    /// Store a nonce tuple received via broadcast from another node.
+    /// Used by observer nodes to populate their nonce pool for final-node coordination.
+    /// DKG nodes may also receive these (harmless duplicate — already stored during generation).
+    pub async fn store_received_nonce_tuple(&self, tuple: NonceTuple) -> Result<()> {
+        // Skip if already stored (DKG nodes store during generation)
+        if self.storage.get_nonce_tuple(&tuple.tuple_id).await?.is_some() {
+            return Ok(());
+        }
+        self.storage.store_nonce_tuple(&tuple).await?;
         Ok(())
     }
 

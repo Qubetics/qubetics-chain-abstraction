@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Convenience wrapper that exposes Bitcoin-specific signing operations on a `SigningNode`.
 pub struct BitcoinSigner<'a> {
@@ -49,6 +49,7 @@ impl<'a> BitcoinSigner<'a> {
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         self.node
             .sign_bitcoin_transaction(
@@ -61,6 +62,7 @@ impl<'a> BitcoinSigner<'a> {
                 user_tweaked_share,
                 solver_address,
                 signing_key_override,
+                nonce_tuple_id,
             )
             .await
     }
@@ -352,6 +354,26 @@ impl<'a> BitcoinSigner<'a> {
             let signature_data = serde_json::to_vec(&gossipsub_msg)?;
             self.node.broadcast("signing", &signature_data).await?;
 
+            // Send TX data for this slot to the final node for threshold verification.
+            // All DKG nodes broadcast their TX data; the final node accepts it once
+            // threshold matching copies arrive.
+            {
+                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.node.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash: Some(intent_hash.clone()),
+                    transaction_type: Some("UserToVault".to_string()),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: Some(user_eth.clone()),
+                };
+                let tx_data_gossip = GossipsubMessage::Signing(tx_data_msg);
+                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                self.node.broadcast("signing", &tx_data_bytes).await?;
+            }
+
             // Add to batch storage with extras
             batch_storage.push((
                 intent_hash,
@@ -385,6 +407,7 @@ impl SigningNode {
         user_tweaked_share: Option<Scalar>,
         _solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
 
@@ -609,38 +632,41 @@ impl SigningNode {
         let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
             Vec::with_capacity(digests.len());
 
-        // For withdraw/claim batches, acquire a nonce from the pool
-        // NOTE: This is a simplification - for proper multi-input signing, each input
-        // ideally needs its own coordinated nonce. Currently using one nonce for all inputs.
-        let nonce_tuple = if let Some(nm) = &self.nonce_manager {
-            let nm_guard = nm.lock().await;
-            match nm_guard.acquire_nonce().await {
-                Ok(Some(tuple)) => {
-                    info!(
-                        "🔐 [BTC-SIGNING] Acquired nonce {} for signing (r_scalar: 0x{})",
-                        tuple.tuple_id,
-                        hex::encode(tuple.r_scalar.0.to_bytes())
-                    );
-                    Some(tuple)
+        // Acquire the coordinated nonce by tuple_id (all nodes use the same k value)
+        let nonce = if let Some(ref tuple_id) = nonce_tuple_id {
+            if let Some(nm) = &self.nonce_manager {
+                let nm_guard = nm.lock().await;
+                match nm_guard.acquire_specific_nonce(tuple_id).await {
+                    Ok(Some(tuple)) => {
+                        info!(
+                            "🔐 [BTC-SIGNING] Using coordinated nonce {} for signing (r_scalar: 0x{})",
+                            tuple.tuple_id,
+                            hex::encode(tuple.r_scalar.0.to_bytes())
+                        );
+                        tuple
+                    }
+                    Ok(None) => {
+                        return Err(anyhow!(
+                            "Coordinated nonce {} not found or already consumed - cannot sign",
+                            tuple_id
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(anyhow!(
+                            "Failed to acquire coordinated nonce {}: {} - cannot sign",
+                            tuple_id, e
+                        ));
+                    }
                 }
-                Ok(None) => {
-                    error!("🔴 [BTC-SIGNING] No nonce available in pool - CANNOT SIGN (fixed k removed for security)");
-                    None
-                }
-                Err(e) => {
-                    error!("🔴 [BTC-SIGNING] Failed to acquire nonce: {} - CANNOT SIGN (fixed k removed for security)", e);
-                    None
-                }
+            } else {
+                return Err(anyhow!("NonceManager not available - cannot sign"));
             }
         } else {
-            error!("🔴 [BTC-SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
-            None
+            error!("🔴 [BTC-SIGNING] No nonce_tuple_id provided for BTC signing - this is a coordination bug!");
+            return Err(anyhow!(
+                "No nonce_tuple_id provided. All BTC signing operations must use coordinated nonces."
+            ));
         };
-
-        // SECURITY: Require nonce for signing - fixed k has been removed
-        let nonce = nonce_tuple.ok_or_else(|| {
-            anyhow!("Nonce is required for signing - fixed k fallback has been removed for security")
-        })?;
 
         for (i, digest) in digests.iter().enumerate() {
             let msg = Message::from_digest_slice(digest)?;
@@ -1167,14 +1193,105 @@ impl SigningNode {
 
         // Only send signatures if we're not the final node
         if final_node_id != self.id {
-            self.send_btc_signatures_to_final_node(&final_node_id, round)
-                .await?;
+            let has_signing_key = self.has_dkg_share().await;
+            if has_signing_key {
+                self.send_btc_signatures_to_final_node(&final_node_id, round)
+                    .await?;
+            } else {
+                info!("ℹ️ [SIGNING] Node {} is an observer (no DKG share) - skipping BTC partial signature for round {}", self.id, round);
+            }
+
+            // Send BTC transaction data to final node for threshold verification.
+            // Check all BTC pending stores for TX data.
+            self.send_btc_transaction_data_to_final_node(round).await?;
         } else {
             info!(
                 "🔄 [SIGNING] This node is the final node, no need to send BTC signatures to self"
             );
         }
 
+        Ok(())
+    }
+
+    /// Send BTC transaction data to the final node for threshold verification.
+    /// Checks pending_transactions_btc, withdraw, and claim-reward stores.
+    async fn send_btc_transaction_data_to_final_node(
+        &self,
+        round: u64,
+    ) -> Result<()> {
+        // Check pending_transactions_btc (N2T BTC flows)
+        {
+            let btc_pending = self.pending.pending_transactions_btc.read().await;
+            if let Some((chain_tx, tx_bytes, intent_hashes, tx_type, _extras)) = btc_pending.get(&round) {
+                let chain_tx_json = serde_json::to_string(chain_tx).ok();
+                let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash,
+                    transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: None,
+                };
+                let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
+                let data = serde_json::to_vec(&gossipsub_msg)?;
+                self.broadcast("signing", &data).await?;
+                return Ok(());
+            }
+        }
+
+        // Check withdraw_pending_transactions_btc
+        {
+            let btc_withdraw = self.pending.withdraw_pending_transactions_btc.read().await;
+            if let Some((chain_tx, tx_bytes, intent_hashes, tx_type, _extras)) = btc_withdraw.get(&round) {
+                let chain_tx_json = serde_json::to_string(chain_tx).ok();
+                let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash,
+                    transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: None,
+                };
+                let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
+                let data = serde_json::to_vec(&gossipsub_msg)?;
+                self.broadcast("signing", &data).await?;
+                return Ok(());
+            }
+        }
+
+        // Check claim_reward_pending_transactions_btc
+        {
+            let btc_claim = self.pending.claim_reward_pending_transactions_btc.read().await;
+            if let Some((chain_tx, tx_bytes, intent_hashes, tx_type, _extras)) = btc_claim.get(&round) {
+                let chain_tx_json = serde_json::to_string(chain_tx).ok();
+                let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                    from: self.id.clone(),
+                    round,
+                    tx_bytes: tx_bytes.clone(),
+                    intent_hash,
+                    transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
+                    request_id: None,
+                    chain_tx_json,
+                    user_eth_address: None,
+                };
+                let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
+                let data = serde_json::to_vec(&gossipsub_msg)?;
+                self.broadcast("signing", &data).await?;
+                return Ok(());
+            }
+        }
+
+        debug!(
+            "⚠️ [SIGNING] No BTC transaction data found for round {} to send to final node",
+            round
+        );
         Ok(())
     }
 

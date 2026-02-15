@@ -4,7 +4,6 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::database::keys;
-use crate::protocols::DKGStatus;
 use crate::types::dkg::MSG_TOPIC_PEER_DISCOVERY;
 use crate::types::GossipsubMessage;
 
@@ -131,37 +130,22 @@ impl MpcNetworkLayer {
             }
         }
 
-        if let Some(arc) = &self.signing_node {
-            let mut signing_node = arc.lock().await;
-            signing_node.set_threshold(new_threshold);
-        }
-
-        // Execute proactive resharing
-        info!(
-            "🔄 [DISCONNECT] Triggering proactive resharing with {} remaining nodes",
-            new_total
-        );
-
-        if let Some(dkg_node) = &mut self.dkg_node {
-            let dkg_status = dkg_node.get_status();
-            if matches!(dkg_status, DKGStatus::Completed) {
-                // Add delay to ensure all nodes have processed the broadcast
-                info!("⏰ [DISCONNECT] Waiting 3 seconds for all nodes to sync...");
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                info!("✅ [DISCONNECT] Sync period complete, starting resharing");
-
-                if let Err(e) = dkg_node
-                    .execute_polynomial_refresh(self.node_manager.clone())
-                    .await
-                {
-                    tracing::error!("❌ [DISCONNECT] Failed to execute resharing: {}", e);
-                } else {
-                    info!("✅ [DISCONNECT] Resharing completed successfully");
-                }
-            } else {
-                warn!("⚠️ [DISCONNECT] DKG not completed yet, skipping resharing");
+        // Only update signing threshold if initial DKG is not yet complete
+        // After DKG, threshold is fixed based on initial DKG participants
+        let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.is_initial_dkg_complete().await
+        } else {
+            false
+        };
+        if !initial_dkg_complete {
+            if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
+                signing_node.set_threshold(new_threshold);
             }
+        } else {
+            info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged after disconnect - fixed by initial DKG");
         }
+
     }
 
     /// Handle new peer connection and announce to network
@@ -222,16 +206,22 @@ impl MpcNetworkLayer {
                 .add_node(peer_id)
                 .map_err(|e| anyhow::anyhow!(e))?;
 
-            // Update signing node threshold and handle nonce regeneration for new node
-            if let Some(arc) = &self.signing_node {
-                let mut signing_node = arc.lock().await;
-                let new_threshold = self.node_manager.get_threshold();
-                let new_total = self.node_manager.get_total_nodes();
-                signing_node.set_threshold(new_threshold);
-                // NEW NODE JOINED: Delete stale nonces and regenerate with all nodes
-                // This is critical because the new node doesn't have the old nonces!
-                signing_node.handle_nonce_manager_node_joined(new_total).await;
-                info!("🔄 [THRESHOLD] Updated signing node threshold to {} and nonce total_nodes to {} after Kademlia peer addition", new_threshold, new_total);
+            // Do NOT update signing threshold after initial DKG is complete
+            // Threshold is fixed based on initial DKG participants only
+            let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+                dkg_node.is_initial_dkg_complete().await
+            } else {
+                false
+            };
+            if !initial_dkg_complete {
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let new_threshold = self.node_manager.get_threshold();
+                    signing_node.set_threshold(new_threshold);
+                    info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer addition", new_threshold);
+                }
+            } else {
+                info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged - new node joined after initial DKG (observer only)");
             }
         }
 

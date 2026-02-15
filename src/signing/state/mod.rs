@@ -30,6 +30,23 @@ pub type PendingValue = (
 /// Per-slot partials for TICS UserToVault batch: (round, slot_id) -> node_id -> signature.
 pub type RoundSlotKey = (u64, String);
 
+/// TX data received from a DKG node for threshold verification.
+/// The final node collects these and accepts the data once threshold matching copies arrive.
+#[derive(Clone, Debug)]
+pub struct ReceivedTxData {
+    pub from: String,
+    pub tx_bytes: Vec<u8>,
+    pub chain_tx_json: String,
+    pub intent_hash: Option<String>,
+    pub transaction_type: Option<String>,
+    pub request_id: Option<String>,
+    pub user_eth_address: Option<String>,
+}
+
+/// Key for received TX data: (round, slot_id).
+/// For non-batch TXs, slot_id is None => we use empty string "".
+pub type TxDataKey = (u64, String);
+
 #[derive(Clone)]
 pub struct SignatureStore {
     pub public_keys: Arc<RwLock<HashMap<String, PublicKey>>>, // Other nodes' public keys
@@ -151,6 +168,13 @@ pub struct PendingStore {
             >,
         >,
     >,
+    /// Universal TX data collection for threshold verification.
+    /// Observer final nodes collect TX data from DKG nodes; once threshold matching
+    /// copies of tx_bytes arrive for a given (round, slot_id), the data is trusted
+    /// and promoted to the appropriate pending store for reconstruction.
+    /// Key: (round, slot_id) where slot_id="" for non-batch TXs.
+    /// Value: Vec of received TX data from different nodes.
+    pub received_tx_data: Arc<RwLock<HashMap<TxDataKey, Vec<ReceivedTxData>>>>,
 }
 
 impl Default for PendingStore {
@@ -173,6 +197,7 @@ impl PendingStore {
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_btc_batch: Arc::new(RwLock::new(HashMap::new())),
+            received_tx_data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

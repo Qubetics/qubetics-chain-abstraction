@@ -321,20 +321,6 @@ impl MpcNetworkLayer {
                                     round,
                                     retry_count: entry.retry_count + 1,
                                 },
-                                RetryableUnicast::UnicastRefreshShare {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                } => ChannelMessage::UnicastRefreshShare {
-                                    target_peer_id,
-                                    from_node_id,
-                                    share_index,
-                                    share_value,
-                                    commitments,
-                                    retry_count: entry.retry_count + 1,
-                                },
                                 RetryableUnicast::UnicastCritical {
                                     target_peer_id,
                                     topic,

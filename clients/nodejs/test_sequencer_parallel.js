@@ -20,8 +20,8 @@ import path from 'path';
 // Configuration
 const RPC_NODES = [
   'http://127.0.0.1:8082',
-  'http://127.0.0.1:8083',
-  'http://127.0.0.1:8084',
+  // 'http://127.0.0.1:8083',
+  // 'http://127.0.0.1:8084',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -117,7 +117,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   "d59977f42a29d6604c97ece9e514e890c4d635537c82acfb6b28856f9195eb9f",
   "21bb33fee6969b26a87f777f77b7c206f3259015db5305eb0e3b2a7dd42d36f1",
   "94bac31302d892ae2c1e474ecb0483475577ff716df6bd383a2094395345fdcf",
-  "9bb89847d2252cfd377d89e0ff64fb71d32b18d1dd70be86169ae15fb780e7b4",
+  // "9bb89847d2252cfd377d89e0ff64fb71d32b18d1dd70be86169ae15fb780e7b4",
   // // // Additional accounts (36-100) - Properly generated random keys
   // "83ed11e04b47ea2ddf6130d1d1e57e7a63078c7d5f3b0dfd136054335459997d",
   // "0744de5c810af18e045ea8e23264f1e368b06effcd92cbff951a545b914db485",
@@ -538,8 +538,8 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       source_address: userInfo.data.derived_eth_address,  // ETH address
       // source_address: userInfo.data.derived_btc_address,  // ETH address
       // target_address: userInfo.data.derived_eth_address,
-      target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
-      // target_address: "0x95385e34d72d376f9e021fe02f91a35dbae261d4",
+      // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
+      target_address: "0x95385e34d72d376f9e021fe02f91a35dbae261d4",
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
       target_chain: 'qubetics',
@@ -864,7 +864,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "4000000000000000000";  // 12 TICS
+    const amount = "5000000000000000000";  // 12 TICS
     // const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });

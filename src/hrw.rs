@@ -73,15 +73,18 @@ pub mod candidates {
 
     /// Get canonical HRW candidates from DKG storage (read-only).
     ///
-    /// Reads peer_id→index entries from storage, builds a **separate** list of peer IDs,
-    /// and sorts **that list** by PeerId bytes for deterministic HRW. The underlying
-    /// storage and any peer_indices mapping are never modified or sorted.
+    /// Includes ALL connected peers (DKG participants + observers).
+    /// Observer nodes can be selected as final node for aggregation and broadcast;
+    /// they skip individual signing but still aggregate partial signatures from DKG nodes.
+    /// Builds a **separate** list of peer IDs sorted by PeerId bytes for deterministic HRW.
+    /// The underlying storage and any peer_indices mapping are never modified or sorted.
     /// Invalid peer ID strings are skipped (and logged).
     pub fn get_hrw_candidates(dkg: &DkgStorage) -> Result<Vec<PeerId>> {
         // Read-only: get_all_peer_indices does not modify storage.
         let indices = dkg.get_all_peer_indices()?;
+
         let mut peer_ids: Vec<PeerId> = Vec::new();
-        for s in indices.keys() {
+        for (s, _idx) in &indices {
             match PeerId::from_str(s) {
                 Ok(pid) => peer_ids.push(pid),
                 Err(e) => tracing::warn!(
@@ -92,6 +95,10 @@ pub mod candidates {
         }
         // Sort only our local list; never write back to or sort the peer_id→index storage.
         peer_ids.sort_by(|a, b| a.to_bytes().as_slice().cmp(b.to_bytes().as_slice()));
+        tracing::info!(
+            "🎯 [HRW] Candidates: {} peers (all eligible for final node selection)",
+            peer_ids.len()
+        );
         Ok(peer_ids)
     }
 }

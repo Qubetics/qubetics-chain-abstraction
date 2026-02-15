@@ -200,6 +200,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Coordinated nonce tuple ID for threshold signing
+        nonce_tuple_id: Option<String>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     /// Final node broadcasts selected pending BTC claim-reward requests for distributed signing.
@@ -209,6 +211,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Coordinated nonce tuple ID for threshold signing
+        nonce_tuple_id: Option<String>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -300,15 +304,6 @@ pub enum ChannelMessage {
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
         round: u64,
-        retry_count: u8,
-    },
-    /// Send a refresh share to a specific peer via P2P RPC unicast
-    UnicastRefreshShare {
-        target_peer_id: String,
-        from_node_id: String,
-        share_index: usize,
-        share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
         retry_count: u8,
     },
     /// Unicast a critical gossip message via P2P RPC
@@ -443,13 +438,15 @@ pub enum GossipsubMessage {
         /// Node that encountered the error
         node_id: String,
     },
-    /// BTC withdraw-liquidity batch broadcast (definition only, no txid)
+    /// BTC withdraw-liquidity batch broadcast
     BtcWithdrawBatch {
         batch_id: String,
         requests: Vec<(String, String)>,
         round: u64,
         timestamp: String,
         node_id: String,
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     BtcClaimRewardBatch {
@@ -458,6 +455,8 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -611,5 +610,14 @@ pub enum GossipsubMessage {
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
         #[serde(default)]
         nonce_tuple_id: Option<String>,
+    },
+    /// Broadcast finalized nonce tuples to all nodes (including observers).
+    /// Observer nodes store these locally so they can reserve nonce tuple IDs
+    /// when acting as the final node for batch coordination.
+    NonceTupleBroadcast {
+        batch_id: String,
+        tuples: Vec<crate::types::nonce::NonceTuple>,
+        /// Node that generated/broadcasted the nonces
+        node_id: String,
     },
 }

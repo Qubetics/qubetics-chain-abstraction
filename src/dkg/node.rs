@@ -195,7 +195,6 @@ impl DKGNode {
         info!("🗑️ [RECONNECT] Clearing DKG secret/commitment state - index comes from network (PeerList)");
         self.reset().await?;
         self.storage.set_initial_dkg_complete(false).await?;
-        self.storage.set_refresh_in_progress(false).await?;
         info!("✅ [RECONNECT] DKG state cleared - will use index assigned by network");
         Ok(())
     }
@@ -265,6 +264,16 @@ impl DKGNode {
             .is_initial_dkg_complete()
             .await
             .unwrap_or(false)
+    }
+
+    /// Get the number of initial DKG signers (sync, from storage)
+    pub fn get_dkg_signer_count(&self) -> Option<usize> {
+        self.storage.get_dkg_signer_count().ok().flatten()
+    }
+
+    /// Set the number of initial DKG signers (used when receiving from PeerList on observer nodes)
+    pub fn set_dkg_signer_count(&self, count: usize) -> Result<()> {
+        self.storage.set_dkg_signer_count(count)
     }
 
     /// Get the node's ID
@@ -487,244 +496,4 @@ mod tests {
         assert_eq!(retrieved["node1"][1], commitment2);
     }
 
-    #[tokio::test]
-    async fn test_original_commitments_persist_after_refresh() {
-        let (db, _temp_dir) = create_test_db();
-        let storage = DkgStorage::new(db);
-
-        // Store ORIGINAL commitments
-        let original_commitments = vec![AffinePoint::GENERATOR];
-        storage
-            .store_original_commitments("node1", &original_commitments)
-            .await
-            .unwrap();
-
-        // Simulate refresh by storing NEW current commitments
-        let refresh_commitments =
-            vec![(ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine()];
-        storage
-            .store_commitments("node1", &refresh_commitments)
-            .await
-            .unwrap();
-
-        // Verify ORIGINAL commitments are UNCHANGED
-        let original = storage.get_all_original_commitments().await.unwrap();
-        assert_eq!(original["node1"][0], AffinePoint::GENERATOR);
-
-        // Verify CURRENT commitments are UPDATED
-        let current = storage.get_all_commitments().await.unwrap();
-        assert_ne!(current["node1"][0], AffinePoint::GENERATOR);
-        assert_eq!(current["node1"][0], refresh_commitments[0]);
-    }
-
-    #[tokio::test]
-    async fn test_vault_derivation_from_original_commitments() {
-        let (db, _temp_dir) = create_test_db();
-        let storage = DkgStorage::new(db);
-        let chain_code = [0u8; 32];
-
-        // Create a mock message channel
-        let (tx, _rx) = tokio::sync::mpsc::channel(100);
-
-        let adkg = DKGNode::new(
-            "test_node".to_string(),
-            2,
-            4,
-            tx,
-            storage.clone(),
-            chain_code,
-        );
-
-        // Store original commitments for 3 nodes
-        let c1 = AffinePoint::GENERATOR;
-        let c2 = (ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine();
-        let c3 = (ProjectivePoint::GENERATOR * &Scalar::from(3u64)).to_affine();
-
-        storage
-            .store_original_commitments("node1", &vec![c1])
-            .await
-            .unwrap();
-        storage
-            .store_original_commitments("node2", &vec![c2])
-            .await
-            .unwrap();
-        storage
-            .store_original_commitments("node3", &vec![c3])
-            .await
-            .unwrap();
-
-        // Derive vault using original commitments
-        let tweak_scalar = Scalar::from(42u64);
-        let vault_key1 = adkg
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-            .unwrap();
-
-        // Store different current commitments (simulating refresh)
-        let new_c1 = (ProjectivePoint::GENERATOR * &Scalar::from(10u64)).to_affine();
-        let new_c2 = (ProjectivePoint::GENERATOR * &Scalar::from(20u64)).to_affine();
-        let new_c3 = (ProjectivePoint::GENERATOR * &Scalar::from(30u64)).to_affine();
-
-        storage
-            .store_commitments("node1", &vec![new_c1])
-            .await
-            .unwrap();
-        storage
-            .store_commitments("node2", &vec![new_c2])
-            .await
-            .unwrap();
-        storage
-            .store_commitments("node3", &vec![new_c3])
-            .await
-            .unwrap();
-
-        // Derive vault again using original commitments (should be the SAME)
-        let vault_key2 = adkg
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-            .unwrap();
-
-        // Assert vault keys are IDENTICAL
-        assert_eq!(
-            vault_key1, vault_key2,
-            "Vault group key changed after refresh - THIS IS A BUG!"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_vault_addresses_remain_constant_after_refresh() {
-        let (db, _temp_dir) = create_test_db();
-        let storage = DkgStorage::new(db);
-        let chain_code = [0u8; 32];
-
-        // Create a mock message channel
-        let (tx, _rx) = tokio::sync::mpsc::channel(100);
-
-        let adkg = DKGNode::new(
-            "test_node".to_string(),
-            2,
-            4,
-            tx,
-            storage.clone(),
-            chain_code,
-        );
-
-        // Store original commitments
-        let c1 = AffinePoint::GENERATOR;
-        let c2 = (ProjectivePoint::GENERATOR * &Scalar::from(2u64)).to_affine();
-
-        storage
-            .store_original_commitments("node1", &vec![c1])
-            .await
-            .unwrap();
-        storage
-            .store_original_commitments("node2", &vec![c2])
-            .await
-            .unwrap();
-
-        // Derive vault addresses BEFORE refresh
-        let tweak_scalar = Scalar::from(123u64);
-        let vault_key_before = adkg
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-            .unwrap();
-        let vault_eth_before = utils::get_eth_address_from_group_key(vault_key_before);
-        let vault_btc_before = utils::get_btc_address_from_group_key(vault_key_before);
-
-        // Simulate refresh - update current commitments
-        let new_c1 = (ProjectivePoint::GENERATOR * &Scalar::from(100u64)).to_affine();
-        let new_c2 = (ProjectivePoint::GENERATOR * &Scalar::from(200u64)).to_affine();
-
-        storage
-            .store_commitments("node1", &vec![new_c1])
-            .await
-            .unwrap();
-        storage
-            .store_commitments("node2", &vec![new_c2])
-            .await
-            .unwrap();
-
-        // Derive vault addresses AFTER refresh (from original commitments)
-        let vault_key_after = adkg
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-            .unwrap();
-        let vault_eth_after = utils::get_eth_address_from_group_key(vault_key_after);
-        let vault_btc_after = utils::get_btc_address_from_group_key(vault_key_after);
-
-        // Assert vault addresses are IDENTICAL
-        assert_eq!(
-            vault_eth_before, vault_eth_after,
-            "Vault ETH address changed after refresh!"
-        );
-        assert_eq!(
-            vault_btc_before, vault_btc_after,
-            "Vault BTC address changed after refresh!"
-        );
-
-        println!(
-            "✅ Vault ETH address remains constant: {}",
-            vault_eth_before
-        );
-        println!(
-            "✅ Vault BTC address remains constant: {}",
-            vault_btc_before
-        );
-    }
-
-    #[tokio::test]
-    async fn test_multiple_refresh_rounds_preserve_vault() {
-        let (db, _temp_dir) = create_test_db();
-        let storage = DkgStorage::new(db);
-        let chain_code = [0u8; 32];
-
-        // Create a mock message channel
-        let (tx, _rx) = tokio::sync::mpsc::channel(100);
-
-        let adkg = DKGNode::new(
-            "test_node".to_string(),
-            2,
-            4,
-            tx,
-            storage.clone(),
-            chain_code,
-        );
-
-        // Store original commitments
-        storage
-            .store_original_commitments("node1", &vec![AffinePoint::GENERATOR])
-            .await
-            .unwrap();
-
-        let tweak_scalar = Scalar::from(999u64);
-        let initial_vault = adkg
-            .derive_vault_group_key_from_original_commitments(tweak_scalar)
-            .await
-            .unwrap();
-        let initial_vault_eth = utils::get_eth_address_from_group_key(initial_vault);
-
-        // Simulate 5 refresh rounds
-        for round in 1..=5 {
-            let new_c =
-                (ProjectivePoint::GENERATOR * &Scalar::from((round * 1000) as u64)).to_affine();
-            storage
-                .store_commitments("node1", &vec![new_c])
-                .await
-                .unwrap();
-
-            let vault_after_round = adkg
-                .derive_vault_group_key_from_original_commitments(tweak_scalar)
-                .await
-                .unwrap();
-            let vault_eth_after_round = utils::get_eth_address_from_group_key(vault_after_round);
-
-            assert_eq!(
-                initial_vault_eth, vault_eth_after_round,
-                "Vault address changed after refresh round {}!",
-                round
-            );
-        }
-
-        println!("✅ Vault address remained constant through 5 refresh rounds");
-    }
 }
