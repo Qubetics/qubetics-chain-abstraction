@@ -341,7 +341,8 @@ impl SigningNode {
             Some(TransactionType::NetworkToTarget) 
             | Some(TransactionType::IntentStatusUpdate)
             | Some(TransactionType::WithdrawLiquidity)
-            | Some(TransactionType::ClaimReward) => {
+            | Some(TransactionType::ClaimReward)
+            | Some(TransactionType::PeerInvalidation) => {
                 // All these transaction types use network group key
                 self.get_network_group_key_from_store_or_db()
                     .map(Self::encode_group_key_to_compressed_bytes)
@@ -1891,6 +1892,14 @@ impl SigningNode {
                         if let Err(e) = self.process_btc_user_to_vault_intent_batch_for_round(round, None).await {
                             warn!(
                                 "⚠️ [CLOCK][BTC_UTV_BATCH] Failed to process BTC UserToVault intent batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
+                        // Process peer invalidation batch (invalidate disconnected solver IDs)
+                        if let Err(e) = self.process_peer_invalidation_batch(round).await {
+                            warn!(
+                                "⚠️ [CLOCK][PEER_INVALIDATION] Failed to process peer invalidation batch for round {}: {}",
                                 round, e
                             );
                         }
@@ -4114,7 +4123,6 @@ impl SigningNode {
                                 chain_id
                             );
                             
-                            // Get request_id and original_request from pending transactions for sequencer tracking
                             let (request_id, _original_request) = {
                                 let pending = self.pending.pending_transactions.read().await;
                                 pending.get(&round).map(|(_, _, _, _, req_id, orig_req)| {
@@ -4126,7 +4134,6 @@ impl SigningNode {
                             {
                                 Ok(Some(tx_hash)) => {
                                     info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
-                                    // Store transaction ID if we have intent hash and user registry
                                     self.store_transaction_id_for_round(
                                         round,
                                         &tx_hash,
@@ -4134,18 +4141,13 @@ impl SigningNode {
                                         None,
                                     )
                                     .await;
-                                    
-                                    // Broadcast success with request_id for sequencer tracking
                                     if let Some(ref req_id) = request_id {
                                         self.broadcast_transaction_success(req_id, &tx_hash, chain_id).await;
                                     }
                                 }
                                 Ok(None) => {
                                     warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
-                                    
-                                    // Broadcast failure if from sequencer
                                     if let Some(ref req_id) = request_id {
-                                        // Retrieve original_request from pending transactions
                                         let original_request = {
                                             let pending = self.pending.pending_transactions.read().await;
                                             pending.get(&round).and_then(|(_, _, _, _, _, orig_req)| orig_req.clone())
@@ -4158,17 +4160,13 @@ impl SigningNode {
                                         "❌ [SIGNING] Failed to broadcast Ethereum transaction: {}",
                                         e
                                     );
-                                    // Store the error message for the user to see
                                     self.store_transaction_error_for_round(
                                         round,
                                         &e.to_string(),
                                         crate::types::TransactionNetwork::TICS,
                                     )
                                     .await;
-                                    
-                                    // Broadcast failure for sequencer retry
                                     if let Some(ref req_id) = request_id {
-                                        // Retrieve original_request from pending transactions
                                         let original_request = {
                                             let pending = self.pending.pending_transactions.read().await;
                                             pending.get(&round).and_then(|(_, _, _, _, _, orig_req)| orig_req.clone())
@@ -4183,7 +4181,6 @@ impl SigningNode {
                             round
                         );
                             
-                            // Get request_id and original_request from pending transactions for sequencer retry
                             let (request_id, original_request) = {
                                 let pending = self.pending.pending_transactions.read().await;
                                 if let Some((_, _, _, _, req_id, orig_req)) = pending.get(&round) {
@@ -4192,8 +4189,6 @@ impl SigningNode {
                                     (None, None)
                                 }
                             };
-                            
-                            // Broadcast failure for sequencer retry
                             if let Some(ref req_id) = request_id {
                                 self.broadcast_transaction_failure(req_id, "N/A", "Failed to reconstruct signed transaction", original_request).await;
                             }
@@ -4204,8 +4199,6 @@ impl SigningNode {
                             "❌ [SIGNING] Failed to aggregate signatures for round {}: {}",
                             round, e
                         );
-                        
-                        // Get request_id and original_request from pending transactions for sequencer retry
                         let (request_id, original_request) = {
                             let pending = self.pending.pending_transactions.read().await;
                             if let Some((_, _, _, _, req_id, orig_req)) = pending.get(&round) {
@@ -4214,12 +4207,9 @@ impl SigningNode {
                                 (None, None)
                             }
                         };
-                        
-                        // Broadcast failure for sequencer retry
                         if let Some(ref req_id) = request_id {
                             self.broadcast_transaction_failure(req_id, "N/A", &format!("Signature aggregation failed: {}", e), original_request).await;
                         }
-                        
                         // Check if aggregation failed due to insufficient signatures
                         let error_msg = e.to_string();
                         if error_msg.contains("Not enough signature shares") {
@@ -6388,6 +6378,7 @@ impl SigningNode {
                     "network-share"
                 }
             }
+            Some(crate::types::TransactionType::PeerInvalidation) => "network-share",
             None => "vault-share",
         };
 
@@ -6813,6 +6804,7 @@ impl SigningNode {
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             Some(crate::types::TransactionType::ClaimReward) => "network-share", // BTC claim-reward (BitcoinSigner path)
+            Some(crate::types::TransactionType::PeerInvalidation) => "network-share",
             None => "vault-share",
         };
 
@@ -7214,14 +7206,15 @@ impl SigningNode {
                 }
             }
             Some(crate::types::TransactionType::NetworkToTarget)
-            | Some(crate::types::TransactionType::IntentStatusUpdate) => {
-                // NetworkToTarget and IntentStatusUpdate → per-node-network-share pubkey
+            | Some(crate::types::TransactionType::IntentStatusUpdate)
+            | Some(crate::types::TransactionType::PeerInvalidation) => {
+                // NetworkToTarget, IntentStatusUpdate, and PeerInvalidation → per-node-network-share pubkey
                 dkg_storage
                     .get_network_share_pubkey(peer_id)
                     .await?
                     .ok_or_else(|| {
                         anyhow!(
-                            "Network share pubkey not found for peer {} (NetworkToTarget/Refund/IntentStatusUpdate transaction)",
+                            "Network share pubkey not found for peer {} (NetworkToTarget/IntentStatusUpdate/PeerInvalidation transaction)",
                             peer_id
                         )
                     })
@@ -7345,6 +7338,71 @@ impl SigningNode {
     );
         1
     }
+
+    /// Process peer invalidation batch for epoch-2
+    /// Collects disconnected solver IDs and broadcasts batch for all nodes to sign
+    async fn process_peer_invalidation_batch(&self, round: u64) -> Result<()> {
+        info!(
+            "🚫 [PEER_INVALIDATION] Processing peer invalidation batch for round {}",
+            round
+        );
+
+        // Collect all pending disconnections from database
+        let database = self.database.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Database not available"))?;
+        
+        let prefix = crate::database::keys::PENDING_DISCONNECTION;
+        let keys = database.get_keys_with_prefix_async(prefix).await.unwrap_or_default();
+
+        if keys.is_empty() {
+            info!("✅ [PEER_INVALIDATION] No pending disconnections to process");
+            return Ok(());
+        }
+
+        let mut solver_ids_seen = std::collections::HashSet::new();
+        let mut solver_ids: Vec<String> = Vec::new();
+
+        for key in keys {
+            if let Ok(Some(record_str)) = database.get_string_async::<String>(&key).await {
+                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&record_str) {
+                    if let Some(solver_id) = record.get("solver_id").and_then(|v| v.as_str()) {
+                        let id = solver_id.to_string();
+                        if solver_ids_seen.insert(id.clone()) {
+                            solver_ids.push(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if solver_ids.is_empty() {
+            info!("✅ [PEER_INVALIDATION] No valid solver IDs to invalidate");
+            return Ok(());
+        }
+
+        info!(
+            "🚫 [PEER_INVALIDATION] Found {} solver IDs to invalidate: {:?}",
+            solver_ids.len(),
+            solver_ids
+        );
+
+        // Broadcast PeerInvalidationBatch via ChannelMessage
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let node_id = self.id.clone();
+
+        self.message_tx
+            .send(crate::types::ChannelMessage::PeerInvalidationBatch {
+                solver_ids,
+                round,
+                timestamp,
+                node_id,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send peer invalidation batch message: {}", e))?;
+
+        Ok(())
+    }
+
 }
 
 #[cfg(test)]

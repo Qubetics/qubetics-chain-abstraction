@@ -138,9 +138,7 @@ impl MpcNetworkLayer {
                             "❌ [CRITICAL-UNICAST] Failed to handle delivered message: {}",
                             e
                         );
-                        RPCResponse::Error(format!(
-                            "Failed to handle critical message: {e}"
-                        ))
+                        RPCResponse::Error(format!("Failed to handle critical message: {e}"))
                     }
                 }
             }
@@ -211,7 +209,11 @@ impl MpcNetworkLayer {
             .await
     }
 
-    async fn get_vrf_storage_for_domain(&self, domain: VrfDomain, context: &str) -> Option<VrfStorage> {
+    async fn get_vrf_storage_for_domain(
+        &self,
+        domain: VrfDomain,
+        context: &str,
+    ) -> Option<VrfStorage> {
         let context = self.resolve_context(domain, Some(context));
 
         match domain {
@@ -279,7 +281,9 @@ impl MpcNetworkLayer {
             entry.insert(peer, round);
 
             // Persist to database as single source of truth
-            if let Some(vrf_storage) = self.get_vrf_storage_for_domain(domain, &normalized_context).await
+            if let Some(vrf_storage) = self
+                .get_vrf_storage_for_domain(domain, &normalized_context)
+                .await
             {
                 if let Err(e) = vrf_storage.set_peer_round_for_context(
                     &normalized_context,
@@ -308,7 +312,6 @@ impl MpcNetworkLayer {
         _peer: PeerId,
         swarm: &libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> RPCResponse {
-
         // Gather everyone we know
         let peers: Vec<SerializablePeerId> = self
             .node_manager
@@ -321,10 +324,10 @@ impl MpcNetworkLayer {
         // This ensures peer_indices stays in sync with the database
         for SerializablePeerId(pid) in &peers {
             if !self.peer_discovery.peer_indices.contains_key(pid) {
-            // Load from database if not in peer_indices
-            if let Some(db_idx) = self.get_index_from_db_async(pid).await {
-                self.peer_discovery.peer_indices.insert(*pid, db_idx);
-            }
+                // Load from database if not in peer_indices
+                if let Some(db_idx) = self.get_index_from_db_async(pid).await {
+                    self.peer_discovery.peer_indices.insert(*pid, db_idx);
+                }
             }
         }
 
@@ -496,14 +499,12 @@ impl MpcNetworkLayer {
             )
             .await
         {
-            Ok(true) => {
-                RPCResponse::DKGShareReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    share_index,
-                    success: true,
-                }
-            }
+            Ok(true) => RPCResponse::DKGShareReceived {
+                from_node_id,
+                receiver_node_id,
+                share_index,
+                success: true,
+            },
             Ok(false) => {
                 warn!(
                     "❌ [DKG-SECURE] Share index {} from {} was rejected",
@@ -525,7 +526,6 @@ impl MpcNetworkLayer {
             }
         }
     }
-
 
     /// Handle incoming ECDSA signature from unicast P2P RPC
     async fn handle_incoming_ecdsa_signature(
@@ -592,7 +592,7 @@ impl MpcNetworkLayer {
 
         let mut receiver_node_id = self.get_local_peer_id().to_string();
         let result = if let Some(arc) = &self.signing_node {
-                    let mut signing_node = arc.lock().await;
+            let mut signing_node = arc.lock().await;
             receiver_node_id = signing_node.get_node_id().to_string();
             signing_node
                 .handle_signature_to_final_node(from.clone(), signature.clone(), round, slot_id)
@@ -608,14 +608,12 @@ impl MpcNetworkLayer {
         };
 
         match result {
-            Ok(_) => {
-                RPCResponse::ECDSASignatureReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    round,
-                    success: true,
-                }
-            }
+            Ok(_) => RPCResponse::ECDSASignatureReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: true,
+            },
             Err(e) => {
                 warn!(
                     "❌ [SIGNING-SECURE] Failed to process ECDSA signature for round {}: {}",
@@ -695,7 +693,7 @@ impl MpcNetworkLayer {
 
         let mut receiver_node_id = self.get_local_peer_id().to_string();
         let result = if let Some(arc) = &self.signing_node {
-                    let mut signing_node = arc.lock().await;
+            let mut signing_node = arc.lock().await;
             receiver_node_id = signing_node.get_node_id().to_string();
             signing_node
                 .handle_btc_signatures_to_final_node(from.clone(), signatures.clone(), round)
@@ -711,14 +709,12 @@ impl MpcNetworkLayer {
         };
 
         match result {
-            Ok(_) => {
-                RPCResponse::BtcSignaturesReceived {
-                    from_node_id,
-                    receiver_node_id,
-                    round,
-                    success: true,
-                }
-            }
+            Ok(_) => RPCResponse::BtcSignaturesReceived {
+                from_node_id,
+                receiver_node_id,
+                round,
+                success: true,
+            },
             Err(e) => {
                 warn!(
                     "❌ [SIGNING-SECURE] Failed to process BTC signatures for round {}: {}",
@@ -796,7 +792,7 @@ impl MpcNetworkLayer {
         }
 
         let result = if let Some(arc) = &self.signing_node {
-                    let mut signing_node = arc.lock().await;
+            let mut signing_node = arc.lock().await;
             signing_node
                 .handle_transaction_data_for_final_node(
                     from.clone(),
@@ -1065,10 +1061,7 @@ impl MpcNetworkLayer {
                 };
 
                 if let Some(retry_mgr) = &self.retry_manager {
-                    match retry_mgr
-                        .record_acknowledgment(&message_id_obj, peer)
-                        .await
-                    {
+                    match retry_mgr.record_acknowledgment(&message_id_obj, peer).await {
                         Ok(true) => {}
                         Ok(false) => {}
                         Err(e) => {
@@ -1165,7 +1158,7 @@ impl MpcNetworkLayer {
         // 2️⃣ Update threshold **only if new peers were added** and initial DKG is not yet complete
         // After initial DKG, threshold is fixed based on initial DKG participants only
         if new_peers_added {
-            let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+          let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
                 dkg_node.is_initial_dkg_complete().await
             } else {
                 false
@@ -1250,7 +1243,10 @@ impl MpcNetworkLayer {
                         .connected_peers()
                         .find(|pid| **pid != self.local_peer_id)
                         .cloned();
-                    info!("🔢 [NEW_NODE] New node index: {} (from PeerList or first free slot)", new_node_index);
+                    info!(
+                        "🔢 [NEW_NODE] New node index: {} (from PeerList or first free slot)",
+                        new_node_index
+                    );
                     (
                         sync_peer.is_some(),
                         sync_peer,
@@ -1264,7 +1260,10 @@ impl MpcNetworkLayer {
                     .find(|pid| **pid != self.local_peer_id)
                     .cloned();
                 let should_proceed = sync_peer.is_some();
-                info!("🔢 [NEW_NODE] New node index: {} (from PeerList, DB, or first free slot)", new_node_index);
+                info!(
+                    "🔢 [NEW_NODE] New node index: {} (from PeerList, DB, or first free slot)",
+                    new_node_index
+                );
                 (
                     should_proceed,
                     sync_peer,
@@ -1295,7 +1294,11 @@ impl MpcNetworkLayer {
 
     /// Resolve this node's index when joining: use PeerList assignment, else DB, else first free slot.
     async fn resolve_new_node_index(&self) -> usize {
-        let assigned = self.peer_discovery.peer_indices.get(&self.local_peer_id).cloned();
+        let assigned = self
+            .peer_discovery
+            .peer_indices
+            .get(&self.local_peer_id)
+            .cloned();
         if let Some(idx) = assigned {
             return idx;
         }
@@ -1317,7 +1320,7 @@ impl MpcNetworkLayer {
         if let Some(network_round) = current_round {
             // Simple VRF round sync for both signing nodes
             if let Some(arc) = &self.signing_node {
-                    let mut signing_node = arc.lock().await;
+                let mut signing_node = arc.lock().await;
                 signing_node
                     .sync_vrf_round_with_network(network_round)
                     .await;
@@ -1344,14 +1347,15 @@ impl MpcNetworkLayer {
         let reference_round = self
             .get_local_vrf_round_for_domain(VrfDomain::Signing, Some(&response.context))
             .await;
-        if self.store_peer_round_if_valid(
-            VrfDomain::Signing,
-            &response.context,
-            peer,
-            reference_round,
-            response.current_round,
-        )
-        .await
+        if self
+            .store_peer_round_if_valid(
+                VrfDomain::Signing,
+                &response.context,
+                peer,
+                reference_round,
+                response.current_round,
+            )
+            .await
         {
             // VRF round sync applied
         }
@@ -1392,8 +1396,9 @@ mod tests {
         let mut layer = build_network_layer().await;
         let peer = PeerId::random();
 
-        let stored =
-            layer.store_peer_round_if_valid(VrfDomain::Signing, "", peer, Some(5), Some(6)).await;
+        let stored = layer
+            .store_peer_round_if_valid(VrfDomain::Signing, "", peer, Some(5), Some(6))
+            .await;
 
         assert!(stored, "valid rounds should be stored");
         assert_eq!(
@@ -1411,14 +1416,15 @@ mod tests {
         let mut layer = build_network_layer().await;
         let peer = PeerId::random();
 
-        let stored = layer.store_peer_round_if_valid(
-            VrfDomain::Signing,
-            "",
-            peer,
-            Some(1),
-            Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
-        )
-        .await;
+        let stored = layer
+            .store_peer_round_if_valid(
+                VrfDomain::Signing,
+                "",
+                peer,
+                Some(1),
+                Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
+            )
+            .await;
 
         assert!(layer
             .peer_rounds

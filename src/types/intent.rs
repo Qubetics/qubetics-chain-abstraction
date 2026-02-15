@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TransactionType {
     UserToVault,
     NetworkToTarget,
@@ -8,6 +8,8 @@ pub enum TransactionType {
     /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
     ClaimReward,
     IntentStatusUpdate,
+    /// invalidateSolverIds contract call; tx confirmation triggers PeerInvalidationTxConfirmed so all nodes clear PENDING_DISCONNECTION.
+    PeerInvalidation,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

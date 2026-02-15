@@ -1,9 +1,10 @@
 #![recursion_limit = "4096"]
 
 use anyhow::{anyhow, Context, Result};
+use clap::Parser;
 use dotenv::dotenv;
 use hex::FromHex;
-use libp2p::{identity::Keypair, PeerId};
+use libp2p::{Multiaddr, PeerId};
 use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
     commands::CommandProcessor,
@@ -26,6 +27,18 @@ use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const CHAIN_CODE_ENV: &str = "CHAIN_CODE_HEX";
+
+#[derive(Parser, Debug)]
+#[command(name = "mpc-node")]
+#[command(about = "MPC Network Node", long_about = None)]
+struct Cli {
+    /// Generate and save a new peer identity, then exit
+    #[arg(long)]
+    generate: bool,
+    /// Optional bootstrap peers as multiaddrs (positional args)
+    #[arg(value_name = "BOOTSTRAP_PEER")]
+    bootstrap_peers: Vec<String>,
+}
 
 #[derive(Clone)]
 struct Config {
@@ -98,8 +111,11 @@ fn load_chain_code() -> Result<[u8; 32]> {
 
 struct NodeContext {
     config: Config,
+    keypair: libp2p::identity::Keypair,
     peer_id: PeerId,
     chain_code: [u8; 32],
+    /// Extra bootstrap peers passed on the CLI (if any)
+    cli_bootstrap_peers: Vec<Multiaddr>,
     database_module: Option<DatabaseModule>,
     database: Option<Arc<Database>>,
     network: Option<MpcNetworkLayer>,
@@ -109,15 +125,37 @@ struct NodeContext {
 }
 
 impl NodeContext {
-    fn new(config: Config) -> Result<Self> {
-        let keypair = Keypair::generate_ed25519();
+    fn new(config: Config, cli_bootstrap: Vec<String>) -> Result<Self> {
+        // Load existing keypair or generate new one
+        let keypair = mpc_node::identity::load_or_generate()
+            .context("Failed to load or generate peer identity")?;
         let peer_id = PeerId::from(keypair.public());
         let chain_code = load_chain_code()?;
 
+        // Parse CLI-provided bootstrap peers (if any)
+        let mut cli_bootstrap_peers = Vec::new();
+        for addr_str in cli_bootstrap {
+            match addr_str.parse::<Multiaddr>() {
+                Ok(addr) => cli_bootstrap_peers.push(addr),
+                Err(e) => {
+                    warn!("⚠️ [MAIN] Failed to parse CLI bootstrap peer '{}': {}", addr_str, e);
+                }
+            }
+        }
+
+        // Log whether we loaded existing identity or generated new one
+        if mpc_node::identity::keypair_exists(&mpc_node::identity::default_keypair_path()) {
+            info!("🔑 Loaded existing peer identity: {}", peer_id);
+        } else {
+            info!("🆕 Generated new peer identity: {}", peer_id);
+        }
+
         Ok(Self {
             config,
+            keypair,
             peer_id,
             chain_code,
+            cli_bootstrap_peers,
             database_module: None,
             database: None,
             network: None,
@@ -262,7 +300,13 @@ impl NodeContext {
 
         info!("Initial node count: {}, threshold: {}", total, threshold);
 
-        let mut network = MpcNetworkLayer::new(node_manager, database.as_ref().clone()).await?;
+        let mut network = MpcNetworkLayer::new_with_bootstrap(
+            node_manager,
+            database.as_ref().clone(),
+            self.keypair.clone(),
+            self.cli_bootstrap_peers.clone(),
+        )
+        .await?;
 
         let db_signing_node = Arc::new(Mutex::new(DatabaseSigningNode::new(
             network.get_local_peer_id().to_string(),
@@ -315,7 +359,9 @@ impl NodeContext {
             "🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}",
             Arc::as_ptr(&db_user_intent_manager)
         );
-        network.set_user_intent_manager(db_user_intent_manager.clone()).await;
+        network
+            .set_user_intent_manager(db_user_intent_manager.clone())
+            .await;
 
         network.set_database(database).await;
 
@@ -397,7 +443,6 @@ impl NodeContext {
 
         Ok(())
     }
-
 }
 
 // Increase tokio worker threads from default (num_cpus) to 16
@@ -406,10 +451,42 @@ impl NodeContext {
 #[tokio::main(worker_threads = 16)]
 async fn main() -> Result<()> {
     dotenv().ok();
+
+    // Parse CLI arguments
+    let cli = Cli::parse();
+
+    // Handle --generate flag
+    if cli.generate {
+        let identity_path = mpc_node::identity::default_keypair_path();
+
+        // Check if identity already exists
+        if mpc_node::identity::keypair_exists(&identity_path) {
+            // Load and display existing identity
+            let keypair = mpc_node::identity::load_keypair(&identity_path)
+                .context("Failed to load existing peer identity")?;
+            let peer_id = PeerId::from(keypair.public());
+
+            println!("✅ Peer identity already exists");
+            println!("Peer ID: {}", peer_id);
+            println!("Identity location: {}", identity_path);
+        } else {
+            // Generate new identity
+            let keypair = mpc_node::identity::generate_and_save()
+                .context("Failed to generate and save peer identity")?;
+            let peer_id = PeerId::from(keypair.public());
+
+            println!("✅ Generated new peer identity");
+            println!("Peer ID: {}", peer_id);
+            println!("Identity saved to: {}", identity_path);
+        }
+
+        return Ok(());
+    }
+
     init_network_type_from_env()?;
 
     let config = ConfigBuilder::new().build()?;
-    let mut context = NodeContext::new(config)?;
+    let mut context = NodeContext::new(config, cli.bootstrap_peers)?;
 
     context.init_logging()?;
 

@@ -244,6 +244,14 @@ pub enum ChannelMessage {
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
         nonce_tuple_id: Option<String>,
     },
+    /// Peer invalidation batch broadcast (same flow as BtcWithdrawBatch / BtcClaimRewardBatch).
+    /// Final node broadcasts selected disconnected solver IDs for distributed signing.
+    PeerInvalidationBatch {
+        solver_ids: Vec<String>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+    },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same pattern as WithdrawTxIdBroadcast).
     /// - TICS: txid starts with "0x" (EVM); store tx_id on TICS requests and mark done; mark BTC requests in batch done only. Single: solver_address Some, requests empty. Batch: requests non-empty.
     /// - BTC: txid is BTC txid; store tx_id on each PendingClaimRewardRequest (do not mark done). Batch only: requests non-empty.
@@ -618,6 +626,30 @@ pub enum GossipsubMessage {
         batch_id: String,
         tuples: Vec<crate::types::nonce::NonceTuple>,
         /// Node that generated/broadcasted the nonces
+        node_id: String,
+    },
+    /// Peer disconnection notification
+    /// Broadcast when a peer disconnects to track for batch invalidation
+    PeerDisconnection {
+        /// Peer ID that disconnected
+        peer_id: String,
+        /// Solver ID associated with the peer
+        solver_id: String,
+        /// Timestamp when disconnection was detected
+        timestamp: i64,
+        /// Node ID that detected the disconnection
+        detector_node_id: String,
+    },
+    /// Peer invalidation batch broadcast (same flow as BtcWithdrawBatch / BtcClaimRewardBatch).
+    /// Final node broadcasts selected disconnected solver IDs for distributed signing.
+    PeerInvalidationBatch {
+        /// List of solver IDs to invalidate
+        solver_ids: Vec<String>,
+        /// Round number that triggered this batch
+        round: u64,
+        /// Timestamp when batch was created
+        timestamp: String,
+        /// Node ID of the final node broadcasting this batch
         node_id: String,
     },
 }

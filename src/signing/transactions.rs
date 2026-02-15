@@ -339,6 +339,7 @@ impl SigningNode {
                         error!("❌ [SIGNING] ClaimReward with intent_hashes - invalid");
                         return;
                     }
+                    Some(crate::types::TransactionType::PeerInvalidation) => "peer_invalidation",
                     None => {
                         // Check if this is an add_liquidity request (request_id starts with "addliq:")
                         if intent_hashes.iter().any(|h| h.starts_with("addliq:")) {
@@ -663,6 +664,13 @@ impl SigningNode {
                             "❌ [SIGNING] ClaimReward transaction type found with intent_hash - this is invalid."
                         );
                         return;
+                    }
+                    Some(crate::types::TransactionType::PeerInvalidation) => {
+                        info!(
+                            "📡 [SIGNING] Broadcasting peer_invalidation transaction ID {} for round (intent_hash={}) - storage will be handled by TransactionIdBroadcast handler",
+                            tx_id, intent_hash
+                        );
+                        "peer_invalidation"
                     }
                     None => {
                         // Check if this is an add_liquidity request (request_id starts with "addliq:")

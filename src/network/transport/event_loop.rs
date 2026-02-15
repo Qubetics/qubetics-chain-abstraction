@@ -343,6 +343,8 @@ impl MpcNetworkLayer {
                             "🎯 [CLOCK] VRF selection completed successfully for round {}: {:?}",
                             round, selection_result
                         );
+
+
                         return Ok(());
                     }
                     Err(e) => {

@@ -467,6 +467,39 @@ impl MpcNetworkLayer {
                 // Process using shared handler
                 if !intent_hashes.is_empty() {
                     for intent_hash in intent_hashes.iter() {
+                        // Prefix "peerinv:round" (like add_liquidity "addliq:"): clear PENDING_DISCONNECTION for this batch
+                        if intent_hash.starts_with("peerinv:") {
+                            if let Some(round_str) = intent_hash.strip_prefix("peerinv:") {
+                                if let Ok(_round_u64) = round_str.parse::<u64>() {
+                                    let solver_ids = {
+                                        let mut pending =
+                                            self.peer_invalidation_pending.lock().await;
+                                        pending.remove(round_str)
+                                    };
+                                    if let Some(ids) = solver_ids {
+                                        for solver_id in &ids {
+                                            let prefix = format!(
+                                                "{}{}",
+                                                crate::database::keys::PENDING_DISCONNECTION,
+                                                solver_id
+                                            );
+                                            if let Ok(keys) =
+                                                self.db.get_keys_with_prefix_async(&prefix).await
+                                            {
+                                                for key in keys {
+                                                    let _ = self.db.delete(&key);
+                                                }
+                                            }
+                                        }
+                                        info!(
+                                            "🧹 [PEER_INVALIDATION] Cleared PENDING_DISCONNECTION for {} solver(s) after tx confirmed (TransactionIdBroadcast peerinv:)",
+                                            ids.len()
+                                        );
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         // Check if this is an add_liquidity request_id (starts with "addliq:")
                         if intent_hash.starts_with("addliq:") {
                             // This is an add_liquidity request, mark as Completed
@@ -1032,6 +1065,29 @@ impl MpcNetworkLayer {
                     peer, sequence, index
                 );
 
+                // ===== SOLVER VALIDATION =====
+                // Validate that the discovered peer is an active solver before processing
+                let solver_id = peer.to_string();
+
+                match crate::contract::validate_solver_active_strict(
+                    &solver_id,
+                    "PEER_DISCOVERY_VALIDATION",
+                )
+                .await
+                {
+                    Ok(_) => {
+                        // Solver is active, proceed with peer discovery
+                    }
+                    Err(e) => {
+                        warn!(
+                            "🚫 [PEER_DISCOVERY_VALIDATION] Rejecting peer discovery for {}: {}",
+                            peer, e
+                        );
+                        return Ok(());
+                    }
+                }
+                // ===== END SOLVER VALIDATION =====
+
                 // Check if we already have this peer to avoid duplicates
                 let current_nodes = self.node_manager.get_active_nodes();
                 if current_nodes.contains(&peer) {
@@ -1159,7 +1215,7 @@ impl MpcNetworkLayer {
                 );
             } // Upgrade coordination will be handled when orchestrator is integrated
             GossipsubMessage::TransactionBroadcast {
-                sequencer_request_id,
+                sequencer_request_id: _,
                 blockchain_tx_hash,
                 chain_id,
             } => {
@@ -1167,10 +1223,7 @@ impl MpcNetworkLayer {
                     "📡 [TX_BROADCAST] Transaction broadcasted: chain_id={}, tx_hash={}",
                     chain_id, blockchain_tx_hash
                 );
-                if let Some(request_id) = sequencer_request_id {
-                    info!("📝 [TX_BROADCAST] Request ID: {}", request_id);
-                }
-                // Note: add_liquidity status tracking happens via TransactionIdBroadcast, not here
+                // Peer invalidation tx confirmation is handled via PeerInvalidationTxConfirmedBroadcast (like WithdrawTxIdBroadcast), not here
             }
             GossipsubMessage::IntentBatchBroadcast {
                 intent_hashes,
@@ -3759,6 +3812,242 @@ impl MpcNetworkLayer {
                     error!(
                         "❌ [BTC_INTENT_MANAGER] Failed to handle contract update batch: {}",
                         e
+                    );
+                }
+            }
+            GossipsubMessage::PeerDisconnection {
+                peer_id,
+                solver_id,
+                timestamp,
+                detector_node_id,
+            } => {
+                info!(
+                    "📡 [PEER_DISCONNECT] Received disconnection broadcast for solver {} from detector {}",
+                    solver_id, detector_node_id
+                );
+
+                // Validate solver_id is non-empty and well-formed
+                if solver_id.trim().is_empty() {
+                    warn!("⚠️ [PEER_DISCONNECT] Ignoring disconnection with empty solver_id");
+                    return Ok(());
+                }
+
+                // Validate timestamp is sane (not too far in past/future)
+                let now = chrono::Utc::now().timestamp();
+                let max_age_secs = 3600; // 1 hour in the past
+                let max_future_secs = 300; // 5 minutes in the future
+
+                if timestamp < now - max_age_secs {
+                    warn!(
+                        "⚠️ [PEER_DISCONNECT] Ignoring stale disconnection (timestamp too old: {} vs now: {})",
+                        timestamp, now
+                    );
+                    return Ok(());
+                }
+
+                if timestamp > now + max_future_secs {
+                    warn!(
+                        "⚠️ [PEER_DISCONNECT] Ignoring disconnection with future timestamp: {} vs now: {}",
+                        timestamp, now
+                    );
+                    return Ok(());
+                }
+
+                // Store the disconnection record for batch processing in epoch-2
+                // Use solver_id and timestamp for uniqueness and deduplication
+                let key = format!(
+                    "{}{}:{}",
+                    crate::database::keys::PENDING_DISCONNECTION,
+                    solver_id,
+                    timestamp
+                );
+
+                // Check if this exact disconnection already exists (idempotency)
+                if let Ok(Some(_)) = self.db.get_string::<String>(&key) {
+                    info!(
+                        "ℹ️  [PEER_DISCONNECT] Disconnection record already exists for solver {} at timestamp {}, skipping",
+                        solver_id, timestamp
+                    );
+                    return Ok(());
+                }
+
+                let disconnection_record = serde_json::json!({
+                    "peer_id": peer_id,
+                    "solver_id": solver_id,
+                    "timestamp": timestamp,
+                    "detector_node_id": detector_node_id,
+                });
+
+                if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
+                    if let Err(e) = self.db.put_string(&key, &record_str) {
+                        error!(
+                            "❌ [PEER_DISCONNECT] Failed to store disconnection record: {}",
+                            e
+                        );
+                    } else {
+                        info!(
+                            "💾 [PEER_DISCONNECT] Stored disconnection record for solver: {} (key: {})",
+                            solver_id, key
+                        );
+                    }
+                }
+            }
+            GossipsubMessage::PeerInvalidationBatch {
+                solver_ids,
+                round,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "📦 [PEER_INVALIDATION] Received peer invalidation batch from node {} (round {}, timestamp {}, {} solver IDs)",
+                    node_id, round, timestamp, solver_ids.len()
+                );
+
+                if solver_ids.is_empty() {
+                    warn!("⚠️ [PEER_INVALIDATION] Empty solver_ids list in batch");
+                    return Ok(());
+                }
+
+                // Store round -> solver_ids so we can broadcast PeerInvalidationTxConfirmed after tx receipt
+                {
+                    let mut pending = self.peer_invalidation_pending.lock().await;
+                    pending.insert(round.to_string(), solver_ids.clone());
+                }
+
+                // Get contract configuration
+                let contract_config_opt = crate::contract::get_solver_contract_config()?;
+                let contract_config = match contract_config_opt {
+                    Some(config) => config,
+                    None => {
+                        warn!("⚠️ [PEER_INVALIDATION] Solver contract config not available");
+                        return Ok(());
+                    }
+                };
+
+                let solver_contract_address = format!("{:?}", contract_config.contract_address);
+                let chain_id = contract_config.chain_id;
+
+                // Get DKG node for vault key access
+                let dkg_node = if let Some(dkg) = &self.dkg_node {
+                    dkg
+                } else {
+                    warn!("❌ [PEER_INVALIDATION] Cannot process batch - DKG node unavailable");
+                    return Ok(());
+                };
+
+                let group_public_key = if let Some(key) = dkg_node.get_vault_group_key().await {
+                    key
+                } else {
+                    warn!(
+                        "❌ [PEER_INVALIDATION] Liquidity operator group key unavailable; cannot derive liquidity operator address"
+                    );
+                    return Ok(());
+                };
+
+                let liquidity_operator_address =
+                    crate::utils::get_eth_address_from_group_key(group_public_key);
+
+                info!(
+                    "🔑 [PEER_INVALIDATION] Using liquidity operator address: {}",
+                    liquidity_operator_address
+                );
+
+                // Build the invalidateSolverIds transaction (all nodes build the same tx)
+                let chain_tx = crate::utils::transaction::create_invalidate_solver_ids_transaction(
+                    &liquidity_operator_address,
+                    &solver_ids,
+                    &solver_contract_address,
+                    chain_id,
+                )
+                .await?;
+
+                // Expect an Ethereum transaction
+                let eth_tx = match chain_tx {
+                    crate::chain_abstraction::ChainTransaction::Ethereum(tx) => tx,
+                    _ => {
+                        warn!(
+                            "❌ [PEER_INVALIDATION] Invalidation transaction is not an Ethereum transaction"
+                        );
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "✅ [PEER_INVALIDATION] Built invalidateSolverIds Ethereum transaction: nonce={}, gas_limit={}",
+                    eth_tx.nonce, eth_tx.gas_limit
+                );
+
+                // Start MPC signing using vault (liquidity operator) DKG key
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let available_nodes: Vec<libp2p::PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
+
+                    if let Some(ref _secret_share) = vault_tweaked_share {
+                        // Use liquidity operator (vault) key
+                        signing_node.set_vault_group_key(group_public_key);
+
+                        let contract_tx = crate::types::intent::ContractTransaction {
+                            to: eth_tx.to.clone(),
+                            value: eth_tx.value.clone(),
+                            nonce: eth_tx.nonce,
+                            gas_limit: eth_tx.gas_limit,
+                            gas_price: eth_tx.gas_price.clone(),
+                            chain_id: eth_tx.chain_id,
+                            data: eth_tx
+                                .data
+                                .as_ref()
+                                .map(|d| format!("0x{}", hex::encode(d)))
+                                .unwrap_or_else(|| "0x".to_string()),
+                        };
+
+                        let contract_tx_bytes =
+                            crate::utils::transaction::create_transaction_for_signing_contract(
+                                &contract_tx,
+                            );
+                        let contract_chain_handler =
+                            signing_node.get_contract_chain_handler().clone();
+                        let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+
+                        // Prefix approach (like add_liquidity "addliq:"): intent_hashes = ["peerinv:round"] so TransactionIdBroadcast handler clears PENDING_DISCONNECTION
+                        let peerinv_intent = format!("peerinv:{}", round);
+                        eth_signer
+                            .sign_contract_message(
+                                contract_tx_bytes,
+                                &contract_chain_handler,
+                                &contract_tx,
+                                vault_tweaked_share.clone(),
+                                None,
+                                vec![peerinv_intent],
+                                vault_tweaked_share,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await?;
+
+                        info!(
+                            "✅ [PEER_INVALIDATION] Submitted invalidateSolverIds transaction into MPC signing flow ({} solver IDs); PENDING_DISCONNECTION will be cleared after tx receipt",
+                            solver_ids.len()
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [PEER_INVALIDATION] Skipping batch - missing liquidity operator secret share"
+                        );
+                    }
+                } else {
+                    warn!(
+                        "❌ [PEER_INVALIDATION] Signing node not available; cannot start MPC signing for invalidation"
                     );
                 }
             }

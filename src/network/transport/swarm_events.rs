@@ -88,6 +88,27 @@ impl MpcNetworkLayer {
 
         let remote_addr = endpoint.get_remote_address();
 
+        // ===== SOLVER VALIDATION =====
+        // Check if the connecting peer is an active solver before accepting the connection
+        let solver_id = peer_id.to_string();
+
+        match crate::contract::validate_solver_active_strict(&solver_id, "SOLVER_VALIDATION").await
+        {
+            Ok(_) => {
+                // Solver is active, proceed with connection
+            }
+            Err(e) => {
+                warn!(
+                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+                    peer_id, remote_addr, e
+                );
+                // Disconnect the peer immediately
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
+            }
+        }
+        // ===== END SOLVER VALIDATION =====
+
         // Track connected peer
         self.connected_peers_cache.insert(peer_id);
 
@@ -591,6 +612,63 @@ impl MpcNetworkLayer {
                         error!(
                             "❌ [DISCONNECT] Failed to send disconnect notification to channel: {}",
                             e
+                        );
+                    }
+                }
+
+                // STEP 1.5: Broadcast peer disconnection for contract invalidation
+                let solver_id = peer_id.to_string(); // peer_id IS the solver_id
+                let disconnection_msg = GossipsubMessage::PeerDisconnection {
+                    peer_id: peer_id.to_string(),
+                    solver_id: solver_id.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    detector_node_id: self.local_peer_id.to_string(),
+                };
+
+                if let Ok(msg_bytes) = serde_json::to_vec(&disconnection_msg) {
+                    if let Err(e) = self
+                        .message_tx
+                        .send(ChannelMessage::Broadcast {
+                            topic: "peer-disconnections".to_string(),
+                            data: msg_bytes,
+                        })
+                        .await
+                    {
+                        error!(
+                            "❌ [DISCONNECT] Failed to broadcast peer disconnection: {}",
+                            e
+                        );
+                    } else {
+                        info!(
+                            "📡 [DISCONNECT] Broadcasted disconnection for solver: {}",
+                            solver_id
+                        );
+                    }
+                }
+
+                // Store locally for batch processing
+                let key = format!(
+                    "{}{}",
+                    crate::database::keys::PENDING_DISCONNECTION,
+                    peer_id
+                );
+                let disconnection_record = serde_json::json!({
+                    "peer_id": peer_id.to_string(),
+                    "solver_id": solver_id,
+                    "timestamp": chrono::Utc::now().timestamp(),
+                    "detector_node_id": self.local_peer_id.to_string(),
+                });
+
+                if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
+                    if let Err(e) = self.db.put_string(&key, &record_str) {
+                        error!(
+                            "❌ [DISCONNECT] Failed to store disconnection record: {}",
+                            e
+                        );
+                    } else {
+                        info!(
+                            "💾 [DISCONNECT] Stored disconnection record for solver: {}",
+                            solver_id
                         );
                     }
                 }
