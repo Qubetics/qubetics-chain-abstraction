@@ -47,10 +47,11 @@ impl DKGNode {
                 share,
                 commitment,
                 new_node_index,
+                sender_index,
             } => {
                 info!(
-                    "📨 Received new node share from {} to {} (new_node_index: {})",
-                    from, to, new_node_index
+                    "📨 Received new node share from {} to {} (new_node_index: {}, sender_index: {})",
+                    from, to, new_node_index, sender_index
                 );
                 if to == self.id {
                     self.handle_new_node_share_received(
@@ -58,6 +59,7 @@ impl DKGNode {
                         share,
                         commitment,
                         new_node_index,
+                        sender_index,
                         node_manager.clone(),
                     )
                     .await?;
@@ -96,6 +98,46 @@ impl DKGNode {
                 );
                 self.handle_refresh_commitment_broadcast(from, commitments, node_manager)
                     .await?;
+            }
+            DKGMessage::ShareBroadcast {
+                from,
+                share_index,
+                share_value,
+                commitments,
+                round: _,
+            } => {
+                info!(
+                    "🔐 [DKG-SECURE] Received share broadcast from {} (index {})",
+                    from, share_index
+                );
+                let _ = self
+                    .process_incoming_share(
+                        from,
+                        share_index,
+                        share_value,
+                        commitments,
+                        node_manager,
+                    )
+                    .await;
+            }
+            DKGMessage::RefreshShareBroadcast {
+                from,
+                share_index,
+                share_value,
+                commitments,
+            } => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Received refresh share broadcast from {} (index {})",
+                    from, share_index
+                );
+                self.handle_broadcast_refresh_share(
+                    from,
+                    share_index,
+                    share_value,
+                    commitments,
+                    node_manager,
+                )
+                .await?;
             }
         }
         Ok(())

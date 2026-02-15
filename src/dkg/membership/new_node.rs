@@ -88,6 +88,12 @@ impl DKGNode {
         // Generate commitments for the existing polynomial
         let commitments = self.generate_commitments(&polynomial)?;
 
+        // Sender's permanent index so the new node can order C0s when computing group public key
+        let sender_index = self
+            .permanent_index()
+            .or(self.storage.get_my_permanent_index().await.ok().flatten())
+            .ok_or_else(|| anyhow!("Cannot send NewNodeShare: permanent index not set"))?;
+
         // Send the share to the new node
         let msg = DKGMessage::NewNodeShare {
             from: self.id.clone(),
@@ -95,6 +101,7 @@ impl DKGNode {
             share,
             commitment: commitments,
             new_node_index, // Pass the calculated index to the new node
+            sender_index,
         };
 
         let gossip_wrap = GossipsubMessage::DKG(msg);
@@ -116,10 +123,21 @@ impl DKGNode {
         share: KeyShare,
         commitments: Vec<SerializablePoint>,
         new_node_index: usize,
+        sender_index: usize,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
-        info!("📨 [NEW_NODE] Received share from existing node {}", from);
+        info!("📨 [NEW_NODE] Received share from existing node {} (sender_index: {})", from, sender_index);
         info!("📨 [NEW_NODE] Share index: {}", share.index);
+
+        // Store sender's index so we can order C0s when computing final group public key
+        if let Err(e) = self.storage.set_peer_index(&from, sender_index) {
+            warn!(
+                "⚠️ [NEW_NODE] Failed to store peer_index for sender {}: {}",
+                from, e
+            );
+        } else {
+            info!("🔢 [NEW_NODE] Stored peer_index {} for sender {} (for C0 ordering)", sender_index, from);
+        }
 
         // Verify the share
         if !self.verify_share(&share.value, share.index, &commitments) {

@@ -77,8 +77,9 @@ impl DKGNode {
             }
         }
         
-        self.distribute_shares_to_peers(shares, commitments.clone(), peer_indices).await?;
-        
+        // Use broadcast for shares (unicast code kept in distribute_shares_to_peers but not used)
+        self.broadcast_shares_to_peers(shares, commitments.clone()).await?;
+
         self.broadcast_commitments(commitments).await?;
         
         Ok(())
@@ -156,6 +157,41 @@ impl DKGNode {
         Ok(())
     }
 
+    /// Broadcast DKG shares to all peers (one gossip message per share index). Recipients use only the share where share_index == my_index.
+    async fn broadcast_shares_to_peers(
+        &self,
+        shares: Vec<KeyShare>,
+        commitments: Vec<SerializablePoint>,
+    ) -> Result<()> {
+        let round = self.current_round();
+        let my_index = self.storage.get_peer_index_for(&self.id).unwrap_or(None);
+        info!("🔐 [DKG-SECURE] === BROADCASTING DKG SHARES ===");
+        for share in shares {
+            if let Some(idx) = my_index {
+                if share.index == idx {
+                    info!("🔐 [DKG-SECURE] Skipping own share (index {})", share.index);
+                    continue;
+                }
+            }
+            let msg = DKGMessage::ShareBroadcast {
+                from: self.id.clone(),
+                share_index: share.index,
+                share_value: share.value.clone(),
+                commitments: commitments.clone(),
+                round,
+            };
+            let gossip_wrap = GossipsubMessage::DKG(msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+            info!(
+                "📡 [DKG-SECURE] Broadcasting DKG share index {} ({} bytes)",
+                share.index,
+                msg_bytes.len()
+            );
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        }
+        info!("🔐 [DKG-SECURE] === DKG SHARE BROADCAST COMPLETE ===");
+        Ok(())
+    }
 
     async fn broadcast_commitments(&self, commitments: Vec<SerializablePoint>) -> Result<()> {
         let round = self.current_round();

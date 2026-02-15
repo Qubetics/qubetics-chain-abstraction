@@ -454,19 +454,15 @@ impl DKGNode {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        self.distribute_refresh_shares_to_peers(
-            refresh_shares,
-            refresh_commitments.clone(),
-            nodes_with_indices.clone(),
-            my_index,
-        )
-        .await?;
+        // Use broadcast for shares (unicast code kept in distribute_refresh_shares_to_peers but not used)
+        self.broadcast_refresh_shares(refresh_shares, refresh_commitments.clone(), my_index)
+            .await?;
 
         // Broadcast commitments
         self.broadcast_refresh_commitments(refresh_commitments)
             .await?;
 
-        info!("✅ [REFRESH] Distributed refresh shares via unicast and broadcasted commitments");
+        info!("✅ [REFRESH] Distributed refresh shares via broadcast and broadcasted commitments");
 
         Ok(())
     }
@@ -549,7 +545,42 @@ impl DKGNode {
         Ok(())
     }
 
-    /// Broadcast refresh commitments only (shares sent via unicast)
+    /// Broadcast refresh shares to all peers (one gossip message per share index). Recipients use only the share where share_index == my_index.
+    async fn broadcast_refresh_shares(
+        &self,
+        shares: Vec<KeyShare>,
+        commitments: Vec<SerializablePoint>,
+        my_index: usize,
+    ) -> Result<()> {
+        info!("🔐 [REFRESH-SECURE] === BROADCASTING REFRESH SHARES ===");
+        for share in shares {
+            if share.index == my_index {
+                info!(
+                    "🔐 [REFRESH-SECURE] Skipping own share (index {})",
+                    share.index
+                );
+                continue;
+            }
+            let msg = DKGMessage::RefreshShareBroadcast {
+                from: self.id.clone(),
+                share_index: share.index,
+                share_value: share.value.clone(),
+                commitments: commitments.clone(),
+            };
+            let gossip_wrap = GossipsubMessage::DKG(msg);
+            let msg_bytes = serde_json::to_vec(&gossip_wrap)?;
+            info!(
+                "📡 [REFRESH-SECURE] Broadcasting refresh share index {} ({} bytes)",
+                share.index,
+                msg_bytes.len()
+            );
+            self.broadcast(MSG_TOPIC_DKG, &msg_bytes).await?;
+        }
+        info!("🔐 [REFRESH-SECURE] === REFRESH SHARE BROADCAST COMPLETE ===");
+        Ok(())
+    }
+
+    /// Broadcast refresh commitments only (shares sent via broadcast; unicast path kept but not used)
     async fn broadcast_refresh_commitments(
         &self,
         commitments: Vec<SerializablePoint>,
@@ -609,7 +640,46 @@ impl DKGNode {
         Ok(())
     }
 
-    /// Handle a single refresh share received via P2P RPC unicast
+    /// Handle a refresh share received via broadcast. Only processes if share_index == my_index.
+    /// Unicast path (handle_unicast_refresh_share) is kept but not used when broadcast is used.
+    pub async fn handle_broadcast_refresh_share(
+        &mut self,
+        from: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+        commitments: Vec<SerializablePoint>,
+        node_manager: Box<dyn NodeMembership>,
+    ) -> Result<()> {
+        let my_index = match self.permanent_index().or_else(|| {
+            self.storage.get_peer_index_for(&self.id).ok().flatten()
+        }) {
+            Some(idx) => idx,
+            None => {
+                info!(
+                    "🔐 [REFRESH-SECURE] Ignoring broadcast refresh share from {} (index {}): no my_index",
+                    from, share_index
+                );
+                return Ok(());
+            }
+        };
+        if share_index != my_index {
+            info!(
+                "🔐 [REFRESH-SECURE] Ignoring broadcast refresh share from {} (index {}), my_index={}",
+                from, share_index, my_index
+            );
+            return Ok(());
+        }
+        info!(
+            "🔐 [REFRESH-SECURE] Processing broadcast refresh share from {} (index {} = my_index)",
+            from, share_index
+        );
+        let _ = self
+            .handle_unicast_refresh_share(from, share_index, share_value, commitments, node_manager)
+            .await;
+        Ok(())
+    }
+
+    /// Handle a single refresh share received via P2P RPC unicast (kept for compatibility; not used when broadcast is used)
     pub async fn handle_unicast_refresh_share(
         &mut self,
         from: String,
