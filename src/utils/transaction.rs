@@ -257,12 +257,17 @@ pub struct UtxoSelectionResult {
 fn estimate_vbytes(kind: SpendKind, n_in: usize, n_out: usize) -> usize {
     match kind {
         SpendKind::P2WPKH => 10 + 68 * n_in + 31 * n_out, // segwit approx
-        SpendKind::P2PKH => 10 + 148 * n_in + 34 * n_out, // legacy approx
+        SpendKind::P2PKH => 100 + 150 * n_in + 34 * n_out, // legacy: batch-style conservative estimate (overhead=100, input=150, output=34)
     }
 }
 
 fn estimate_fee_sat(kind: SpendKind, n_in: usize, n_out: usize, fee_rate_sat_vb: u64) -> u64 {
-    (estimate_vbytes(kind, n_in, n_out) as u64) * fee_rate_sat_vb
+    match kind {
+        // P2PKH: use batch-style fee estimation (rate=1 baked into constants)
+        SpendKind::P2PKH => estimate_vbytes(kind, n_in, n_out) as u64,
+        // P2WPKH: multiply by caller-supplied fee rate
+        SpendKind::P2WPKH => (estimate_vbytes(kind, n_in, n_out) as u64) * fee_rate_sat_vb,
+    }
 }
 
 /// Select and combine SegWit (P2WPKH) UTXOs to meet the required amount.

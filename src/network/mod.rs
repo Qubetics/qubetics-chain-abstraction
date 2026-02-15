@@ -11,7 +11,7 @@ pub mod upgrade;
 
 // Internal helpers for initialization and component management
 mod getters;
-mod init;
+pub mod init;
 mod setters;
 mod utils;
 pub mod whitelist;
