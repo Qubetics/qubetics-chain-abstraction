@@ -14,13 +14,14 @@ import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
-const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8083';
-const ADD_ENDPOINT = `${RPC_BASE_URL}/add_liquidity`;
+const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
+const ADD_ENDPOINT = `${RPC_BASE_URL}/solver_add_liquidity`;
 
-const SOLVER_ID = process.env.SOLVER_ID ?? 'arpit1';
+// SOLVER_004 config
+const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_004';
 const TEST_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  '0x4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
 
 const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '10000000000000000000000';
 const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? null;

@@ -20,10 +20,10 @@ const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
-// SOLVER_003 config - can be overridden with env vars
-const SOLVER_ID = process.env.SOLVER_ID || 'SOLVER_003';
-const SOLVER_ETH_ADDRESS = process.env.SOLVER_ETH_ADDRESS || '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
-const SOLVER_BTC_ADDRESS = process.env.SOLVER_BTC_ADDRESS || 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
+// SOLVER_004 config - can be overridden with env vars
+const SOLVER_ID = process.env.SOLVER_ID || 'SOLVER_xxx';
+const SOLVER_ETH_ADDRESS = process.env.SOLVER_ETH_ADDRESS || '0x19B8C629B407D7E714F9FBF0DbbCd55085F5e7D8';
+const SOLVER_BTC_ADDRESS = process.env.SOLVER_BTC_ADDRESS || 'tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42';
 
 // -------- ABI --------
 const ABI = [

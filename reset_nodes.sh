@@ -31,9 +31,10 @@ echo -e "${GREEN}✅ Found binary: $BINARY_PATH${NC}"
 echo ""
 
 # Clear top-level logs folder
-if [ -d "$SCRIPT_DIR/logs" ]; then
+]if [ -d "$SCRIPT_DIR/logs" ]; then
     rm -rf "$SCRIPT_DIR/logs"/*
     echo -e "${GREEN}✅ Cleared logs/ contents${NC}"
+
 else
     echo -e "${CYAN}ℹ️  No logs/ directory found${NC}"
 fi

@@ -10,6 +10,10 @@ use k256::ProjectivePoint;
 /// logic separate from networking concerns.
 ///
 /// This is a convenience wrapper that can be accessed from anywhere in the codebase.
+///
+/// NOTE: This is a legacy path. The nonce_tuple_id parameter is required for
+/// coordinated threshold signing. For production use, callers should use the
+/// batch flow which handles nonce coordination automatically.
 pub async fn execute_contract_call_for_transaction(
     signing_node: &mut SigningNode,
     node_manager: &dyn NodeMembership,
@@ -21,6 +25,7 @@ pub async fn execute_contract_call_for_transaction(
     amount: u128,
     target_amount: Option<u128>,
     tx_hash: &[u8],
+    nonce_tuple_id: Option<String>,
 ) -> Result<()> {
     // Convert tx_hash from bytes to hex string for the executor
     let tx_hash_str = hex::encode(tx_hash);
@@ -38,6 +43,7 @@ pub async fn execute_contract_call_for_transaction(
         &tx_hash_str,
         None, // No request_id for non-sequencer call
         None, // No original_request for non-sequencer call
+        nonce_tuple_id, // Coordinated nonce (required for signing)
     )
     .await
 }

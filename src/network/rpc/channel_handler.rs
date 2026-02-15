@@ -364,6 +364,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -373,6 +374,7 @@ impl MpcNetworkLayer {
                     timestamp,
                     round,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -426,6 +428,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -434,6 +437,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -490,6 +494,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_assignments,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -498,6 +503,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_assignments: nonce_assignments.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -560,6 +566,7 @@ impl MpcNetworkLayer {
                 update_round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -570,6 +577,7 @@ impl MpcNetworkLayer {
                     update_round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_tuple_id: nonce_tuple_id.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -750,6 +758,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -759,6 +768,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -812,6 +822,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -821,6 +832,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp,
                     node_id,
+                    nonce_tuple_id,
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -1128,6 +1140,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -1136,6 +1149,7 @@ impl MpcNetworkLayer {
                     round,
                     timestamp: timestamp.clone(),
                     node_id: node_id.clone(),
+                    nonce_tuple_id: nonce_tuple_id.clone(),
                 };
 
                 let data = match serde_json::to_vec(&gossip_msg) {
@@ -2955,6 +2969,7 @@ impl MpcNetworkLayer {
         update_round: u64,
         timestamp: String,
         _node_id: String,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         info!(
             "🔄 [BTC_INTENT_MANAGER] Processing contract update batch: {} intents, BTC txid: {}",
@@ -3214,6 +3229,7 @@ impl MpcNetworkLayer {
                         None,
                         None, // tics_withdraw_identifiers (not applicable)
                         None, // tics_claim_reward_identifiers (not applicable)
+                        nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
 
@@ -3246,12 +3262,14 @@ impl MpcNetworkLayer {
         round: u64,
         _timestamp: String,
         node_id: String,
+        nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         info!(
-            "💧 [ADD_LIQUIDITY_BATCH] Processing batch: {} requests, round {}, from node {}",
+            "💧 [ADD_LIQUIDITY_BATCH] Processing batch: {} requests, round {}, from node {}, nonce: {:?}",
             request_ids.len(),
             round,
-            node_id
+            node_id,
+            nonce_tuple_id
         );
 
         if request_ids.is_empty() {
@@ -3462,6 +3480,7 @@ impl MpcNetworkLayer {
                         None,     // original_request
                         None,     // tics_withdraw_identifiers (not applicable)
                         None,     // tics_claim_reward_identifiers (not applicable)
+                        nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
 
