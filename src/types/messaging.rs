@@ -628,6 +628,19 @@ pub enum GossipsubMessage {
         /// Node that generated/broadcasted the nonces
         node_id: String,
     },
+    /// Nonce invalidation broadcast.
+    /// When any node fails to find a coordinated nonce during signing (e.g. it was
+    /// deleted as stale or never arrived), it broadcasts this message so ALL nodes
+    /// mark that nonce as consumed.  This prevents inconsistent nonce pool state
+    /// where some nodes still hold the nonce and others don't.
+    NonceInvalidation {
+        /// The nonce tuple IDs to invalidate
+        nonce_tuple_ids: Vec<String>,
+        /// Reason for invalidation (for logging)
+        reason: String,
+        /// Node that detected the problem
+        node_id: String,
+    },
     /// Peer disconnection notification
     /// Broadcast when a peer disconnects to track for batch invalidation
     PeerDisconnection {

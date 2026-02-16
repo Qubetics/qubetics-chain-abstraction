@@ -66,10 +66,11 @@ pub struct NonceManager {
     /// Total number of nodes (updated dynamically when nodes join/leave)
     total_nodes: AtomicUsize,
 
-    /// Number of DKG signers (nodes that participate in nonce generation).
-    /// Observer nodes do NOT participate in commit-reveal nonce generation,
-    /// so nonces will have num_contributors == dkg_signer_count, NOT total_nodes.
-    /// The stale-nonce filter must compare against this value, not total_nodes.
+    /// Number of DKG signers (nodes that hold DKG key shares for signing).
+    /// Only DKG signers participate in nonce commit-reveal generation;
+    /// observer nodes receive finalized nonces via NonceTupleBroadcast.
+    /// The stale-nonce filter compares num_contributors against this value
+    /// to ensure nonces were created with all DKG signers participating.
     dkg_signer_count: AtomicUsize,
 
     /// Storage backend
@@ -587,9 +588,21 @@ impl NonceManager {
         if let Some(tuple) = self.storage.get_nonce_tuple_by_id(tuple_id).await? {
             if tuple.consumed {
                 warn!(
-                    "⚠️ [NONCE] Requested nonce {} is already consumed",
+                    "🚫 [NONCE] Requested nonce {} is already consumed — broadcasting invalidation so all nodes remove it from pool",
                     tuple_id
                 );
+                // Broadcast invalidation to all nodes so no future coordinator
+                // can select this nonce again (covers cross-node race where the
+                // gossipsub pool-removal arrived too late).
+                if let Err(e) = self.broadcast_nonce_invalidation(
+                    vec![tuple_id.to_string()],
+                    "already consumed during coordinated signing (nonce conflict)",
+                ).await {
+                    warn!(
+                        "⚠️ [NONCE] Failed to broadcast invalidation for consumed nonce {}: {}",
+                        tuple_id, e
+                    );
+                }
                 return Ok(None);
             }
 
@@ -605,12 +618,109 @@ impl NonceManager {
 
             Ok(Some(tuple))
         } else {
-            warn!(
-                "⚠️ [NONCE] Requested nonce {} not found in pool",
+            // Nonce not found — this node's pool is out of sync with the coordinator.
+            // Broadcast invalidation to ALL nodes so nobody else tries to use this nonce.
+            // This prevents the case where 2/3 nodes have the nonce and sign, but 1 doesn't,
+            // resulting in an incomplete threshold signature.
+            error!(
+                "🚫 [NONCE] Nonce {} not found in local pool — broadcasting invalidation to all nodes",
                 tuple_id
             );
+            if let Err(e) = self.broadcast_nonce_invalidation(
+                vec![tuple_id.to_string()],
+                "not found in local pool during signing",
+            ).await {
+                warn!(
+                    "⚠️ [NONCE] Failed to broadcast invalidation for missing nonce {}: {}",
+                    tuple_id, e
+                );
+            }
             Ok(None)
         }
+    }
+
+    /// Invalidate one or more nonces by marking them as consumed.
+    ///
+    /// Called when a peer broadcasts a NonceInvalidation message, meaning
+    /// some node could not find the nonce during signing.  All nodes must
+    /// remove these nonces from their available pool so the coordinator
+    /// never selects them again.
+    ///
+    /// This is **idempotent**: already-consumed or missing nonces are silently
+    /// skipped (not an error).
+    pub async fn invalidate_nonces(&self, tuple_ids: &[String], reason: &str) {
+        for tuple_id in tuple_ids {
+            match self.storage.get_nonce_tuple(tuple_id).await {
+                Ok(Some(tuple)) => {
+                    if tuple.consumed {
+                        // Already consumed — nothing to do
+                        continue;
+                    }
+                    if let Err(e) = self.storage.consume_nonce_tuple(tuple_id).await {
+                        warn!(
+                            "⚠️ [NONCE] Failed to invalidate nonce {}: {}",
+                            tuple_id, e
+                        );
+                    } else {
+                        info!(
+                            "🚫 [NONCE] Invalidated nonce {} (reason: {})",
+                            tuple_id, reason
+                        );
+                    }
+                }
+                Ok(None) => {
+                    // Nonce doesn't exist locally — expected if this node already
+                    // deleted it as stale or never received it
+                    info!(
+                        "🚫 [NONCE] Nonce {} not found locally, nothing to invalidate (reason: {})",
+                        tuple_id, reason
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ [NONCE] Error looking up nonce {} for invalidation: {}",
+                        tuple_id, e
+                    );
+                }
+            }
+        }
+    }
+
+    /// Broadcast a nonce invalidation message to all nodes via gossipsub.
+    ///
+    /// Call this when a coordinated nonce is missing during signing so that
+    /// all other nodes also remove it from their available pool.
+    pub async fn broadcast_nonce_invalidation(
+        &self,
+        nonce_tuple_ids: Vec<String>,
+        reason: &str,
+    ) -> Result<()> {
+        if nonce_tuple_ids.is_empty() {
+            return Ok(());
+        }
+
+        let gossipsub_msg = crate::types::GossipsubMessage::NonceInvalidation {
+            nonce_tuple_ids: nonce_tuple_ids.clone(),
+            reason: reason.to_string(),
+            node_id: self.id.clone(),
+        };
+        let data = serde_json::to_vec(&gossipsub_msg)?;
+
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "signing".to_string(),
+                data,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to broadcast nonce invalidation: {}", e))?;
+
+        warn!(
+            "📢 [NONCE] Broadcasted invalidation for {} nonce(s): {:?} (reason: {})",
+            nonce_tuple_ids.len(),
+            nonce_tuple_ids,
+            reason
+        );
+        Ok(())
     }
 
     /// Reserve multiple nonces for a batch of operations.
@@ -693,6 +803,18 @@ impl NonceManager {
         }
 
         for (op_id, tuple) in operation_ids.iter().zip(valid_nonces.iter()) {
+            // CRITICAL: Remove from available IDs so no other reserve_nonces_for_batch
+            // call (e.g. the processBatchIntents contract call vs per-intent signing) can
+            // select the SAME nonce. We only remove from the available list — we do NOT
+            // mark it as consumed yet, because all nodes still need to look it up by ID
+            // via acquire_specific_nonce() when they receive the batch broadcast.
+            if let Err(e) = self.storage.remove_from_available_ids_public(&tuple.tuple_id).await {
+                warn!(
+                    "⚠️ [NONCE] Failed to remove reserved nonce {} from available pool for operation {}: {} — skipping",
+                    tuple.tuple_id, op_id, e
+                );
+                continue;
+            }
             assignments.insert(op_id.clone(), tuple.tuple_id.clone());
             info!(
                 "📋 [NONCE] Reserved nonce {} (contributors: {}) for operation {}",
@@ -711,16 +833,57 @@ impl NonceManager {
         Ok(assignments)
     }
 
+    /// Remove specific nonce tuple IDs from the available pool.
+    ///
+    /// Called by **receiving** nodes when they get a batch broadcast that
+    /// contains nonce assignments made by the coordinator.  The coordinator
+    /// already removed these from its own pool during `reserve_nonces_for_batch`,
+    /// but other nodes still have them listed as available.  Without this call
+    /// a second coordinator (different observer) can independently select the
+    /// same nonce for a different operation, causing "already consumed" errors
+    /// when DKG nodes try to sign.
+    ///
+    /// This does NOT mark the nonce as consumed — only removes it from the
+    /// available-IDs list so it won't be picked by future reservation calls.
+    pub async fn remove_nonces_from_pool(&self, tuple_ids: &[String]) {
+        for tuple_id in tuple_ids {
+            if let Err(e) = self.storage.remove_from_available_ids_public(tuple_id).await {
+                warn!(
+                    "⚠️ [NONCE] Failed to remove nonce {} from available pool: {}",
+                    tuple_id, e
+                );
+            }
+        }
+        if !tuple_ids.is_empty() {
+            info!(
+                "🔒 [NONCE] Removed {} nonce(s) from available pool (reserved by coordinator): {:?}",
+                tuple_ids.len(),
+                tuple_ids
+            );
+        }
+    }
+
     /// Start a new nonce generation batch
     ///
     /// Generates batch_size nonces in a single commit-reveal cycle
     pub async fn start_generation(&self, round: u64) -> Result<String> {
+        // Don't start nonce generation if the node hasn't discovered peers yet.
+        let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+        if dkg_signers == 0 {
+            return Err(anyhow::anyhow!(
+                "Cannot start nonce generation: dkg_signer_count=0 (not ready)"
+            ));
+        }
+
         let batch_id = format!("nonce_{}_{}", round, uuid::Uuid::new_v4());
         let batch_size = self.config.batch_size;
+        // Only DKG signers participate in commit-reveal, so use dkg_signer_count
+        // as the number of participants (NOT total_nodes which includes observers).
+        let initial_total = dkg_signers;
 
         info!(
-            "🚀 [NONCE] Starting nonce generation batch: {} (round: {}, batch_size: {})",
-            batch_id, round, batch_size
+            "🚀 [NONCE] Starting nonce generation batch: {} (round: {}, batch_size: {}, dkg_signers: {})",
+            batch_id, round, batch_size, initial_total
         );
 
         // Create batch state with batch_size
@@ -728,7 +891,7 @@ impl NonceManager {
             batch_id.clone(),
             round,
             self.threshold,
-            self.total_nodes.load(Ordering::SeqCst),
+            initial_total,
             batch_size,
         );
 
@@ -787,9 +950,24 @@ impl NonceManager {
             }
         }
 
+        // Don't join nonce generation if dkg_signer_count is not yet known.
+        let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+        if dkg_signers == 0 {
+            warn!(
+                "⚠️ [NONCE] Cannot join batch {} — dkg_signer_count=0 (not ready)",
+                batch_id
+            );
+            return Err(anyhow::anyhow!(
+                "Cannot join nonce generation: dkg_signer_count=0 (not ready)"
+            ));
+        }
+
+        // Only DKG signers participate, so use dkg_signer_count as participant count
+        let initial_total = dkg_signers;
+
         info!(
-            "🤝 [NONCE] Joining nonce generation batch: {} (round: {}, batch_size: {})",
-            batch_id, round, batch_size
+            "🤝 [NONCE] Joining nonce generation batch: {} (round: {}, batch_size: {}, dkg_signers: {})",
+            batch_id, round, batch_size, initial_total
         );
 
         // Create batch state with the COORDINATOR'S batch_id
@@ -797,7 +975,7 @@ impl NonceManager {
             batch_id.to_string(),
             round,
             self.threshold,
-            self.total_nodes.load(Ordering::SeqCst),
+            initial_total,
             batch_size,
         );
 
@@ -921,17 +1099,31 @@ impl NonceManager {
         // Check if we have an active batch state, if not, join the batch
         let mut batches = self.active_batches.write().await;
         if !batches.contains_key(batch_id) {
+            // Safety check: don't join nonce generation if dkg_signer_count is unknown.
+            let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+            if dkg_signers == 0 {
+                warn!(
+                    "⚠️ [NONCE] Skipping batch {} — dkg_signer_count=0 (not ready). \
+                     Will participate after DKG completes.",
+                    batch_id
+                );
+                return Ok(());
+            }
+
             info!(
-                "📥 [NONCE] Joining existing batch {} from commitment (batch_size: {})",
-                batch_id, batch_size
+                "📥 [NONCE] Joining existing batch {} from commitment (batch_size: {}, dkg_signers: {})",
+                batch_id, batch_size, dkg_signers
             );
+
+            // Only DKG signers participate, so use dkg_signer_count as participant count
+            let initial_total = dkg_signers;
 
             // Create our own state and generate our (k_i, R_i) pairs
             let mut state = NonceGenState::new(
                 batch_id.to_string(),
                 round,
                 self.threshold,
-                self.total_nodes.load(Ordering::SeqCst),
+                initial_total,
                 batch_size,
             );
 
@@ -971,16 +1163,22 @@ impl NonceManager {
             // Store all commitments from this peer
             state.commitments.insert(from.to_string(), commitments);
 
-            // Dynamically update total_nodes if more nodes joined since batch started
-            // This ensures we wait for ALL currently connected nodes, not just
-            // the nodes that were connected when we joined the batch
-            let current_total = self.total_nodes.load(Ordering::SeqCst);
-            if current_total > state.total_nodes {
+            // Dynamically update total_nodes for this batch.
+            // Only DKG signers participate in commit-reveal, so use dkg_signer_count
+            // as the authoritative participant count. Fall back to commitments.len()
+            // if dkg_signer_count is not yet known.
+            let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+            let best_total = if dkg_signers > 0 {
+                dkg_signers
+            } else {
+                state.commitments.len().max(state.total_nodes)
+            };
+            if best_total > state.total_nodes {
                 info!(
-                    "📈 [NONCE] Batch {} total_nodes updated {} -> {} (more nodes joined)",
-                    batch_id, state.total_nodes, current_total
+                    "📈 [NONCE] Batch {} total_nodes updated {} -> {} (dkg_signers: {}, commitments: {})",
+                    batch_id, state.total_nodes, best_total, dkg_signers, state.commitments.len()
                 );
-                state.total_nodes = current_total;
+                state.total_nodes = best_total;
             }
 
             // Check if we have threshold commitments
@@ -1077,39 +1275,46 @@ impl NonceManager {
             state.r_points.insert(from.to_string(), r_points_decoded);
             state.k_shares.insert(from.to_string(), k_shares_decoded);
 
-            // Dynamically update total_nodes if more nodes joined since batch started
-            // This ensures we wait for ALL currently connected nodes
-            let current_total = self.total_nodes.load(Ordering::SeqCst);
-            if current_total > state.total_nodes {
+            // Dynamically update total_nodes (same logic as handle_commitment).
+            // Only DKG signers participate, so use dkg_signer_count as authoritative count.
+            let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+            let best_total = if dkg_signers > 0 {
+                dkg_signers
+            } else {
+                state.commitments.len().max(state.total_nodes)
+            };
+            if best_total > state.total_nodes {
                 info!(
-                    "📈 [NONCE] Batch {} total_nodes updated {} -> {} (more nodes joined during reveal)",
-                    batch_id, state.total_nodes, current_total
+                    "📈 [NONCE] Batch {} total_nodes updated {} -> {} during reveal (dkg_signers: {}, commitments: {})",
+                    batch_id, state.total_nodes, best_total, dkg_signers, state.commitments.len()
                 );
-                state.total_nodes = current_total;
+                state.total_nodes = best_total;
             }
 
-            // Check if we have ALL reveals from all nodes (not just threshold)
-            // We need all nodes' k_i and R_i values to compute the correct aggregate
-            // Using threshold would cause different nodes to compute different aggregates
-            // because they'd receive reveals in different orders
+            // Check if we have ALL reveals from all DKG signer nodes.
+            // Only DKG signers participate in nonce commit-reveal (observers are excluded).
+            // We need reveals from ALL DKG signers so every signer computes the same
+            // aggregated_k = Σk_i over the same set of k_i values.
             //
-            // Use the MAXIMUM of state.total_nodes and current total_nodes to handle
-            // cases where nodes joined after the batch started. We want to include
-            // ALL currently connected nodes in the nonce generation, not just the
-            // nodes that were connected when the batch started.
-            //
-            // This fixes the bug where nonces created with 2 nodes (when third node
-            // joins mid-protocol) would have num_contributors=2 and be stale.
-            let current_total = self.total_nodes.load(Ordering::SeqCst);
-            let effective_total = state.total_nodes.max(current_total);
+            // Use dkg_signer_count as the authoritative participant count.
+            // Fall back to commitments.len() (ground truth of actual participants)
+            // if dkg_signer_count is not yet known.
+            let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
+            let committed_peers = state.commitments.len();
+            let effective_total = if dkg_signers > 0 {
+                dkg_signers
+            } else {
+                // Fallback: use number of actual committed peers
+                committed_peers.max(state.total_nodes)
+            };
 
-            // Use saturating_sub to avoid underflow if total_nodes is somehow 0 or 1
-            // We need reveals from (total - 1) peers since we have our own local values
-            let expected_reveals = effective_total.saturating_sub(1).max(state.threshold.saturating_sub(1));
+            // We need reveals from (effective_total - 1) peers since we have our own local values.
+            // At minimum, we need at least 1 reveal (never 0) to produce a valid multi-party nonce.
+            let expected_reveals = effective_total.saturating_sub(1).max(1);
 
             info!(
-                "📊 [NONCE] Batch {} reveal progress: {}/{} peers (effective_total: {}, state.total: {}, current: {})",
-                batch_id, state.r_points.len(), expected_reveals, effective_total, state.total_nodes, current_total
+                "📊 [NONCE] Batch {} reveal progress: {}/{} peers (effective_total: {}, dkg_signers: {}, committed: {})",
+                batch_id, state.r_points.len(), expected_reveals, effective_total, dkg_signers, committed_peers
             );
 
             if state.r_points.len() >= expected_reveals && state.k_shares.len() >= expected_reveals {

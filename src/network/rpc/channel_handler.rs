@@ -3042,15 +3042,13 @@ impl MpcNetworkLayer {
                 signing_node.set_group_public_key(group_public_key);
 
                 // Use MAIN final secret share for signing (network group key path)
+                // Observer nodes will have None here — sign_contract_message() handles
+                // the observer path internally (builds TX, skips ECDSA, stores for aggregation).
                 let secret_share = if let Some(dkg_node) = &self.dkg_node {
                     dkg_node.get_final_secret_share().await
                 } else {
                     None
                 };
-                if secret_share.is_none() {
-                    warn!("❌ [BTC_INTENT_MANAGER] Main DKG secret share not available; cannot sign contract tx");
-                    return Ok(());
-                }
 
                 let contract_tx_bytes =
                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
@@ -3282,68 +3280,63 @@ impl MpcNetworkLayer {
 
             let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
 
-            if let Some(ref _secret_share) = vault_tweaked_share {
-                // Use liquidity operator (vault) key
-                signing_node.set_vault_group_key(group_public_key);
+            // All nodes (DKG + observer) proceed through sign_contract_message().
+            // sign_contract_message() internally checks has_dkg_share() and handles
+            // the observer path (builds TX, skips signing, stores for aggregation).
+            signing_node.set_vault_group_key(group_public_key);
 
-                let contract_tx = crate::types::intent::ContractTransaction {
-                    to: eth_tx.to.clone(),
-                    value: eth_tx.value.clone(),
-                    nonce: eth_tx.nonce,
-                    gas_limit: eth_tx.gas_limit,
-                    gas_price: eth_tx.gas_price.clone(),
-                    chain_id: eth_tx.chain_id,
-                    data: eth_tx
-                        .data
-                        .as_ref()
-                        .map(|d| format!("0x{}", hex::encode(d)))
-                        .unwrap_or_else(|| "0x".to_string()),
-                };
+            let contract_tx = crate::types::intent::ContractTransaction {
+                to: eth_tx.to.clone(),
+                value: eth_tx.value.clone(),
+                nonce: eth_tx.nonce,
+                gas_limit: eth_tx.gas_limit,
+                gas_price: eth_tx.gas_price.clone(),
+                chain_id: eth_tx.chain_id,
+                data: eth_tx
+                    .data
+                    .as_ref()
+                    .map(|d| format!("0x{}", hex::encode(d)))
+                    .unwrap_or_else(|| "0x".to_string()),
+            };
 
-                let contract_tx_bytes =
-                    crate::utils::transaction::create_transaction_for_signing_contract(
-                        &contract_tx,
-                    );
-                let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+            let contract_tx_bytes =
+                crate::utils::transaction::create_transaction_for_signing_contract(
+                    &contract_tx,
+                );
+            let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
+            let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
 
-                // Pass request_ids as intent_hashes for tracking through signing flow
-                // When transaction succeeds/fails, these IDs will be used to update status
-                eth_signer
-                    .sign_contract_message(
-                        contract_tx_bytes,
-                        &contract_chain_handler,
-                        &contract_tx,
-                        vault_tweaked_share.clone(),
-                        None,     // user_eth_address (not applicable)
-                        request_ids.clone(),   // Pass request_ids for tracking
-                        vault_tweaked_share,
-                        None,     // request_id
-                        None,     // original_request
-                        None,     // tics_withdraw_identifiers (not applicable)
-                        None,     // tics_claim_reward_identifiers (not applicable)
-                        nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
-                    )
-                    .await?;
+            // Pass request_ids as intent_hashes for tracking through signing flow
+            // When transaction succeeds/fails, these IDs will be used to update status
+            eth_signer
+                .sign_contract_message(
+                    contract_tx_bytes,
+                    &contract_chain_handler,
+                    &contract_tx,
+                    vault_tweaked_share.clone(),
+                    None,     // user_eth_address (not applicable)
+                    request_ids.clone(),   // Pass request_ids for tracking
+                    vault_tweaked_share,
+                    None,     // request_id
+                    None,     // original_request
+                    None,     // tics_withdraw_identifiers (not applicable)
+                    None,     // tics_claim_reward_identifiers (not applicable)
+                    nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
+                )
+                .await?;
 
-                info!(
-                    "✅ [ADD_LIQUIDITY_BATCH] Submitted addLiquidityBatch transaction into MPC signing flow ({} deposits)",
-                    request_ids.len()
-                );
-                info!(
-                    "ℹ️  [ADD_LIQUIDITY_BATCH] Request IDs tracked: {:?}",
-                    request_ids
-                );
-                info!(
-                    "ℹ️  [ADD_LIQUIDITY_BATCH] Signatures will be sent to final node for round {}",
-                    round
-                );
-            } else {
-                warn!(
-                    "⚠️ [ADD_LIQUIDITY_BATCH] Skipping batch - missing liquidity operator secret share"
-                );
-                // Don't mark as Failed - this is a temporary condition, can be retried
-            }
+            info!(
+                "✅ [ADD_LIQUIDITY_BATCH] Submitted addLiquidityBatch transaction into MPC signing flow ({} deposits)",
+                request_ids.len()
+            );
+            info!(
+                "ℹ️  [ADD_LIQUIDITY_BATCH] Request IDs tracked: {:?}",
+                request_ids
+            );
+            info!(
+                "ℹ️  [ADD_LIQUIDITY_BATCH] Signatures will be sent to final node for round {}",
+                round
+            );
         } else {
             warn!(
                 "❌ [ADD_LIQUIDITY_BATCH] Signing node not available; cannot start MPC signing for batch"

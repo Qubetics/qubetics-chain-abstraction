@@ -128,9 +128,13 @@ impl<'a> BitcoinSigner<'a> {
                 .ok_or_else(|| anyhow!("No final node for BTC UserToVault batch round {}", round))?
         };
 
+        // Check if this node has a DKG share (needed for signing, not for TX building/storage)
+        let has_dkg = self.node.has_dkg_share().await;
+
         info!(
-            "📦 [BTC_UTV_BATCH] Node {} signing {} slots for round {} (final node: {})",
+            "📦 [BTC_UTV_BATCH] Node {} {} {} slots for round {} (final node: {})",
             self.node.id,
+            if has_dkg { "signing" } else { "preparing (observer)" },
             batch.len(),
             round,
             final_node_id
@@ -150,17 +154,6 @@ impl<'a> BitcoinSigner<'a> {
         let mut batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>, Option<BtcRoundExtras>)> = Vec::new();
 
         for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
-            let signing_key = match key_opt {
-                Some(scalar) => SigningNode::derive_secp_secret(&scalar)?,
-                None => {
-                    warn!(
-                        "⚠️ [BTC_UTV_BATCH] No signing key for intent {} (user {}), skipping",
-                        intent_hash, user_eth
-                    );
-                    continue;
-                }
-            };
-
             let btc_tx = match &chain_tx {
                 ChainTransaction::Bitcoin(t) => t,
                 _ => {
@@ -247,135 +240,146 @@ impl<'a> BitcoinSigner<'a> {
                 continue;
             }
 
-            // Get the assigned nonce for this intent - REQUIRED for security
-            let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
-                info!(
-                    "🔍 [BTC_UTV_BATCH] Intent {} has nonce assignment: {}",
-                    intent_hash, tuple_id
-                );
-                // Acquire the specific nonce assigned by coordinator
-                if let Some(nm) = &self.node.nonce_manager {
-                    let nm_guard = nm.lock().await;
-                    match nm_guard.acquire_specific_nonce(tuple_id).await {
-                        Ok(Some(tuple)) => {
-                            info!(
-                                "🔐 [BTC_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
-                                tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
-                            );
-                            tuple
+            // DKG nodes: sign each input and broadcast signatures + TX data
+            // Observer nodes: just add to batch_storage for final node reconstruction
+            if has_dkg {
+                let signing_key = match key_opt {
+                    Some(scalar) => SigningNode::derive_secp_secret(&scalar)?,
+                    None => {
+                        warn!(
+                            "⚠️ [BTC_UTV_BATCH] No signing key for intent {} (user {}), skipping",
+                            intent_hash, user_eth
+                        );
+                        continue;
+                    }
+                };
+
+                // Get the assigned nonce for this intent - REQUIRED for security
+                let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
+                    info!(
+                        "🔍 [BTC_UTV_BATCH] Intent {} has nonce assignment: {}",
+                        intent_hash, tuple_id
+                    );
+                    // Acquire the specific nonce assigned by coordinator
+                    if let Some(nm) = &self.node.nonce_manager {
+                        let nm_guard = nm.lock().await;
+                        match nm_guard.acquire_specific_nonce(tuple_id).await {
+                            Ok(Some(tuple)) => {
+                                info!(
+                                    "🔐 [BTC_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
+                                    tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
+                                );
+                                tuple
+                            }
+                            Ok(None) => {
+                                error!(
+                                    "🔴 [BTC_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
+                                    tuple_id, intent_hash
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                error!(
+                                    "🔴 [BTC_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
+                                    tuple_id, intent_hash, e
+                                );
+                                continue;
+                            }
                         }
-                        Ok(None) => {
-                            error!(
-                                "🔴 [BTC_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
-                                tuple_id, intent_hash
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            error!(
-                                "🔴 [BTC_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
-                                tuple_id, intent_hash, e
-                            );
-                            continue;
-                        }
+                    } else {
+                        error!(
+                            "🔴 [BTC_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                            intent_hash
+                        );
+                        continue;
                     }
                 } else {
                     error!(
-                        "🔴 [BTC_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                        "🔴 [BTC_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
                         intent_hash
                     );
                     continue;
-                }
-            } else {
-                error!(
-                    "🔴 [BTC_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
-                    intent_hash
-                );
-                continue;
-            };
-
-            // Build per-input digests and signatures (like N2T)
-            // NOTE: For BTC multi-input transactions, we use the same nonce for all inputs.
-            // This is a simplification - ideally each input would have its own nonce,
-            // but for threshold signing where all nodes must coordinate, using one nonce
-            // per intent is more practical.
-            let mut btc_sigs: Vec<BtcIndexedSignature> = Vec::with_capacity(btc_tx.inputs.len());
-
-            for (idx, inp) in btc_tx.inputs.iter().enumerate() {
-                let prev_spk = inp.witness_utxo.as_ref().unwrap().script_pubkey.clone();
-
-                let digest = self
-                    .node
-                    .compute_legacy_sighash_all_p2pkh(btc_tx, idx, &prev_spk)?;
-
-                let msg = Message::from_digest_slice(&digest)?;
-
-                // Sign using coordinated random nonce (fixed k removed for security)
-                let sig = self
-                    .node
-                    .create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?;
-                let (recovery_id, sig_bytes) = sig.serialize_compact();
-
-                let ecdsa_sig = ECDSASignature {
-                    signature: sig_bytes.to_vec(),
-                    signer_id: self.node.id.clone(),
-                    recovery_id: recovery_id.to_i32() as u8,
-                    user_eth_address: Some(user_eth.clone()),
                 };
 
-                btc_sigs.push(BtcIndexedSignature {
-                    input_index: idx,
-                    signature: ecdsa_sig,
-                });
+                // Build per-input digests and signatures (like N2T)
+                let mut btc_sigs: Vec<BtcIndexedSignature> = Vec::with_capacity(btc_tx.inputs.len());
 
-            }
+                for (idx, inp) in btc_tx.inputs.iter().enumerate() {
+                    let prev_spk = inp.witness_utxo.as_ref().unwrap().script_pubkey.clone();
 
-            // Store signatures in btc_utv_state: (round, slot_id) → input_index → peer → sig
-            {
-                let slot_key: RoundSlotKey = (round, intent_hash.clone());
-                let mut by_slot = self.node.btc_utv_state.btc_utv_sigs_by_round_slot.write().await;
-                let slot_map = by_slot.entry(slot_key).or_default();
-                for btc_sig in &btc_sigs {
-                    let input_map = slot_map.entry(btc_sig.input_index).or_default();
-                    input_map.insert(self.node.id.clone(), btc_sig.signature.clone());
+                    let digest = self
+                        .node
+                        .compute_legacy_sighash_all_p2pkh(btc_tx, idx, &prev_spk)?;
+
+                    let msg = Message::from_digest_slice(&digest)?;
+
+                    // Sign using coordinated random nonce (fixed k removed for security)
+                    let sig = self
+                        .node
+                        .create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?;
+                    let (recovery_id, sig_bytes) = sig.serialize_compact();
+
+                    let ecdsa_sig = ECDSASignature {
+                        signature: sig_bytes.to_vec(),
+                        signer_id: self.node.id.clone(),
+                        recovery_id: recovery_id.to_i32() as u8,
+                        user_eth_address: Some(user_eth.clone()),
+                    };
+
+                    btc_sigs.push(BtcIndexedSignature {
+                        input_index: idx,
+                        signature: ecdsa_sig,
+                    });
+
                 }
-            }
 
-            // Broadcast BtcUtvSignaturesMessage (NOT ECDSASignature with slot_id)
-            let signature_msg = SigningMessage::BtcUtvSignaturesMessage {
-                from: self.node.id.clone(),
-                signatures: btc_sigs,
-                round,
-                slot_id: intent_hash.clone(),
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth.clone()),
-            };
-            let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
-            let signature_data = serde_json::to_vec(&gossipsub_msg)?;
-            self.node.broadcast("signing", &signature_data).await?;
+                // Store signatures in btc_utv_state: (round, slot_id) → input_index → peer → sig
+                {
+                    let slot_key: RoundSlotKey = (round, intent_hash.clone());
+                    let mut by_slot = self.node.btc_utv_state.btc_utv_sigs_by_round_slot.write().await;
+                    let slot_map = by_slot.entry(slot_key).or_default();
+                    for btc_sig in &btc_sigs {
+                        let input_map = slot_map.entry(btc_sig.input_index).or_default();
+                        input_map.insert(self.node.id.clone(), btc_sig.signature.clone());
+                    }
+                }
 
-            // Send TX data for this slot to the final node for threshold verification.
-            // All DKG nodes broadcast their TX data; the final node accepts it once
-            // threshold matching copies arrive.
-            {
-                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
-                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                // Broadcast BtcUtvSignaturesMessage (NOT ECDSASignature with slot_id)
+                let signature_msg = SigningMessage::BtcUtvSignaturesMessage {
                     from: self.node.id.clone(),
+                    signatures: btc_sigs,
                     round,
-                    tx_bytes: tx_bytes.clone(),
-                    intent_hash: Some(intent_hash.clone()),
-                    transaction_type: Some("UserToVault".to_string()),
-                    request_id: None,
-                    chain_tx_json,
+                    slot_id: intent_hash.clone(),
+                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
                     user_eth_address: Some(user_eth.clone()),
-                    batch_identifiers: None,
                 };
-                let tx_data_gossip = GossipsubMessage::Signing(tx_data_msg);
-                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
-                self.node.broadcast("signing", &tx_data_bytes).await?;
+                let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
+                let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+                self.node.broadcast("signing", &signature_data).await?;
+
+                // Send TX data for this slot to the final node for threshold verification.
+                // All DKG nodes broadcast their TX data; the final node accepts it once
+                // threshold matching copies arrive.
+                {
+                    let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                    let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                        from: self.node.id.clone(),
+                        round,
+                        tx_bytes: tx_bytes.clone(),
+                        intent_hash: Some(intent_hash.clone()),
+                        transaction_type: Some("UserToVault".to_string()),
+                        request_id: None,
+                        chain_tx_json,
+                        user_eth_address: Some(user_eth.clone()),
+                        batch_identifiers: None,
+                    };
+                    let tx_data_gossip = GossipsubMessage::Signing(tx_data_msg);
+                    let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                    self.node.broadcast("signing", &tx_data_bytes).await?;
+                }
             }
 
-            // Add to batch storage with extras
+            // All nodes (DKG + observer): add to batch storage with extras
             batch_storage.push((
                 intent_hash,
                 user_eth,
@@ -385,10 +389,17 @@ impl<'a> BitcoinSigner<'a> {
             ));
         }
 
-        // Store the full batch with extras for final node reconstruction
+        // Store the full batch with extras for final node reconstruction (all nodes)
         {
             let mut store = self.node.pending.user_to_vault_btc_batch.write().await;
-            store.insert(round, batch_storage);
+            store.insert(round, batch_storage.clone());
+        }
+
+        if !has_dkg {
+            info!(
+                "ℹ️ [BTC_UTV_BATCH] Observer node {} stored batch data for round {} ({} slots) — signing skipped",
+                self.node.id, round, batch_storage.len()
+            );
         }
 
         Ok(())
@@ -604,126 +615,138 @@ impl SigningNode {
             0
         };
 
-        // ===== Sign each input digest with our key share (or tweaked) =====
-        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
-            Self::derive_secp_secret(&tweaked_share)?
-        } else if let Some(explicit_key) = signing_key_override {
-            info!("🔑 [BTC-SIGNING] Using provided signing key override for signing");
-            Self::derive_secp_secret(&explicit_key)?
-        } else {
-            self.key_store
-                .clone_private_key()
-                .ok_or_else(|| anyhow!("No private key available for signing"))?
-        };
+        // Check if this node has a DKG share (needed for signing, not for TX building/storage)
+        let has_dkg = self.has_dkg_share().await;
 
-        // Log signing key for testing/debugging (Bitcoin)
-        let signing_key_hex = hex::encode(signing_key.secret_bytes());
-        info!(
-            "🔐 [BTC-SIGNING-DEBUG] Node {} Bitcoin signing key (hex): 0x{}",
-            self.id, signing_key_hex
-        );
+        if has_dkg {
+            // ===== DKG node: Sign each input digest with our key share =====
+            let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+                Self::derive_secp_secret(&tweaked_share)?
+            } else if let Some(explicit_key) = signing_key_override {
+                info!("🔑 [BTC-SIGNING] Using provided signing key override for signing");
+                Self::derive_secp_secret(&explicit_key)?
+            } else {
+                self.key_store
+                    .clone_private_key()
+                    .ok_or_else(|| anyhow!("No private key available for signing"))?
+            };
 
-        // Calculate and log DKG index for this node (Bitcoin)
-        let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
-        info!(
-            "🔢 [BTC-SIGNING-DEBUG] Node {} Bitcoin DKG index: {}",
-            self.id, dkg_index
-        );
+            // Log signing key for testing/debugging (Bitcoin)
+            let signing_key_hex = hex::encode(signing_key.secret_bytes());
+            info!(
+                "🔐 [BTC-SIGNING-DEBUG] Node {} Bitcoin signing key (hex): 0x{}",
+                self.id, signing_key_hex
+            );
 
-        let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
-            Vec::with_capacity(digests.len());
+            // Calculate and log DKG index for this node (Bitcoin)
+            let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+            info!(
+                "🔢 [BTC-SIGNING-DEBUG] Node {} Bitcoin DKG index: {}",
+                self.id, dkg_index
+            );
 
-        // Acquire the coordinated nonce by tuple_id (all nodes use the same k value)
-        let nonce = if let Some(ref tuple_id) = nonce_tuple_id {
-            if let Some(nm) = &self.nonce_manager {
-                let nm_guard = nm.lock().await;
-                match nm_guard.acquire_specific_nonce(tuple_id).await {
-                    Ok(Some(tuple)) => {
-                        info!(
-                            "🔐 [BTC-SIGNING] Using coordinated nonce {} for signing (r_scalar: 0x{})",
-                            tuple.tuple_id,
-                            hex::encode(tuple.r_scalar.0.to_bytes())
-                        );
-                        tuple
+            let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
+                Vec::with_capacity(digests.len());
+
+            // Acquire the coordinated nonce by tuple_id (all nodes use the same k value)
+            let nonce = if let Some(ref tuple_id) = nonce_tuple_id {
+                if let Some(nm) = &self.nonce_manager {
+                    let nm_guard = nm.lock().await;
+                    match nm_guard.acquire_specific_nonce(tuple_id).await {
+                        Ok(Some(tuple)) => {
+                            info!(
+                                "🔐 [BTC-SIGNING] Using coordinated nonce {} for signing (r_scalar: 0x{})",
+                                tuple.tuple_id,
+                                hex::encode(tuple.r_scalar.0.to_bytes())
+                            );
+                            tuple
+                        }
+                        Ok(None) => {
+                            return Err(anyhow!(
+                                "Coordinated nonce {} not found or already consumed - cannot sign",
+                                tuple_id
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(anyhow!(
+                                "Failed to acquire coordinated nonce {}: {} - cannot sign",
+                                tuple_id, e
+                            ));
+                        }
                     }
-                    Ok(None) => {
-                        return Err(anyhow!(
-                            "Coordinated nonce {} not found or already consumed - cannot sign",
-                            tuple_id
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(anyhow!(
-                            "Failed to acquire coordinated nonce {}: {} - cannot sign",
-                            tuple_id, e
-                        ));
-                    }
+                } else {
+                    return Err(anyhow!("NonceManager not available - cannot sign"));
                 }
             } else {
-                return Err(anyhow!("NonceManager not available - cannot sign"));
+                error!("🔴 [BTC-SIGNING] No nonce_tuple_id provided for BTC signing - this is a coordination bug!");
+                return Err(anyhow!(
+                    "No nonce_tuple_id provided. All BTC signing operations must use coordinated nonces."
+                ));
+            };
+
+            for (i, digest) in digests.iter().enumerate() {
+                let msg = Message::from_digest_slice(digest)?;
+
+                // Sign using the coordinated random nonce (fixed k removed for security)
+                let sig = self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce)?;
+                per_input_sigs.push((i, sig));
+
+                // Log the digest that this node signs with its share for debugging transaction failures
+                info!(
+                    "🔐 [BTC-TX-DIGEST] Node {} signing digest for round {} input {}: 0x{} (DKG index: {})",
+                    self.id,
+                    current_round,
+                    i,
+                    hex::encode(digest),
+                    dkg_index
+                );
+                info!(
+                    "✅ [SIGNING] Made signature for input {} (digest {})",
+                    i,
+                    hex::encode(digest)
+                );
+            }
+
+            // Serialize to BtcIndexedSignature for network/storage
+            let mut btc_sigs: Vec<BtcIndexedSignature> = Vec::with_capacity(per_input_sigs.len());
+            for (i, rsig) in &per_input_sigs {
+                let (recovery_id, comp) = rsig.serialize_compact();
+                btc_sigs.push(BtcIndexedSignature {
+                    input_index: *i,
+                    signature: ECDSASignature {
+                        signature: comp.to_vec(), // 64 bytes r||s
+                        signer_id: self.id.clone(),
+                        recovery_id: recovery_id.to_i32() as u8,
+                        user_eth_address: user_eth_address.clone(),
+                    },
+                });
+            }
+
+            info!(
+                "✅ [SIGNING] Node {} produced {} per-input signatures",
+                self.id,
+                btc_sigs.len()
+            );
+
+            // ===== Stash our signatures locally under (round → input_index → peer → sig) =====
+            {
+                let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
+                let rmap = by_round.entry(current_round).or_insert_with(HashMap::new);
+                for btc_sig in &btc_sigs {
+                    let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
+                    imap.insert(self.id.clone(), btc_sig.signature.clone());
+                }
             }
         } else {
-            error!("🔴 [BTC-SIGNING] No nonce_tuple_id provided for BTC signing - this is a coordination bug!");
-            return Err(anyhow!(
-                "No nonce_tuple_id provided. All BTC signing operations must use coordinated nonces."
-            ));
-        };
-
-        for (i, digest) in digests.iter().enumerate() {
-            let msg = Message::from_digest_slice(digest)?;
-
-            // Sign using the coordinated random nonce (fixed k removed for security)
-            let sig = self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce)?;
-            per_input_sigs.push((i, sig));
-
-            // Log the digest that this node signs with its share for debugging transaction failures
+            // ===== Observer node: skip signing, just prepare TX data for aggregation =====
             info!(
-                "🔐 [BTC-TX-DIGEST] Node {} signing digest for round {} input {}: 0x{} (DKG index: {})",
-                self.id,
-                current_round,
-                i,
-                hex::encode(digest),
-                dkg_index
+                "ℹ️ [BTC-SIGNING] Observer node {} preparing BTC TX (no signing) for round {}",
+                self.id, current_round
             );
-            info!(
-                "✅ [SIGNING] Made signature for input {} (digest {})",
-                i,
-                hex::encode(digest)
-            );
-        }
-
-        // Serialize to BtcIndexedSignature for network/storage
-        let mut btc_sigs: Vec<BtcIndexedSignature> = Vec::with_capacity(per_input_sigs.len());
-        for (i, rsig) in &per_input_sigs {
-            let (recovery_id, comp) = rsig.serialize_compact();
-            btc_sigs.push(BtcIndexedSignature {
-                input_index: *i,
-                signature: ECDSASignature {
-                    signature: comp.to_vec(), // 64 bytes r||s
-                    signer_id: self.id.clone(),
-                    recovery_id: recovery_id.to_i32() as u8,
-                    user_eth_address: user_eth_address.clone(),
-                },
-            });
-        }
-
-        info!(
-            "✅ [SIGNING] Node {} produced {} per-input signatures",
-            self.id,
-            btc_sigs.len()
-        );
-
-        // ===== Stash our signatures locally under (round → input_index → peer → sig) =====
-        {
-            let mut by_round = self.btc_state.btc_sigs_by_round.write().await;
-            let rmap = by_round.entry(current_round).or_insert_with(HashMap::new);
-            for btc_sig in &btc_sigs {
-                let imap = rmap.entry(btc_sig.input_index).or_insert_with(HashMap::new);
-                imap.insert(self.id.clone(), btc_sig.signature.clone());
-            }
         }
 
         // ===== Stash BTC extras alongside the unsigned tx for the finalizer =====
+        // Both DKG and observer nodes store the TX data so any node can act as final node.
         let from_kind = SpendKind::P2PKH;
 
         // Convert to fixed arrays for serialization in extras

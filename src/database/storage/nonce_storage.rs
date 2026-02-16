@@ -139,12 +139,23 @@ impl NonceStorage {
         Ok(())
     }
 
-    /// Remove a tuple ID from the available list
+    /// Remove a tuple ID from the available list (internal use by consume_nonce_tuple)
     async fn remove_from_available_ids(&self, tuple_id: &str) -> Result<()> {
         let mut ids = self.get_available_ids().await?;
         ids.retain(|id| id != tuple_id);
         self.db.put_string(keys::NONCE_AVAILABLE_IDS, &ids)?;
         Ok(())
+    }
+
+    /// Remove a tuple ID from the available list without marking it consumed.
+    ///
+    /// Used by the coordinator during `reserve_nonces_for_batch()` to prevent
+    /// the same nonce from being selected by multiple sequential reservation
+    /// calls within the same epoch (e.g. processBatchIntents contract call
+    /// vs per-intent UserToVault signing). The nonce data remains in storage
+    /// so that all nodes can still look it up by ID via `acquire_specific_nonce()`.
+    pub async fn remove_from_available_ids_public(&self, tuple_id: &str) -> Result<()> {
+        self.remove_from_available_ids(tuple_id).await
     }
 
     /// Delete old consumed nonces to free storage

@@ -426,11 +426,33 @@ impl MpcNetworkLayer {
             None
         };
 
+        // Include vault group key so observer nodes can derive liquidity operator addresses
+        let vault_group_key = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.get_vault_group_key().await.map(|pk| {
+                let affine: k256::AffinePoint = pk.into();
+                crate::types::SerializablePoint(affine)
+            })
+        } else {
+            None
+        };
+
+        // Include final public key (network group key) so observer nodes can derive network ETH/BTC addresses
+        let final_public_key = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.get_final_public_key().await.map(|pk| {
+                let affine: k256::AffinePoint = pk.into();
+                crate::types::SerializablePoint(affine)
+            })
+        } else {
+            None
+        };
+
         RPCResponse::PeerList {
             peers,
             indices,
             addresses,
             dkg_signer_count,
+            vault_group_key,
+            final_public_key,
         }
     }
 
@@ -964,6 +986,8 @@ impl MpcNetworkLayer {
                 indices,
                 addresses,
                 dkg_signer_count,
+                vault_group_key,
+                final_public_key,
             } => {
                 // Store DKG signer count if provided (needed for HRW filtering on observer nodes)
                 if let Some(count) = dkg_signer_count {
@@ -974,6 +998,23 @@ impl MpcNetworkLayer {
                             } else {
                                 info!("🔢 [PEER_LIST] Stored DKG signer count from peer: {}", count);
                             }
+                        }
+                        // Mark initial DKG as complete for this observer node so that
+                        // future peer additions don't keep bumping the threshold
+                        if !dkg_node.is_initial_dkg_complete().await {
+                            if let Err(e) = dkg_node.mark_initial_dkg_complete().await {
+                                warn!("⚠️ [PEER_LIST] Failed to set initial_dkg_complete for observer: {}", e);
+                            } else {
+                                info!("✅ [PEER_LIST] Marked initial DKG as complete on observer (dkg_signer_count={})", count);
+                            }
+                        }
+                        // Fix signing threshold: observer nodes must use DKG signer threshold
+                        // (dkg_signer_count / 2 + 1), NOT total_nodes / 2 + 1
+                        let dkg_threshold = count / 2 + 1;
+                        if let Some(arc) = &self.signing_node {
+                            let mut signing_node = arc.lock().await;
+                            signing_node.set_threshold(dkg_threshold);
+                            info!("🔄 [THRESHOLD] Observer node signing threshold set to {} (based on {} DKG signers)", dkg_threshold, count);
                         }
                     }
                     // Also update the NonceManager's dkg_signer_count so observer nodes
@@ -1005,6 +1046,49 @@ impl MpcNetworkLayer {
                             .send_request(&peer, RPCRequest::RequestNoncePoolSync);
                     }
                 }
+
+                // Store vault group key and derived liquidity operator addresses
+                // (needed by observer nodes that joined after DKG for TICS UTV batch signing)
+                if let Some(vgk) = vault_group_key {
+                    let vault_pk = k256::ProjectivePoint::from(vgk.0);
+                    if let Some(dkg_node) = &self.dkg_node {
+                        // Only store if not already present (avoid overwriting DKG-derived data)
+                        if dkg_node.get_vault_group_key().await.is_none() {
+                            if let Err(e) = dkg_node.set_vault_group_key(vault_pk).await {
+                                warn!("⚠️ [PEER_LIST] Failed to store vault group key: {}", e);
+                            } else {
+                                info!("🏦 [PEER_LIST] Stored vault group key from peer");
+                            }
+
+                            // Derive and store liquidity operator ETH/BTC addresses
+                            let vault_eth = crate::utils::get_eth_address_from_group_key(vault_pk);
+                            let vault_btc = crate::utils::get_btc_address_from_group_key(vault_pk);
+                            if let Err(e) = dkg_node.set_liquidity_operator_addresses(&vault_eth, &vault_btc).await {
+                                warn!("⚠️ [PEER_LIST] Failed to store liquidity operator addresses: {}", e);
+                            } else {
+                                info!("🏦 [PEER_LIST] Stored liquidity operator addresses (ETH: {}, BTC: {})", vault_eth, vault_btc);
+                            }
+                        }
+                    }
+                }
+
+                // Store final public key (network group key) for deriving network ETH/BTC addresses
+                // (needed by observer nodes for batch processing — BTC/ETH UTV, withdraw, claim-reward)
+                if let Some(fpk) = final_public_key {
+                    let network_pk = k256::ProjectivePoint::from(fpk.0);
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if dkg_node.get_final_public_key().await.is_none() {
+                            if let Err(e) = dkg_node.set_final_public_key(network_pk).await {
+                                warn!("⚠️ [PEER_LIST] Failed to store final public key: {}", e);
+                            } else {
+                                let net_eth = crate::utils::get_eth_address_from_group_key(network_pk);
+                                let net_btc = crate::utils::get_btc_address_from_group_key(network_pk);
+                                info!("🔑 [PEER_LIST] Stored network group key from peer (ETH: {}, BTC: {})", net_eth, net_btc);
+                            }
+                        }
+                    }
+                }
+
                 self.handle_peer_list_response(swarm, peers, indices, addresses)
                     .await?;
             }
