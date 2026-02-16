@@ -244,6 +244,11 @@ impl DKGNode {
         self.storage.get_final_public().await.unwrap_or_default()
     }
 
+    /// Store the final public key (network group key) - used by observer nodes receiving it via PeerList
+    pub async fn set_final_public_key(&self, public_key: ProjectivePoint) -> Result<()> {
+        self.storage.set_final_public(public_key).await
+    }
+
     pub async fn get_vault_tweaked_secret_share(&self) -> Option<Scalar> {
         self.storage
             .get_vault_tweaked_secret()
@@ -255,6 +260,16 @@ impl DKGNode {
         self.storage.get_vault_group_key().await.unwrap_or_default()
     }
 
+    /// Store the vault group key (used by observer nodes receiving it via PeerList)
+    pub async fn set_vault_group_key(&self, vault_group_key: ProjectivePoint) -> Result<()> {
+        self.storage.set_vault_group_key(vault_group_key).await
+    }
+
+    /// Store the liquidity operator ETH/BTC addresses (used by observer nodes receiving via PeerList)
+    pub async fn set_liquidity_operator_addresses(&self, eth_address: &str, btc_address: &str) -> Result<()> {
+        self.storage.set_liquidity_operator_addresses(eth_address, btc_address).await
+    }
+
     pub async fn is_completed(&self) -> bool {
         matches!(self.state.read().unwrap().status, DKGStatus::Completed)
     }
@@ -264,6 +279,11 @@ impl DKGNode {
             .is_initial_dkg_complete()
             .await
             .unwrap_or(false)
+    }
+
+    /// Mark initial DKG as complete (used by observer nodes that learn about DKG from PeerList)
+    pub async fn mark_initial_dkg_complete(&self) -> Result<()> {
+        self.storage.set_initial_dkg_complete(true).await
     }
 
     /// Get the number of initial DKG signers (sync, from storage)

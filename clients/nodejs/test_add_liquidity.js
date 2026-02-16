@@ -10,21 +10,21 @@
  */
 
 import http from 'http';
-import crypto from 'crypto';
 import secp256k1 from 'secp256k1';
 import keccak from 'keccak';
 
 const RPC_BASE_URL = process.env.QUBETICS_RPC_URL ?? 'http://127.0.0.1:8082';
 const ADD_ENDPOINT = `${RPC_BASE_URL}/solver_add_liquidity`;
 
-// SOLVER_004 config
-const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_004';
+// SOLVER_003 config
+const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_003';
 const TEST_PRIVATE_KEY =
   process.env.SOLVER_PRIVATE_KEY ??
-  '0x4f1dce53664453b7160cdf7f91c12539b71f4392e10f3c5c46812da97eb6a105';
+  'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
 
-const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? '10000000000000000000000';
-const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? null;
+const SOLVER_ADDRESS = process.env.SOLVER_ADDRESS ?? '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+const DEFAULT_AMOUNT = process.env.AMOUNT ?? '10000000000000000000000';
+const CHAIN_ID = parseInt(process.env.CHAIN_ID ?? '9029', 10); // 9029 = EVM, 0 = BTC
 
 const colors = {
   red: '\x1b[31m',
@@ -93,15 +93,18 @@ function createSignature(message, privateKeyHex) {
 async function runAddLiquidity() {
   console.log(`\n${colors.blue}🧪 Testing add liquidity...${colors.reset}`);
 
-  const message = `add-liquidity:${crypto.randomUUID()}`;
+  // The message must be a JSON string with the payload fields
+  const message = JSON.stringify({
+    solverId: SOLVER_ID,
+    solverAddress: SOLVER_ADDRESS,
+    amount: DEFAULT_AMOUNT,
+    chainId: CHAIN_ID,
+  });
   const signature = createSignature(message, TEST_PRIVATE_KEY);
 
   const payload = {
     signature,
     message,
-    solver_id: SOLVER_ID,
-    amount_tics: DEFAULT_TICS_AMOUNT,
-    amount_btc: DEFAULT_BTC_AMOUNT,
   };
 
   console.log(`${colors.yellow}📤 Sending request to ${ADD_ENDPOINT}${colors.reset}`);

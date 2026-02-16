@@ -644,33 +644,13 @@ impl SigningNode {
         tics_claim_reward_identifiers: Option<Vec<String>>,
         nonce_tuple_id: Option<String>,
     ) -> Result<()> {
-        // Determine which key to use for signing
-        // Redacted user_tweaked_share from logs
-        let signing_key = if let Some(tweaked_share) = user_tweaked_share {
-            // Use user's tweaked share for user deposits
-            info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
-            Self::derive_secp_secret(&tweaked_share)?
-        } else if let Some(explicit_key) = signing_key_override {
-            info!("🔑 [SIGNING] Using provided signing key override for signing");
-            Self::derive_secp_secret(&explicit_key)?
-        } else {
-            // Use network DKG share for network withdrawals
-            info!("🔑 [SIGNING] Using network DKG share for signing");
-            match self.key_store.clone_private_key() {
-                Some(key) => key,
-                None => {
-                    error!(
-                        "❌ [SIGNING] Node {} cannot sign: no private key available",
-                        self.id
-                    );
-                    return Err(anyhow!("No private key available"));
-                }
-            }
-        };
+        let has_dkg = self.has_dkg_share().await;
 
         debug!(
-            "[SIGNING] Node {} signing contract tx: to={}, value={}, data_len={}",
-            self.id, transaction.to, transaction.value, transaction.data.len()
+            "[SIGNING] Node {} {} contract tx: to={}, value={}, data_len={}",
+            self.id,
+            if has_dkg { "signing" } else { "preparing (observer)" },
+            transaction.to, transaction.value, transaction.data.len()
         );
 
         // Create chain transaction from contract transaction
@@ -731,90 +711,160 @@ impl SigningNode {
             );
         }
 
-        // Create ECDSA signature using secp256k1 with COORDINATED nonce
-        let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = if let Some(ref tuple_id) = nonce_tuple_id {
-            // Use coordinated nonce - all nodes will use the same k value
-            info!(
-                "🔐 [SIGNING] Using coordinated nonce {} for contract signing",
-                tuple_id
-            );
-
-            // Acquire the specific nonce from the pool
-            if let Some(nm) = &self.nonce_manager {
-                let nm_guard = nm.lock().await;
-                match nm_guard.acquire_specific_nonce(tuple_id).await {
-                    Ok(Some(nonce_tuple)) => {
-                        info!(
-                            "🔐 [CONTRACT_SIGN] Acquired coordinated nonce {} (r_scalar: 0x{}...)",
-                            tuple_id,
-                            hex::encode(&nonce_tuple.r_scalar.0.to_bytes()[..4])
-                        );
-                        drop(nm_guard); // Release lock before signing
-                        self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?
-                    }
-                    Ok(None) => {
+        // DKG nodes: create ECDSA signature; Observer nodes: skip signing
+        if has_dkg {
+            // Determine which key to use for signing
+            let signing_key = if let Some(tweaked_share) = user_tweaked_share {
+                info!("🔑 [SIGNING] Using user-specific tweaked share for signing");
+                Self::derive_secp_secret(&tweaked_share)?
+            } else if let Some(explicit_key) = signing_key_override {
+                info!("🔑 [SIGNING] Using provided signing key override for signing");
+                Self::derive_secp_secret(&explicit_key)?
+            } else {
+                info!("🔑 [SIGNING] Using network DKG share for signing");
+                match self.key_store.clone_private_key() {
+                    Some(key) => key,
+                    None => {
                         error!(
-                            "🔴 [CONTRACT_SIGN] Nonce {} not found or already consumed",
-                            tuple_id
+                            "❌ [SIGNING] Node {} cannot sign: no private key available",
+                            self.id
                         );
-                        return Err(anyhow!("Nonce {} not found or already consumed", tuple_id));
-                    }
-                    Err(e) => {
-                        error!(
-                            "🔴 [CONTRACT_SIGN] Failed to acquire nonce {}: {}",
-                            tuple_id, e
-                        );
-                        return Err(anyhow!("Failed to acquire nonce {}: {}", tuple_id, e));
+                        return Err(anyhow!("No private key available"));
                     }
                 }
+            };
+
+            // Create ECDSA signature using secp256k1 with COORDINATED nonce
+            let msg = Message::from_digest_slice(&tx_hash)?;
+            let signature = if let Some(ref tuple_id) = nonce_tuple_id {
+                // Use coordinated nonce - all nodes will use the same k value
+                info!(
+                    "🔐 [SIGNING] Using coordinated nonce {} for contract signing",
+                    tuple_id
+                );
+
+                // Acquire the specific nonce from the pool
+                if let Some(nm) = &self.nonce_manager {
+                    let nm_guard = nm.lock().await;
+                    match nm_guard.acquire_specific_nonce(tuple_id).await {
+                        Ok(Some(nonce_tuple)) => {
+                            info!(
+                                "🔐 [CONTRACT_SIGN] Acquired coordinated nonce {} (r_scalar: 0x{}...)",
+                                tuple_id,
+                                hex::encode(&nonce_tuple.r_scalar.0.to_bytes()[..4])
+                            );
+                            drop(nm_guard); // Release lock before signing
+                            self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?
+                        }
+                        Ok(None) => {
+                            error!(
+                                "🔴 [CONTRACT_SIGN] Nonce {} not found or already consumed",
+                                tuple_id
+                            );
+                            return Err(anyhow!("Nonce {} not found or already consumed", tuple_id));
+                        }
+                        Err(e) => {
+                            error!(
+                                "🔴 [CONTRACT_SIGN] Failed to acquire nonce {}: {}",
+                                tuple_id, e
+                            );
+                            return Err(anyhow!("Failed to acquire nonce {}: {}", tuple_id, e));
+                        }
+                    }
+                } else {
+                    error!("🔴 [CONTRACT_SIGN] Nonce manager not available");
+                    return Err(anyhow!("Nonce manager not available for coordinated signing"));
+                }
             } else {
-                error!("🔴 [CONTRACT_SIGN] Nonce manager not available");
-                return Err(anyhow!("Nonce manager not available for coordinated signing"));
-            }
-        } else {
-            // No nonce_tuple_id provided - this is a BUG in the caller
-            error!(
-                "🔴 [SIGNING] No nonce_tuple_id provided for contract signing - this is a coordination bug!"
+                // No nonce_tuple_id provided - this is a BUG in the caller
+                error!(
+                    "🔴 [SIGNING] No nonce_tuple_id provided for contract signing - this is a coordination bug!"
+                );
+                return Err(anyhow!(
+                    "No nonce_tuple_id provided. All signing operations must use coordinated nonces. \
+                    The coordinator must reserve a nonce and include the tuple_id in the broadcast message."
+                ));
+            };
+            let (recovery_id, signature_bytes) = signature.serialize_compact();
+
+            info!(
+                "✍️ [SIGNING] Node {} created Ethereum contract signature",
+                self.id
             );
-            return Err(anyhow!(
-                "No nonce_tuple_id provided. All signing operations must use coordinated nonces. \
-                The coordinator must reserve a nonce and include the tuple_id in the broadcast message."
-            ));
-        };
-        let (recovery_id, signature_bytes) = signature.serialize_compact();
 
-        info!(
-            "✍️ [SIGNING] Node {} created Ethereum contract signature",
-            self.id
-        );
+            // Convert to legacy ECDSASignature for compatibility
+            let ecdsa_signature = ECDSASignature {
+                signature: signature_bytes.to_vec(),
+                signer_id: self.id.clone(),
+                recovery_id: recovery_id.to_i32() as u8,
+                user_eth_address: user_eth_address.clone(),
+            };
 
-        // Convert to legacy ECDSASignature for compatibility
-        let ecdsa_signature = ECDSASignature {
-            signature: signature_bytes.to_vec(),
-            signer_id: self.id.clone(),
-            recovery_id: recovery_id.to_i32() as u8,
-            user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
-        };
+            // Synchronize VRF rounds before advancing and acquiring the signing round
+            let round = if let Some(vrf_service) = self.coordination.vrf_service() {
+                vrf_service.sync_rounds_before_signing().await?;
+                vrf_service.get_next_round().await
+            } else {
+                0
+            };
 
-        // Synchronize VRF rounds before advancing and acquiring the signing round
-        let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
-            vrf_service.get_next_round().await
+            // Store signature by round
+            {
+                let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
+                let round_signatures = signatures_by_round
+                    .entry(round)
+                    .or_insert_with(HashMap::new);
+                round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            }
+
+            // Store original transaction and broadcast signature (DKG path continues below)
+            self.store_contract_tx_and_broadcast(
+                round, chain_transaction, tx_bytes, intent_hashes,
+                tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                request_id, original_request,
+            ).await
         } else {
-            0
-        };
+            // Observer node: skip signing, just advance VRF and store TX
+            info!(
+                "ℹ️ [SIGNING] Observer node {} preparing contract TX (no signing)",
+                self.id
+            );
 
-        // Store signature by round before acquiring any pending transaction locks to keep
-        // lock ordering consistent across signing paths
-        {
-            let mut signatures_by_round = self.signatures.signatures_by_round.write().await;
-            let round_signatures = signatures_by_round
-                .entry(round)
-                .or_insert_with(HashMap::new);
-            round_signatures.insert(self.id.clone(), ecdsa_signature.clone());
+            // Synchronize VRF rounds and advance to keep in sync with DKG nodes
+            let round = if let Some(vrf_service) = self.coordination.vrf_service() {
+                vrf_service.sync_rounds_before_signing().await?;
+                vrf_service.get_next_round().await
+            } else {
+                0
+            };
 
+            info!(
+                "💾 [SIGNING] Observer node {} stored contract TX for round {} (ready for final-node reconstruction)",
+                self.id, round
+            );
+
+            // Store original transaction (same as DKG path, without signature broadcast)
+            self.store_contract_tx_and_broadcast(
+                round, chain_transaction, tx_bytes, intent_hashes,
+                tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                request_id, original_request,
+            ).await
         }
+    }
+
+    /// Store contract transaction in the appropriate pending store and populate intent_hashes_by_round.
+    /// Shared by both DKG nodes (after signing) and observer nodes (without signing).
+    async fn store_contract_tx_and_broadcast(
+        &self,
+        round: u64,
+        chain_transaction: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        intent_hashes: Vec<String>,
+        tics_withdraw_identifiers: Option<Vec<String>>,
+        tics_claim_reward_identifiers: Option<Vec<String>>,
+        request_id: Option<String>,
+        original_request: Option<()>,
+    ) -> Result<()> {
 
         // Store original transaction for reconstruction after aggregation (contract-specific path)
         // TICS withdraw batch: store in withdraw_pending_transactions_tics with identifiers for tx-id broadcast
@@ -1637,143 +1687,157 @@ impl SigningNode {
             .iter()
             .map(|(h, u, tx, bytes, _key)| (h.clone(), u.clone(), tx.clone(), bytes.clone()))
             .collect();
+        let batch_slot_count = batch_storage.len();
         {
             let mut store = self.pending.user_to_vault_tics_batch.write().await;
             store.insert(round, batch_storage);
         }
 
+        // Check if this node has a DKG share (needed for signing, not for TX building/storage)
+        let has_dkg = self.has_dkg_share().await;
+
         info!(
-            "📦 [TICS_UTV_BATCH] Node {} signing {} slots for round {} (final node: {}, coordinated: {})",
+            "📦 [TICS_UTV_BATCH] Node {} {} {} slots for round {} (final node: {}, coordinated: {})",
             self.id,
+            if has_dkg { "signing" } else { "preparing (observer)" },
             batch.len(),
             round,
             final_node_id,
             has_nonce_assignments
         );
 
-        for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
-            let signing_key = match key_opt {
-                Some(scalar) => Self::derive_secp_secret(&scalar)?,
-                None => {
-                    warn!(
-                        "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",
-                        intent_hash, user_eth
-                    );
-                    continue;
-                }
-            };
-            let eth_tx = match &chain_tx {
-                ChainTransaction::Ethereum(t) => t,
-                _ => {
-                    warn!(
-                        "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
-                        intent_hash
-                    );
-                    continue;
-                }
-            };
+        // DKG nodes: sign each slot and broadcast signatures + TX data
+        // Observer nodes: batch data is already stored above — skip signing
+        if has_dkg {
+            for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
+                let signing_key = match key_opt {
+                    Some(scalar) => Self::derive_secp_secret(&scalar)?,
+                    None => {
+                        warn!(
+                            "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",
+                            intent_hash, user_eth
+                        );
+                        continue;
+                    }
+                };
+                let eth_tx = match &chain_tx {
+                    ChainTransaction::Ethereum(t) => t,
+                    _ => {
+                        warn!(
+                            "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
+                            intent_hash
+                        );
+                        continue;
+                    }
+                };
 
-            // Get the assigned nonce for this intent - REQUIRED for security
-            let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
-                info!(
-                    "🔍 [TICS_UTV_BATCH] Intent {} has nonce assignment: {}",
-                    intent_hash, tuple_id
-                );
-                // Acquire the specific nonce assigned by coordinator
-                if let Some(nm) = &self.nonce_manager {
-                    let nm_guard = nm.lock().await;
-                    match nm_guard.acquire_specific_nonce(tuple_id).await {
-                        Ok(Some(tuple)) => {
-                            info!(
-                                "🔐 [TICS_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
-                                tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
-                            );
-                            tuple
+                // Get the assigned nonce for this intent - REQUIRED for security
+                let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
+                    info!(
+                        "🔍 [TICS_UTV_BATCH] Intent {} has nonce assignment: {}",
+                        intent_hash, tuple_id
+                    );
+                    // Acquire the specific nonce assigned by coordinator
+                    if let Some(nm) = &self.nonce_manager {
+                        let nm_guard = nm.lock().await;
+                        match nm_guard.acquire_specific_nonce(tuple_id).await {
+                            Ok(Some(tuple)) => {
+                                info!(
+                                    "🔐 [TICS_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
+                                    tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
+                                );
+                                tuple
+                            }
+                            Ok(None) => {
+                                error!(
+                                    "🔴 [TICS_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
+                                    tuple_id, intent_hash
+                                );
+                                continue;
+                            }
+                            Err(e) => {
+                                error!(
+                                    "🔴 [TICS_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
+                                    tuple_id, intent_hash, e
+                                );
+                                continue;
+                            }
                         }
-                        Ok(None) => {
-                            error!(
-                                "🔴 [TICS_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
-                                tuple_id, intent_hash
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            error!(
-                                "🔴 [TICS_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
-                                tuple_id, intent_hash, e
-                            );
-                            continue;
-                        }
+                    } else {
+                        error!(
+                            "🔴 [TICS_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                            intent_hash
+                        );
+                        continue;
                     }
                 } else {
                     error!(
-                        "🔴 [TICS_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                        "🔴 [TICS_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
                         intent_hash
                     );
                     continue;
-                }
-            } else {
-                error!(
-                    "🔴 [TICS_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
-                    intent_hash
-                );
-                continue;
-            };
-
-            // Sign with coordinated nonce (fixed k fallback removed for security)
-            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_with_nonce(
-                &tx_bytes,
-                eth_tx,
-                &signing_key,
-                Some(user_eth.clone()),
-                &nonce_tuple,
-            ).await?;
-
-            let slot_key: RoundSlotKey = (round, intent_hash.clone());
-            {
-                let mut by_slot = self.signatures.signatures_by_round_slot.write().await;
-                let entry = by_slot.entry(slot_key).or_default();
-                entry.insert(self.id.clone(), ecdsa_sig.clone());
-            }
-
-            let user_eth_clone = user_eth.clone();
-            let signature_msg = SigningMessage::ECDSASignature {
-                from: self.id.clone(),
-                signature: ecdsa_sig,
-                round,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth_clone),
-                slot_id: Some(intent_hash.clone()),
-            };
-            let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
-            let signature_data = serde_json::to_vec(&gossipsub_msg)?;
-            self.broadcast("signing", &signature_data).await?;
-            info!(
-                "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
-                intent_hash, round, final_node_id
-            );
-
-            // Send TX data for this slot to the final node for threshold verification.
-            // All DKG nodes broadcast their TX data; the final node accepts it once
-            // threshold matching copies arrive. This enables observer final nodes to
-            // reconstruct signed transactions without building TXs locally.
-            {
-                let chain_tx_json = serde_json::to_string(&chain_tx).ok();
-                let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
-                    from: self.id.clone(),
-                    round,
-                    tx_bytes: tx_bytes.clone(),
-                    intent_hash: Some(intent_hash.clone()),
-                    transaction_type: Some("UserToVault".to_string()),
-                    request_id: None,
-                    chain_tx_json,
-                    user_eth_address: Some(user_eth),
-                    batch_identifiers: None,
                 };
-                let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
-                let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
-                self.broadcast("signing", &tx_data_bytes).await?;
+
+                // Sign with coordinated nonce (fixed k fallback removed for security)
+                let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_with_nonce(
+                    &tx_bytes,
+                    eth_tx,
+                    &signing_key,
+                    Some(user_eth.clone()),
+                    &nonce_tuple,
+                ).await?;
+
+                let slot_key: RoundSlotKey = (round, intent_hash.clone());
+                {
+                    let mut by_slot = self.signatures.signatures_by_round_slot.write().await;
+                    let entry = by_slot.entry(slot_key).or_default();
+                    entry.insert(self.id.clone(), ecdsa_sig.clone());
+                }
+
+                let user_eth_clone = user_eth.clone();
+                let signature_msg = SigningMessage::ECDSASignature {
+                    from: self.id.clone(),
+                    signature: ecdsa_sig,
+                    round,
+                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                    user_eth_address: Some(user_eth_clone),
+                    slot_id: Some(intent_hash.clone()),
+                };
+                let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
+                let signature_data = serde_json::to_vec(&gossipsub_msg)?;
+                self.broadcast("signing", &signature_data).await?;
+                info!(
+                    "✅ [TICS_UTV_BATCH] Broadcasting partial for slot {} (round {}): final node {} will aggregate",
+                    intent_hash, round, final_node_id
+                );
+
+                // Send TX data for this slot to the final node for threshold verification.
+                // All DKG nodes broadcast their TX data; the final node accepts it once
+                // threshold matching copies arrive. This enables observer final nodes to
+                // reconstruct signed transactions without building TXs locally.
+                {
+                    let chain_tx_json = serde_json::to_string(&chain_tx).ok();
+                    let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
+                        from: self.id.clone(),
+                        round,
+                        tx_bytes: tx_bytes.clone(),
+                        intent_hash: Some(intent_hash.clone()),
+                        transaction_type: Some("UserToVault".to_string()),
+                        request_id: None,
+                        chain_tx_json,
+                        user_eth_address: Some(user_eth),
+                        batch_identifiers: None,
+                    };
+                    let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
+                    let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
+                    self.broadcast("signing", &tx_data_bytes).await?;
+                }
             }
+        } else {
+            info!(
+                "ℹ️ [TICS_UTV_BATCH] Observer node {} stored batch data for round {} ({} slots) — signing skipped",
+                self.id, round, batch_slot_count
+            );
         }
         Ok(())
     }

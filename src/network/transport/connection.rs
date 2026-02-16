@@ -138,9 +138,22 @@ impl MpcNetworkLayer {
             false
         };
         if !initial_dkg_complete {
+            // If we already know the DKG signer count, use it for threshold
+            // instead of total_nodes — prevents observer threshold inflation
+            let effective_threshold = if let Some(dkg_node) = &self.dkg_node {
+                if let Some(dkg_count) = dkg_node.get_dkg_signer_count() {
+                    let t = dkg_count / 2 + 1;
+                    info!("🔄 [THRESHOLD] Using DKG-based threshold {} (from {} DKG signers)", t, dkg_count);
+                    t
+                } else {
+                    new_threshold
+                }
+            } else {
+                new_threshold
+            };
             if let Some(arc) = &self.signing_node {
                 let mut signing_node = arc.lock().await;
-                signing_node.set_threshold(new_threshold);
+                signing_node.set_threshold(effective_threshold);
             }
         } else {
             info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged after disconnect - fixed by initial DKG");
@@ -213,15 +226,44 @@ impl MpcNetworkLayer {
             } else {
                 false
             };
-            if !initial_dkg_complete {
-                if let Some(arc) = &self.signing_node {
-                    let mut signing_node = arc.lock().await;
-                    let new_threshold = self.node_manager.get_threshold();
-                    signing_node.set_threshold(new_threshold);
-                    info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer addition", new_threshold);
+            if let Some(arc) = &self.signing_node {
+                let mut signing_node = arc.lock().await;
+
+                let new_node_count = self.node_manager.get_active_nodes().len();
+
+                if !initial_dkg_complete {
+                    // Before DKG completion: only update total_nodes counter.
+                    // Do NOT trigger nonce generation or stale deletion yet —
+                    // dkg_signer_count is still unknown and nonces created now
+                    // would have inconsistent contributor counts across nodes.
+                    signing_node.update_nonce_manager_total_nodes(new_node_count).await;
+                    info!("⏳ [NONCE] Updated total_nodes={} (nonce generation deferred until DKG complete)", new_node_count);
+
+                    // If DKG signer count is already known (observer received it from PeerList),
+                    // use it for threshold instead of total_nodes to prevent inflation
+                    let effective_threshold = if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(dkg_count) = dkg_node.get_dkg_signer_count() {
+                            let t = dkg_count / 2 + 1;
+                            info!("🔄 [THRESHOLD] Using DKG-based threshold {} (from {} DKG signers)", t, dkg_count);
+                            t
+                        } else {
+                            self.node_manager.get_threshold()
+                        }
+                    } else {
+                        self.node_manager.get_threshold()
+                    };
+                    signing_node.set_threshold(effective_threshold);
+                    info!("🔄 [THRESHOLD] Updated signing node threshold to {} after peer addition", effective_threshold);
+                } else {
+                    // After DKG completion: safe to delete stale nonces and regenerate.
+                    // handle_nonce_manager_node_joined does three things:
+                    // 1. Updates total_nodes so nonce generation waits for all nodes
+                    // 2. Deletes stale nonces (created with fewer nodes than current count)
+                    // 3. Triggers immediate nonce regeneration with all nodes
+                    signing_node.handle_nonce_manager_node_joined(new_node_count).await;
+                    info!("🔢 [NONCE] Refreshed NonceManager after peer addition (total_nodes={})", new_node_count);
+                    info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged - new node joined after initial DKG (observer only)");
                 }
-            } else {
-                info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged - new node joined after initial DKG (observer only)");
             }
         }
 

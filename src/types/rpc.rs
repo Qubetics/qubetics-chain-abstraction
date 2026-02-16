@@ -138,6 +138,10 @@ pub enum RPCResponse {
         addresses: Vec<Option<String>>, // multiaddr per peer, None if unknown
         #[serde(default)]
         dkg_signer_count: Option<usize>, // number of initial DKG signers (for HRW filtering)
+        #[serde(default)]
+        vault_group_key: Option<SerializablePoint>, // vault (liquidity operator) group key for observer nodes
+        #[serde(default)]
+        final_public_key: Option<SerializablePoint>, // network group key for deriving network ETH/BTC addresses
     },
     Custom {
         id: String,

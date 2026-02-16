@@ -70,7 +70,7 @@ pub struct SigningNode {
     coordination: Coordination,
     chain_handler: Arc<dyn ChainHandler>, // Chain-specific operations for regular transactions
     contract_chain_handler: Arc<dyn ChainHandler>, // Chain handler specifically for contract transactions
-    pending: PendingStore,
+    pub(crate) pending: PendingStore,
     btc_state: BtcAggregationState,
     /// BTC UserToVault batch aggregation state (multi-input per slot)
     btc_utv_state: BtcUtvAggregationState,
@@ -883,57 +883,69 @@ impl SigningNode {
             }
 
             // Nonce protocol messages - forward to NonceManager
-            // Observer nodes (without DKG shares) skip nonce processing entirely
-            // since they cannot sign and don't need nonces
+            // ONLY DKG signers participate in nonce commit-reveal protocol.
+            // Observer nodes receive finalized nonces via NonceTupleBroadcast instead.
+            // If observers participate, different nodes may aggregate different sets of k_i
+            // (due to varying effective_total), producing different aggregated_k values
+            // for the same tuple_id — which makes partial signatures incompatible.
             SigningMessage::NonceCommitment { ref from, ref batch_id, round, batch_size, .. } => {
                 if !self.has_dkg_share().await {
-                    return Ok(()); // Observer node - skip nonce processing
-                }
-                info!(
-                    "📥 [SIGNING] Node {} received nonce commitment from {} for batch {} round {} (batch_size: {})",
-                    self.id, from, batch_id, round, batch_size
-                );
-                if let Some(manager) = &self.nonce_manager {
-                    let mgr = manager.lock().await;
-                    if let Err(e) = mgr.handle_message(msg.clone()).await {
-                        warn!("⚠️ [SIGNING] Failed to handle nonce commitment: {}", e);
+                    info!(
+                        "ℹ️ [SIGNING] Observer node {} ignoring nonce commitment from {} for batch {} (observers receive nonces via NonceTupleBroadcast)",
+                        self.id, from, batch_id
+                    );
+                } else {
+                    info!(
+                        "📥 [SIGNING] Node {} received nonce commitment from {} for batch {} round {} (batch_size: {})",
+                        self.id, from, batch_id, round, batch_size
+                    );
+                    if let Some(manager) = &self.nonce_manager {
+                        let mgr = manager.lock().await;
+                        if let Err(e) = mgr.handle_message(msg.clone()).await {
+                            warn!("⚠️ [SIGNING] Failed to handle nonce commitment: {}", e);
+                        }
                     }
                 }
             }
             SigningMessage::NonceReveal { ref from, ref batch_id, round, .. } => {
                 if !self.has_dkg_share().await {
-                    return Ok(());
-                }
-                info!(
-                    "📥 [SIGNING] Node {} received nonce reveal from {} for batch {} round {}",
-                    self.id, from, batch_id, round
-                );
-                if let Some(manager) = &self.nonce_manager {
-                    let mgr = manager.lock().await;
-                    if let Err(e) = mgr.handle_message(msg.clone()).await {
-                        warn!("⚠️ [SIGNING] Failed to handle nonce reveal: {}", e);
+                    info!(
+                        "ℹ️ [SIGNING] Observer node {} ignoring nonce reveal from {} for batch {}",
+                        self.id, from, batch_id
+                    );
+                } else {
+                    info!(
+                        "📥 [SIGNING] Node {} received nonce reveal from {} for batch {} round {}",
+                        self.id, from, batch_id, round
+                    );
+                    if let Some(manager) = &self.nonce_manager {
+                        let mgr = manager.lock().await;
+                        if let Err(e) = mgr.handle_message(msg.clone()).await {
+                            warn!("⚠️ [SIGNING] Failed to handle nonce reveal: {}", e);
+                        }
                     }
                 }
             }
             SigningMessage::RequestNonceGeneration { ref batch_id, round: _, ref coordinator_id, batch_size } => {
                 if !self.has_dkg_share().await {
-                    return Ok(());
-                }
-                info!(
-                    "📥 [SIGNING] Node {} received nonce generation request from {} for batch {} (size: {})",
-                    self.id, coordinator_id, batch_id, batch_size
-                );
-                if let Some(manager) = &self.nonce_manager {
-                    let mgr = manager.lock().await;
-                    if let Err(e) = mgr.handle_message(msg.clone()).await {
-                        warn!("⚠️ [SIGNING] Failed to handle nonce generation request: {}", e);
+                    info!(
+                        "ℹ️ [SIGNING] Observer node {} ignoring nonce generation request from {} for batch {}",
+                        self.id, coordinator_id, batch_id
+                    );
+                } else {
+                    info!(
+                        "📥 [SIGNING] Node {} received nonce generation request from {} for batch {} (size: {})",
+                        self.id, coordinator_id, batch_id, batch_size
+                    );
+                    if let Some(manager) = &self.nonce_manager {
+                        let mgr = manager.lock().await;
+                        if let Err(e) = mgr.handle_message(msg.clone()).await {
+                            warn!("⚠️ [SIGNING] Failed to handle nonce generation request: {}", e);
+                        }
                     }
                 }
             }
             SigningMessage::NonceGenerationComplete { ref from, ref batch_id, round: _, tuples_count, success } => {
-                if !self.has_dkg_share().await {
-                    return Ok(());
-                }
                 info!(
                     "📥 [SIGNING] Node {} received nonce generation complete from {} for batch {} ({} tuples, success: {})",
                     self.id, from, batch_id, tuples_count, success
@@ -1460,6 +1472,17 @@ impl SigningNode {
         }
     }
 
+    /// Update the NonceManager's dkg_signer_count.
+    ///
+    /// Called when DKG completes or when existing DKG shares are loaded from disk
+    /// to ensure nonce generation uses the correct peer count for threshold checks.
+    pub async fn update_nonce_dkg_signer_count(&self, count: usize) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.update_dkg_signer_count(count);
+        }
+    }
+
     /// Handle a new node joining - delete stale nonces and regenerate.
     ///
     /// When a new node joins, all existing nonces become stale because
@@ -1565,6 +1588,53 @@ impl SigningNode {
                     warn!("[SIGNING] Failed to check nonce pool status: {}", e);
                 }
             }
+        }
+    }
+
+    /// Invalidate nonces locally (idempotent) and optionally broadcast to all nodes.
+    ///
+    /// Call this when a coordinated nonce is missing during signing.
+    /// The broadcast ensures all other nodes also remove the nonce from their pool.
+    pub async fn invalidate_and_broadcast_nonces(
+        &self,
+        nonce_tuple_ids: Vec<String>,
+        reason: &str,
+    ) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            // Invalidate locally first
+            mgr.invalidate_nonces(&nonce_tuple_ids, reason).await;
+            // Broadcast to all nodes
+            if let Err(e) = mgr
+                .broadcast_nonce_invalidation(nonce_tuple_ids, reason)
+                .await
+            {
+                warn!(
+                    "⚠️ [SIGNING] Failed to broadcast nonce invalidation: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    /// Invalidate nonces locally only (no broadcast).
+    /// Used when processing a NonceInvalidation gossipsub message from another node.
+    pub async fn invalidate_nonces_local(&self, nonce_tuple_ids: &[String], reason: &str) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.invalidate_nonces(nonce_tuple_ids, reason).await;
+        }
+    }
+
+    /// Remove nonce tuple IDs from the local available pool.
+    ///
+    /// Called by receiving nodes when they get a batch broadcast containing
+    /// nonce assignments from the coordinator. Prevents a second coordinator
+    /// from independently selecting the same nonce for a different operation.
+    pub async fn remove_nonces_from_available_pool(&self, tuple_ids: &[String]) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.remove_nonces_from_pool(tuple_ids).await;
         }
     }
 

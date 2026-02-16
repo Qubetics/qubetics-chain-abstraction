@@ -279,14 +279,47 @@ impl MpcNetworkLayer {
         }
 
         // Trigger nonce pre-generation on first clock tick when network is ready
-        // This ensures nonces are generated after P2P connections are established
-        // Only for DKG participants (initial nodes) - observer nodes skip nonce generation
-        if let Some(arc) = &self.signing_node {
+        // GATE: Only start nonce generation AFTER initial DKG is complete.
+        // Before DKG completion, nodes are still joining and dkg_signer_count is unknown,
+        // which causes nonces to be created with inconsistent contributor counts across nodes.
+        let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.is_initial_dkg_complete().await
+        } else {
+            false
+        };
+
+        if !initial_dkg_complete {
+            info!("⏳ [CLOCK] Skipping nonce pre-generation - initial DKG not yet complete");
+        } else if let Some(arc) = &self.signing_node {
             let signing_node = arc.lock().await;
-            if signing_node.has_dkg_share().await && !signing_node.is_nonce_pool_ready().await {
-                info!("🎲 [CLOCK] Network ready, triggering nonce pre-generation");
-                if let Err(e) = signing_node.start_nonce_pregeneration().await {
-                    warn!("⚠️ [CLOCK] Failed to start nonce pre-generation: {}", e);
+
+            // Only DKG signers initiate nonce pre-generation.
+            // Observer nodes receive finalized nonces via NonceTupleBroadcast.
+            if !signing_node.has_dkg_share().await {
+                // Observer: just ensure NonceManager has correct dkg_signer_count
+                // for nonce pool filtering, but don't start generation
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(count) = dkg_node.get_dkg_signer_count() {
+                        signing_node.update_nonce_dkg_signer_count(count).await;
+                    }
+                }
+            } else {
+                // DKG signer: update NonceManager params and start pre-generation
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(count) = dkg_node.get_dkg_signer_count() {
+                        signing_node.update_nonce_dkg_signer_count(count).await;
+                    }
+                }
+                let current_node_count = self.node_manager.get_total_nodes();
+                if current_node_count > 0 {
+                    signing_node.update_nonce_manager_total_nodes(current_node_count).await;
+                }
+
+                if !signing_node.is_nonce_pool_ready().await {
+                    info!("🎲 [CLOCK] DKG complete + network ready, triggering nonce pre-generation");
+                    if let Err(e) = signing_node.start_nonce_pregeneration().await {
+                        warn!("⚠️ [CLOCK] Failed to start nonce pre-generation: {}", e);
+                    }
                 }
             }
         }
