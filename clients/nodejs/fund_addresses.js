@@ -92,7 +92,7 @@ async function main() {
     log(`📊 Required: ${totalTics} TICS`, 'cyan');
     log('');
 
-    if (balance < totalRequired) {
+    if (balance.lt(totalRequired)) {
       log('❌ Insufficient balance', 'red');
       return;
     }

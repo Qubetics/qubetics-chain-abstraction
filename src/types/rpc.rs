@@ -123,6 +123,10 @@ pub enum RPCRequest {
         message_type: String,
         message_id: String,
     },
+
+    /// Request available (unconsumed) nonce tuples from a DKG peer.
+    /// Used by late-joining observer nodes that missed the NonceTupleBroadcast.
+    RequestNoncePoolSync,
 }
 
 /// RPC response variants.
@@ -212,6 +216,12 @@ pub enum RPCResponse {
     CriticalDeliveryAck {
         message_type: String,
         message_id: String,
+    },
+
+    /// Response with available (unconsumed) nonce tuples for pool sync.
+    /// Sent by DKG nodes to late-joining observer nodes.
+    NoncePoolSync {
+        tuples: Vec<crate::types::nonce::NonceTuple>,
     },
 }
 

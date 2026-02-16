@@ -66,6 +66,12 @@ pub struct NonceManager {
     /// Total number of nodes (updated dynamically when nodes join/leave)
     total_nodes: AtomicUsize,
 
+    /// Number of DKG signers (nodes that participate in nonce generation).
+    /// Observer nodes do NOT participate in commit-reveal nonce generation,
+    /// so nonces will have num_contributors == dkg_signer_count, NOT total_nodes.
+    /// The stale-nonce filter must compare against this value, not total_nodes.
+    dkg_signer_count: AtomicUsize,
+
     /// Storage backend
     storage: NonceStorage,
 
@@ -96,10 +102,16 @@ pub struct NonceManager {
 
 impl NonceManager {
     /// Create a new NonceManager
+    ///
+    /// `dkg_signer_count`: number of initial DKG signers that participate in nonce
+    /// generation.  On DKG nodes this equals `total_nodes` at genesis; on observer
+    /// nodes it is the signer count received from the PeerList RPC.  The stale-nonce
+    /// filter compares `num_contributors` against this value (not `total_nodes`).
     pub fn new(
         id: String,
         threshold: usize,
         total_nodes: usize,
+        dkg_signer_count: usize,
         storage: NonceStorage,
         message_tx: mpsc::Sender<ChannelMessage>,
         config: NoncePoolConfig,
@@ -110,6 +122,7 @@ impl NonceManager {
             id,
             threshold,
             total_nodes: AtomicUsize::new(total_nodes),
+            dkg_signer_count: AtomicUsize::new(dkg_signer_count),
             storage,
             message_tx,
             active_batches: Arc::new(RwLock::new(HashMap::new())),
@@ -136,16 +149,35 @@ impl NonceManager {
     /// Update the total number of nodes.
     ///
     /// Call this when nodes join or leave the network.
-    /// This affects which nonces are considered valid (stale nonces with fewer
-    /// contributors than current total_nodes will be filtered out).
+    /// NOTE: Stale-nonce filtering uses `dkg_signer_count`, not `total_nodes`.
+    /// `total_nodes` is still tracked for nonce generation protocol peer counting.
     pub fn update_total_nodes(&self, new_total: usize) {
         let old_total = self.total_nodes.swap(new_total, Ordering::SeqCst);
         if old_total != new_total {
             info!(
-                "📊 [NONCE] Updated total_nodes: {} -> {} (nonces with <{} contributors are now stale)",
-                old_total, new_total, new_total
+                "📊 [NONCE] Updated total_nodes: {} -> {} (stale filter still uses dkg_signer_count={})",
+                old_total, new_total, self.dkg_signer_count.load(Ordering::SeqCst)
             );
         }
+    }
+
+    /// Update the DKG signer count used for stale-nonce filtering.
+    ///
+    /// This should only change during a DKG refresh/reshare (extremely rare).
+    /// Observer nodes set this from the `dkg_signer_count` received via PeerList RPC.
+    pub fn update_dkg_signer_count(&self, count: usize) {
+        let old = self.dkg_signer_count.swap(count, Ordering::SeqCst);
+        if old != count {
+            info!(
+                "📊 [NONCE] Updated dkg_signer_count: {} -> {} (nonces with <{} contributors are now stale)",
+                old, count, count
+            );
+        }
+    }
+
+    /// Get the current DKG signer count (number of nodes participating in nonce generation).
+    pub fn get_dkg_signer_count(&self) -> usize {
+        self.dkg_signer_count.load(Ordering::SeqCst)
     }
 
     /// Handle a new node joining the network.
@@ -166,19 +198,23 @@ impl NonceManager {
             return Ok(());
         }
 
+        let current_dkg_count = self.dkg_signer_count.load(Ordering::SeqCst);
+
         info!(
-            "🔄🔄🔄 [NONCE] NEW NODE JOINED! total_nodes: {} -> {} 🔄🔄🔄",
-            old_total, new_total
+            "🔄🔄🔄 [NONCE] NEW NODE JOINED! total_nodes: {} -> {}, dkg_signer_count={} 🔄🔄🔄",
+            old_total, new_total, current_dkg_count
         );
 
-        // Step 1: Delete ALL stale nonces (those without all nodes participating)
-        // The new node doesn't have these nonces, so they're useless
-        let deleted = self.storage.delete_stale_nonces(new_total).await?;
+        // Use dkg_signer_count (not new_total) for stale-nonce deletion.
+        // Observer nodes don't participate in nonce generation, so their count
+        // should NOT affect which nonces are considered stale.
+        // Nonces are stale only if created with fewer DKG signers than current.
+        let deleted = self.storage.delete_stale_nonces(current_dkg_count).await?;
 
         if deleted > 0 {
             info!(
-                "🗑️ [NONCE] Deleted {} stale nonces (new node doesn't have them)",
-                deleted
+                "🗑️ [NONCE] Deleted {} stale nonces (num_contributors < dkg_signer_count={})",
+                deleted, current_dkg_count
             );
         }
 
@@ -231,15 +267,15 @@ impl NonceManager {
     /// This is the preferred method for signing operations as it never fails
     /// due to empty pool - it will wait for nonces to be generated.
     pub async fn request_nonce(&self) -> Result<NonceTuple> {
-        let current_total = self.total_nodes.load(Ordering::SeqCst);
+        let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
 
         // First, try to get an existing valid nonce (filtering out stale ones)
         let max_to_check = 1000; // Check up to 1000 nonces to find a valid one
         let available = self.storage.get_available_tuples(max_to_check).await?;
 
         for tuple in available {
-            // Skip stale nonces (created with fewer nodes than current total)
-            let valid = tuple.num_contributors > 0 && tuple.num_contributors >= current_total;
+            // Skip stale nonces (created with fewer DKG signers than current count)
+            let valid = tuple.num_contributors > 0 && tuple.num_contributors >= min_contributors;
             if !valid {
                 continue;
             }
@@ -317,6 +353,7 @@ impl NonceManager {
     /// Called after new nonces are generated or when checking pool.
     pub async fn fulfill_pending_requests(&self) -> Result<usize> {
         let mut fulfilled = 0;
+        let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
 
         loop {
             // Check if there are pending requests
@@ -334,6 +371,14 @@ impl NonceManager {
                 Some(t) => t,
                 None => break, // No more nonces available
             };
+
+            // Skip stale nonces (created with fewer DKG signers than current count)
+            let valid = tuple.num_contributors > 0 && tuple.num_contributors >= min_contributors;
+            if !valid {
+                // Consume the stale nonce so we don't keep hitting it
+                self.storage.consume_nonce_tuple(&tuple.tuple_id).await?;
+                continue;
+            }
 
             // Consume the nonce
             self.storage.consume_nonce_tuple(&tuple.tuple_id).await?;
@@ -421,8 +466,8 @@ impl NonceManager {
     /// This should be called after the network is ready (nodes can communicate).
     /// It generates initial nonces to fill the pool before accepting signing requests.
     ///
-    /// IMPORTANT: Only counts VALID nonces (num_contributors >= total_nodes).
-    /// Stale nonces from previous sessions with fewer nodes don't count!
+    /// IMPORTANT: Only counts VALID nonces (num_contributors >= dkg_signer_count).
+    /// Stale nonces from previous sessions with fewer DKG signers don't count!
     pub async fn startup_pregenerate(&self) -> Result<()> {
         // Count only VALID nonces (not stale ones)
         let valid_count = self.count_valid_nonces().await?;
@@ -479,16 +524,16 @@ impl NonceManager {
 
     /// Count valid nonces in the pool (filtering out stale ones)
     ///
-    /// A nonce is valid if num_contributors >= current total_nodes.
-    /// Stale nonces (created when fewer nodes were connected) cannot be used.
+    /// A nonce is valid if num_contributors >= dkg_signer_count.
+    /// Stale nonces (created when fewer DKG signers were active) cannot be used.
     pub async fn count_valid_nonces(&self) -> Result<usize> {
-        let current_total = self.total_nodes.load(Ordering::SeqCst);
+        let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
         let max_to_check = 2000; // Check up to 2000 nonces
         let available = self.storage.get_available_tuples(max_to_check).await?;
 
         let valid_count = available
             .iter()
-            .filter(|t| t.num_contributors > 0 && t.num_contributors >= current_total)
+            .filter(|t| t.num_contributors > 0 && t.num_contributors >= min_contributors)
             .count();
 
         Ok(valid_count)
@@ -497,16 +542,16 @@ impl NonceManager {
     /// Get the next available nonce for signing
     /// Returns None if pool is empty (should trigger generation)
     pub async fn acquire_nonce(&self) -> Result<Option<NonceTuple>> {
-        let current_total = self.total_nodes.load(Ordering::SeqCst);
+        let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
 
         // Scan through available nonces to find one with sufficient contributors
-        // Stale nonces (created with fewer nodes) must be skipped
+        // Stale nonces (created with fewer DKG signers) must be skipped
         let max_to_check = 1000; // Check up to 1000 nonces to find a valid one past stale ones
         let available = self.storage.get_available_tuples(max_to_check).await?;
 
         for tuple in available {
-            // Skip stale nonces (created with fewer nodes than current total)
-            let valid = tuple.num_contributors > 0 && tuple.num_contributors >= current_total;
+            // Skip stale nonces (created with fewer DKG signers than current count)
+            let valid = tuple.num_contributors > 0 && tuple.num_contributors >= min_contributors;
             if !valid {
                 continue; // Skip stale nonce
             }
@@ -581,12 +626,12 @@ impl NonceManager {
     /// because some nodes won't have them in their pool.
     pub async fn reserve_nonces_for_batch(&self, operation_ids: &[String]) -> Result<HashMap<String, String>> {
         let mut assignments = HashMap::new();
-        let current_total = self.total_nodes.load(Ordering::SeqCst);
+        let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
         let needed = operation_ids.len();
 
         info!(
-            "🔍 [NONCE] reserve_nonces_for_batch: need {} nonces, current_total_nodes={}",
-            needed, current_total
+            "🔍 [NONCE] reserve_nonces_for_batch: need {} nonces, dkg_signer_count={}",
+            needed, min_contributors
         );
 
         // Request ALL available nonces to find valid ones among potentially stale ones
@@ -600,20 +645,19 @@ impl NonceManager {
             available.len()
         );
 
-        // Filter to only use nonces created with full node participation
+        // Filter to only use nonces created with all DKG signers participating.
+        // Compare against dkg_signer_count (not total_nodes) because observer nodes
+        // do NOT participate in the commit-reveal nonce generation protocol.
         let mut valid_nonces = Vec::with_capacity(needed);
         let mut stale_count = 0;
 
         for t in available {
-            // Accept nonces with at least total_nodes contributors
-            // Reject nonces with num_contributors == 0 (legacy nonces without this field)
-            // as they may have been created with fewer nodes than current total
-            let valid = t.num_contributors > 0 && t.num_contributors >= current_total;
+            let valid = t.num_contributors > 0 && t.num_contributors >= min_contributors;
 
             if valid {
                 info!(
-                    "✅ [NONCE] Found valid nonce {} (contributors: {} >= {})",
-                    t.tuple_id, t.num_contributors, current_total
+                    "✅ [NONCE] Found valid nonce {} (contributors: {} >= dkg_signer_count={})",
+                    t.tuple_id, t.num_contributors, min_contributors
                 );
                 valid_nonces.push(t);
                 if valid_nonces.len() >= needed {
@@ -624,8 +668,8 @@ impl NonceManager {
                 // Only log first few stale nonces to avoid spam
                 if stale_count <= 3 {
                     warn!(
-                        "⚠️ [NONCE] Skipping stale nonce {} (created with {} nodes, need {})",
-                        t.tuple_id, t.num_contributors, current_total
+                        "⚠️ [NONCE] Skipping stale nonce {} (created with {} nodes, need dkg_signer_count={})",
+                        t.tuple_id, t.num_contributors, min_contributors
                     );
                 }
             }
@@ -633,8 +677,8 @@ impl NonceManager {
 
         if stale_count > 3 {
             warn!(
-                "⚠️ [NONCE] Skipped {} stale nonces total (created with fewer nodes than current {})",
-                stale_count, current_total
+                "⚠️ [NONCE] Skipped {} stale nonces total (created with fewer nodes than dkg_signer_count={})",
+                stale_count, min_contributors
             );
         }
 
@@ -1440,6 +1484,13 @@ impl NonceManager {
         Ok((available, self.config.min_pool_size))
     }
 
+    /// Get all available (unconsumed) nonce tuples for syncing to observer nodes.
+    /// Called by a DKG node when an observer requests nonce pool sync via RPC.
+    pub async fn get_available_tuples_for_sync(&self) -> Result<Vec<NonceTuple>> {
+        let max_to_serve = 1000;
+        self.storage.get_available_tuples(max_to_serve).await
+    }
+
     /// Acquire a nonce, blocking until one is available.
     ///
     /// This method:
@@ -1562,6 +1613,7 @@ mod tests {
             "test_node".to_string(),
             2,  // threshold
             3,  // total_nodes
+            3,  // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -1650,6 +1702,7 @@ mod tests {
             "test_node".to_string(),
             2,
             3,
+            3,  // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -1722,6 +1775,7 @@ mod tests {
             "test_node".to_string(),
             2,
             2,  // Start with 2 nodes
+            2,  // dkg_signer_count
             storage,
             tx,
             NoncePoolConfig::default(),
@@ -1762,6 +1816,7 @@ mod tests {
             "test_node".to_string(),
             2,
             3,
+            3,  // dkg_signer_count
             storage,
             tx,
             NoncePoolConfig::default(),
@@ -1937,6 +1992,7 @@ mod tests {
             "test_node".to_string(),
             2,  // threshold
             2,  // total_nodes - start with 2
+            2,  // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -2002,6 +2058,7 @@ mod tests {
             "test_node".to_string(),
             2,
             3,  // Start with 3 nodes
+            3,  // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),

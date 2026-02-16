@@ -368,6 +368,7 @@ impl<'a> BitcoinSigner<'a> {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: Some(user_eth.clone()),
+                    batch_identifiers: None,
                 };
                 let tx_data_gossip = GossipsubMessage::Signing(tx_data_msg);
                 let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
@@ -1225,6 +1226,12 @@ impl SigningNode {
             if let Some((chain_tx, tx_bytes, intent_hashes, tx_type, _extras)) = btc_pending.get(&round) {
                 let chain_tx_json = serde_json::to_string(chain_tx).ok();
                 let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                // For batch N2T BTC rounds, include full intent_hashes_by_round so observer
+                // final nodes can broadcast tx-id for ALL intents in the batch.
+                let batch_ids = {
+                    let intent_map = self.pending.intent_hashes_by_round.read().await;
+                    intent_map.get(&round).cloned()
+                };
                 let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
                     from: self.id.clone(),
                     round,
@@ -1234,6 +1241,7 @@ impl SigningNode {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: None,
+                    batch_identifiers: batch_ids,
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
                 let data = serde_json::to_vec(&gossipsub_msg)?;
@@ -1257,6 +1265,7 @@ impl SigningNode {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: None,
+                    batch_identifiers: intent_hashes.clone(),
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
                 let data = serde_json::to_vec(&gossipsub_msg)?;
@@ -1280,6 +1289,7 @@ impl SigningNode {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: None,
+                    batch_identifiers: intent_hashes.clone(),
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
                 let data = serde_json::to_vec(&gossipsub_msg)?;

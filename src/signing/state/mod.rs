@@ -41,6 +41,8 @@ pub struct ReceivedTxData {
     pub transaction_type: Option<String>,
     pub request_id: Option<String>,
     pub user_eth_address: Option<String>,
+    /// Full batch identifiers for withdraw/claim-reward batches ("request_id|solver_address").
+    pub batch_identifiers: Option<Vec<String>>,
 }
 
 /// Key for received TX data: (round, slot_id).

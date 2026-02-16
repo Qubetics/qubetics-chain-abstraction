@@ -367,10 +367,20 @@ impl NodeContext {
 
         // Initialize nonce manager for random k generation
         // MUST be called AFTER set_database() since NonceStorage requires database
+        //
+        // dkg_signer_count: for DKG nodes this equals `total` (the initial node count).
+        // For observer nodes that join later, `total` starts at 0 but
+        // dkg_signer_count will be updated from PeerList RPC during node sync.
+        // At init time, use `total` as fallback; the observer will update
+        // dkg_signer_count once it receives the PeerList.
+        let dkg_signer_count = dkg_storage.get_dkg_signer_count()
+            .ok()
+            .flatten()
+            .unwrap_or(total);
         {
             let mut sn = signing_node.lock().await;
-            sn.init_nonce_manager(total);
-            info!("🔐 [MAIN] Initialized NonceManager for random nonce generation");
+            sn.init_nonce_manager(total, dkg_signer_count);
+            info!("🔐 [MAIN] Initialized NonceManager for random nonce generation (dkg_signer_count={})", dkg_signer_count);
         }
 
         self.user_intent_manager = Some(db_user_intent_manager);

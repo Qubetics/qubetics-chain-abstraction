@@ -104,6 +104,11 @@ pub enum SigningMessage {
         /// User ETH address associated with this slot (for batch slot reconstruction).
         #[serde(default)]
         user_eth_address: Option<String>,
+        /// Full batch identifiers for withdraw/claim-reward batches.
+        /// Each entry is "request_id|solver_address". Needed so observer final nodes
+        /// can broadcast tx_id updates for ALL requests in the batch after broadcast.
+        #[serde(default)]
+        batch_identifiers: Option<Vec<String>>,
     },
 
     // ============================================================

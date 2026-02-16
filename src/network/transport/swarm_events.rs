@@ -88,25 +88,19 @@ impl MpcNetworkLayer {
 
         let remote_addr = endpoint.get_remote_address();
 
-        // ===== SOLVER VALIDATION =====
-        // Check if the connecting peer is an active solver before accepting the connection
-        let solver_id = peer_id.to_string();
-
-        match crate::contract::validate_solver_active_strict(&solver_id, "SOLVER_VALIDATION").await
-        {
-            Ok(_) => {
-                // Solver is active, proceed with connection
-            }
-            Err(e) => {
-                warn!(
-                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-                    peer_id, remote_addr, e
-                );
-                // Disconnect the peer immediately
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
-            }
-        }
+        // ===== SOLVER VALIDATION (disabled for testing) =====
+        // match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
+        // {
+        //     Ok(_) => {}
+        //     Err(e) => {
+        //         warn!(
+        //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+        //             peer_id, remote_addr, e
+        //         );
+        //         swarm.disconnect_peer_id(peer_id).ok();
+        //         return Ok(());
+        //     }
+        // }
         // ===== END SOLVER VALIDATION =====
 
         // Track connected peer

@@ -142,6 +142,32 @@ impl MpcNetworkLayer {
                     }
                 }
             }
+            RPCRequest::RequestNoncePoolSync => {
+                // Serve available (unconsumed) nonce tuples to a requesting observer node.
+                if let Some(arc) = &self.signing_node {
+                    let node = arc.lock().await;
+                    if let Some(nm) = node.nonce_manager() {
+                        let nm_guard = nm.lock().await;
+                        match nm_guard.get_available_tuples_for_sync().await {
+                            Ok(tuples) => {
+                                info!(
+                                    "📤 [NONCE_SYNC] Serving {} nonce tuples to requesting peer",
+                                    tuples.len()
+                                );
+                                RPCResponse::NoncePoolSync { tuples }
+                            }
+                            Err(e) => {
+                                warn!("⚠️ [NONCE_SYNC] Failed to get nonce tuples: {}", e);
+                                RPCResponse::NoncePoolSync { tuples: vec![] }
+                            }
+                        }
+                    } else {
+                        RPCResponse::NoncePoolSync { tuples: vec![] }
+                    }
+                } else {
+                    RPCResponse::NoncePoolSync { tuples: vec![] }
+                }
+            }
             _ => RPCResponse::Ack,
         }
     }
@@ -755,7 +781,7 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_eth_address) =
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_eth_address, batch_identifiers) =
             match signing_message {
                 SigningMessage::TransactionDataForFinalNode {
                     from,
@@ -766,6 +792,7 @@ impl MpcNetworkLayer {
                     request_id,
                     chain_tx_json,
                     user_eth_address,
+                    batch_identifiers,
                 } => (
                     from,
                     tx_bytes,
@@ -775,6 +802,7 @@ impl MpcNetworkLayer {
                     round,
                     chain_tx_json,
                     user_eth_address,
+                    batch_identifiers,
                 ),
                 _ => {
                     warn!(
@@ -803,6 +831,7 @@ impl MpcNetworkLayer {
                     request_id,
                     chain_tx_json,
                     user_eth_address,
+                    batch_identifiers,
                 )
                 .await
         } else {
@@ -947,6 +976,34 @@ impl MpcNetworkLayer {
                             }
                         }
                     }
+                    // Also update the NonceManager's dkg_signer_count so observer nodes
+                    // use the correct stale-nonce filter (num_contributors >= dkg_signer_count).
+                    if let Some(arc) = &self.signing_node {
+                        let signing_node = arc.lock().await;
+                        if let Some(nm) = signing_node.nonce_manager() {
+                            let nm_guard = nm.lock().await;
+                            nm_guard.update_dkg_signer_count(count);
+                        }
+                    }
+
+                    // Request nonce pool sync from this peer if we're an observer node
+                    // (no DKG share = observer that missed NonceTupleBroadcast during startup).
+                    let is_observer = if let Some(arc) = &self.signing_node {
+                        let sn = arc.lock().await;
+                        !sn.has_dkg_share().await
+                    } else {
+                        false
+                    };
+                    if is_observer {
+                        info!(
+                            "🔄 [NONCE_SYNC] Observer node requesting nonce pool sync from peer {}",
+                            peer
+                        );
+                        swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_request(&peer, RPCRequest::RequestNoncePoolSync);
+                    }
                 }
                 self.handle_peer_list_response(swarm, peers, indices, addresses)
                     .await?;
@@ -1071,6 +1128,32 @@ impl MpcNetworkLayer {
                             );
                         }
                     }
+                }
+            }
+            RPCResponse::NoncePoolSync { tuples } => {
+                // Store received nonce tuples from a DKG peer (observer nonce pool sync).
+                let count = tuples.len();
+                if count > 0 {
+                    if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        if let Some(nm) = node.nonce_manager() {
+                            let nm_guard = nm.lock().await;
+                            let mut stored = 0usize;
+                            for tuple in tuples {
+                                if let Err(e) = nm_guard.store_received_nonce_tuple(tuple).await {
+                                    warn!("⚠️ [NONCE_SYNC] Failed to store synced nonce: {}", e);
+                                } else {
+                                    stored += 1;
+                                }
+                            }
+                            info!(
+                                "✅ [NONCE_SYNC] Observer stored {}/{} nonce tuples from peer {}",
+                                stored, count, peer
+                            );
+                        }
+                    }
+                } else {
+                    info!("ℹ️ [NONCE_SYNC] Peer {} returned empty nonce pool", peer);
                 }
             }
             other => {

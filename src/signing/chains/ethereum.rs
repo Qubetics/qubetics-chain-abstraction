@@ -983,53 +983,52 @@ impl SigningNode {
             }
         };
 
-        let (chain_tx, transaction_type) = if is_withdraw_round {
-            let withdraw_pending_transactions =
-                self.pending.withdraw_pending_transactions_tics.read().await;
-            if let Some((
-                chain_tx,
-                _tx_bytes,
-                _solver_address,
-                transaction_type,
-                _request_id,
-                _original_request,
-            )) = withdraw_pending_transactions.get(&round)
-            {
-                (Some(chain_tx.clone()), transaction_type.clone())
-            } else {
-                (None, None)
+        // Observer nodes (no DKG share) may not have TX data yet because it arrives
+        // via TransactionDataForFinalNode messages which need threshold verification.
+        // We poll briefly to let the TX data arrive before giving up.
+        let has_dkg = self.has_dkg_share().await;
+        let max_attempts = if has_dkg { 1 } else { 50 }; // observer: poll up to ~5s
+
+        let (chain_tx, transaction_type) = {
+            let mut result = (None, None);
+            for attempt in 0..max_attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                let found = if is_withdraw_round {
+                    let store = self.pending.withdraw_pending_transactions_tics.read().await;
+                    store.get(&round).map(|(chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)| {
+                        (Some(chain_tx.clone()), transaction_type.clone())
+                    })
+                } else if is_claim_reward_round {
+                    let store = self.pending.claim_reward_pending_transactions_tics.read().await;
+                    store.get(&round).map(|(chain_tx, _tx_bytes, _identifiers, transaction_type, _request_id, _original_request)| {
+                        (Some(chain_tx.clone()), transaction_type.clone())
+                    })
+                } else {
+                    let store = self.pending.pending_transactions.read().await;
+                    store.get(&round).map(|(chain_tx, _tx_bytes, _intent_hash, transaction_type, _request_id, _original_request)| {
+                        (Some(chain_tx.clone()), transaction_type.clone())
+                    })
+                };
+                if let Some(val) = found {
+                    result = val;
+                    if attempt > 0 {
+                        info!(
+                            "✅ [SIGNING] Observer node found TX data for reconstruction of round {} after {} attempts (~{}ms)",
+                            round, attempt + 1, attempt * 100
+                        );
+                    }
+                    break;
+                }
+                if attempt == max_attempts - 1 && !has_dkg {
+                    warn!(
+                        "⚠️ [SIGNING] Observer node could not find TX data for reconstruction of round {} after {}ms",
+                        round, max_attempts * 100
+                    );
+                }
             }
-        } else if is_claim_reward_round {
-            let claim_reward_pending =
-                self.pending.claim_reward_pending_transactions_tics.read().await;
-            if let Some((
-                chain_tx,
-                _tx_bytes,
-                _identifiers,
-                transaction_type,
-                _request_id,
-                _original_request,
-            )) = claim_reward_pending.get(&round)
-            {
-                (Some(chain_tx.clone()), transaction_type.clone())
-            } else {
-                (None, None)
-            }
-        } else {
-            let pending_transactions = self.pending.pending_transactions.read().await;
-            if let Some((
-                chain_tx,
-                _tx_bytes,
-                _intent_hash,
-                transaction_type,
-                _request_id,
-                _original_request,
-            )) = pending_transactions.get(&round)
-            {
-                (Some(chain_tx.clone()), transaction_type.clone())
-            } else {
-                (None, None)
-            }
+            result
         };
 
         if let Some(chain_tx) = chain_tx {
@@ -1242,16 +1241,37 @@ impl SigningNode {
         aggregated_signature: &[u8],
         recovery_id: u8,
     ) -> Result<Option<String>> {
+        // Observer nodes (no DKG share) may not have batch data yet — poll up to ~5s
+        let has_dkg = self.has_dkg_share().await;
+        let max_attempts = if has_dkg { 1 } else { 50 };
+
         let (_intent_hash, user_eth, chain_tx, _tx_bytes) = {
-            let batch = self.pending.user_to_vault_tics_batch.read().await;
-            let entries = batch
-                .get(&round)
-                .ok_or_else(|| anyhow!("No TICS UserToVault batch for round {}", round))?;
-            entries
-                .iter()
-                .find(|(h, ..)| h == slot_id)
-                .map(|(a, b, c, d)| (a.clone(), b.clone(), c.clone(), d.clone()))
-                .ok_or_else(|| anyhow!("No slot {} in batch for round {}", slot_id, round))?
+            let mut result = None;
+            for attempt in 0..max_attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                let batch = self.pending.user_to_vault_tics_batch.read().await;
+                if let Some(entries) = batch.get(&round) {
+                    if let Some(entry) = entries.iter().find(|(h, ..)| h == slot_id) {
+                        if attempt > 0 {
+                            info!(
+                                "✅ [SIGNING] Observer node found TICS batch data for round {} slot {} after {} attempts (~{}ms)",
+                                round, slot_id, attempt + 1, attempt * 100
+                            );
+                        }
+                        result = Some((entry.0.clone(), entry.1.clone(), entry.2.clone(), entry.3.clone()));
+                        break;
+                    }
+                }
+                if attempt == max_attempts - 1 && !has_dkg {
+                    warn!(
+                        "⚠️ [SIGNING] Observer node could not find TICS batch data for round {} slot {} after {}ms",
+                        round, slot_id, max_attempts * 100
+                    );
+                }
+            }
+            result.ok_or_else(|| anyhow!("No TICS UserToVault batch for round {} slot {}", round, slot_id))?
         };
         let ChainTransaction::Ethereum(original_tx) = &chain_tx else {
             return Ok(None);
@@ -1566,6 +1586,7 @@ impl SigningNode {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: Some(user_eth),
+                    batch_identifiers: None,
                 };
                 let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
                 let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;
@@ -1747,6 +1768,7 @@ impl SigningNode {
                     request_id: None,
                     chain_tx_json,
                     user_eth_address: Some(user_eth),
+                    batch_identifiers: None,
                 };
                 let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
                 let tx_data_bytes = serde_json::to_vec(&tx_data_gossip)?;

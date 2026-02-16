@@ -250,6 +250,49 @@ impl SigningNode {
         }
     }
 
+    /// Compute BtcRoundExtras for observer nodes receiving BTC TX data.
+    /// Derives the group public key, computes HASH160, and returns extras needed for finalization.
+    async fn compute_btc_extras_for_observer(
+        &self,
+        tx_type: &Option<crate::types::TransactionType>,
+        user_eth: &str,
+        round: u64,
+    ) -> Option<BtcRoundExtras> {
+        let pubkey_bytes = match self.get_group_public_key_bytes(
+            tx_type.clone(),
+            if user_eth.is_empty() { None } else { Some(user_eth.to_string()) },
+        ).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!(
+                    "⚠️ [SIGNING] Could not compute BtcRoundExtras for round {}: {}",
+                    round, e
+                );
+                return None;
+            }
+        };
+        if pubkey_bytes.len() != 33 {
+            warn!(
+                "⚠️ [SIGNING] Invalid pubkey length {} for BtcRoundExtras round {}",
+                pubkey_bytes.len(), round
+            );
+            return None;
+        }
+        let pubkey33: [u8; 33] = pubkey_bytes.as_slice().try_into().unwrap();
+        // hash160 = RIPEMD160(SHA256(pubkey))
+        let sha = <sha2::Sha256 as sha2::Digest>::digest(&pubkey33);
+        let rip = <ripemd::Ripemd160 as ripemd::Digest>::digest(&sha);
+        let mut signer_h160 = [0u8; 20];
+        signer_h160.copy_from_slice(&rip);
+        let is_testnet = crate::types::network::network_type().is_testnet();
+        Some(BtcRoundExtras {
+            pubkey33,
+            signer_h160,
+            from_kind: SpendKind::P2PKH,
+            is_testnet,
+        })
+    }
+
     /// Create DER-encoded ECDSA signature with SIGHASH_ALL (based on working implementation)
     pub fn create_der_signature_p2wpkh(r32: &[u8; 32], s32: &[u8; 32]) -> Vec<u8> {
         // Encode integer with proper DER rules
@@ -819,6 +862,7 @@ impl SigningNode {
                 request_id,
                 chain_tx_json,
                 user_eth_address,
+                batch_identifiers,
             } => {
                 info!(
                     "📥 [SIGNING] Node {} received transaction data for round {} from {}",
@@ -833,6 +877,7 @@ impl SigningNode {
                     request_id,
                     chain_tx_json,
                     user_eth_address,
+                    batch_identifiers,
                 )
                 .await?;
             }
@@ -1363,7 +1408,11 @@ impl SigningNode {
 
     /// Initialize the nonce manager for random k generation.
     /// Call this after set_database() since NonceStorage requires a database.
-    pub fn init_nonce_manager(&mut self, total_nodes: usize) {
+    ///
+    /// `dkg_signer_count`: number of DKG signers that participate in nonce generation.
+    /// On DKG nodes this equals `total_nodes` at genesis; on observer nodes it is
+    /// the count received from PeerList RPC.  Used for stale-nonce filtering.
+    pub fn init_nonce_manager(&mut self, total_nodes: usize, dkg_signer_count: usize) {
         if let Some(db) = &self.database {
             let nonce_storage = crate::database::storage::NonceStorage::new((*db.clone()).clone());
             let config = crate::types::nonce::NoncePoolConfig::default();
@@ -1372,6 +1421,7 @@ impl SigningNode {
                 self.id.clone(),
                 self.threshold,
                 total_nodes,
+                dkg_signer_count,
                 nonce_storage,
                 self.message_tx.clone(),
                 config,
@@ -1380,8 +1430,8 @@ impl SigningNode {
             self.nonce_manager = Some(Arc::new(tokio::sync::Mutex::new(manager)));
 
             info!(
-                "🎲 [SIGNING] Node {} nonce manager initialized (threshold: {}, total: {})",
-                self.id, self.threshold, total_nodes
+                "🎲 [SIGNING] Node {} nonce manager initialized (threshold: {}, total: {}, dkg_signer_count: {})",
+                self.id, self.threshold, total_nodes, dkg_signer_count
             );
         } else {
             warn!(
@@ -3617,7 +3667,7 @@ impl SigningNode {
     ) -> Result<()> {
         // Helper: broadcast TX data message
         macro_rules! broadcast_tx_data {
-            ($chain_tx:expr, $tx_bytes:expr, $intent_hash:expr, $tx_type:expr, $request_id:expr) => {{
+            ($chain_tx:expr, $tx_bytes:expr, $intent_hash:expr, $tx_type:expr, $request_id:expr, $batch_ids:expr) => {{
                 let chain_tx_json = serde_json::to_string($chain_tx).ok();
                 let tx_data_msg = SigningMessage::TransactionDataForFinalNode {
                     from: self.id.clone(),
@@ -3628,6 +3678,7 @@ impl SigningNode {
                     request_id: $request_id,
                     chain_tx_json,
                     user_eth_address: None,
+                    batch_identifiers: $batch_ids,
                 };
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
                 let data = serde_json::to_vec(&gossipsub_msg)?;
@@ -3644,16 +3695,23 @@ impl SigningNode {
         {
             let pending = self.pending.pending_transactions.read().await;
             if let Some((chain_tx, tx_bytes, intent_hash, transaction_type, request_id, _)) = pending.get(&round) {
+                // For batch N2T / IntentStatusUpdate rounds, include intent_hashes_by_round so
+                // observer final nodes can broadcast tx-id for ALL intents in the batch.
+                let batch_ids = {
+                    let intent_map = self.pending.intent_hashes_by_round.read().await;
+                    intent_map.get(&round).cloned()
+                };
                 info!(
-                    "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes)",
-                    round, final_node_id, tx_bytes.len()
+                    "📤 [SIGNING] Sending transaction data for round {} to final node {} (tx_bytes: {} bytes, batch_intent_hashes: {})",
+                    round, final_node_id, tx_bytes.len(), batch_ids.as_ref().map(|v| v.len()).unwrap_or(0)
                 );
                 broadcast_tx_data!(
                     chain_tx,
                     tx_bytes,
                     intent_hash,
                     transaction_type.as_ref().map(|t| format!("{:?}", t)),
-                    request_id.clone()
+                    request_id.clone(),
+                    batch_ids
                 );
             }
         }
@@ -3664,15 +3722,16 @@ impl SigningNode {
             if let Some((chain_tx, tx_bytes, identifiers, tx_type, request_id, _)) = withdraw.get(&round) {
                 let intent_hash = identifiers.as_ref().and_then(|v| v.first().cloned());
                 info!(
-                    "📤 [SIGNING] Sending TICS withdraw TX data for round {} to final node {}",
-                    round, final_node_id
+                    "📤 [SIGNING] Sending TICS withdraw TX data for round {} to final node {} ({} batch identifiers)",
+                    round, final_node_id, identifiers.as_ref().map(|v| v.len()).unwrap_or(0)
                 );
                 broadcast_tx_data!(
                     chain_tx,
                     tx_bytes,
                     &intent_hash,
                     tx_type.as_ref().map(|t| format!("{:?}", t)),
-                    request_id.clone()
+                    request_id.clone(),
+                    identifiers.clone()
                 );
             }
         }
@@ -3683,15 +3742,16 @@ impl SigningNode {
             if let Some((chain_tx, tx_bytes, identifiers, tx_type, request_id, _)) = claim.get(&round) {
                 let intent_hash = identifiers.as_ref().and_then(|v| v.first().cloned());
                 info!(
-                    "📤 [SIGNING] Sending TICS claim-reward TX data for round {} to final node {}",
-                    round, final_node_id
+                    "📤 [SIGNING] Sending TICS claim-reward TX data for round {} to final node {} ({} batch identifiers)",
+                    round, final_node_id, identifiers.as_ref().map(|v| v.len()).unwrap_or(0)
                 );
                 broadcast_tx_data!(
                     chain_tx,
                     tx_bytes,
                     &intent_hash,
                     tx_type.as_ref().map(|t| format!("{:?}", t)),
-                    request_id.clone()
+                    request_id.clone(),
+                    identifiers.clone()
                 );
             }
         }
@@ -4041,48 +4101,76 @@ impl SigningNode {
                             round, v, recovery_id.to_i32()
                         );
 
-                        // 🚀 NEW: Reconstruct and broadcast signed transaction based on actual transaction type
-                        // Check the actual transaction stored for this round to determine the correct chain type
+                        // 🚀 Reconstruct and broadcast signed transaction based on actual transaction type
+                        // Check the actual transaction stored for this round to determine the correct chain type.
+                        // Observer nodes (no DKG share) may not have TX data yet because it arrives
+                        // via TransactionDataForFinalNode messages which need threshold verification.
+                        // We poll briefly to let the TX data arrive before giving up.
                         let is_withdraw_round = {
                             let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                             withdraw_rounds.contains(&round)
                         };
 
-                        let (is_contract_tx, maybe_chain_id) = if is_withdraw_round {
-                            let withdraw_pending_transactions =
-                                self.pending.withdraw_pending_transactions_tics.read().await;
-                            if let Some((chain_tx, _tx_bytes, _solver_address, _transaction_type, _request_id, _original_request)) =
-                                withdraw_pending_transactions.get(&round)
-                            {
-                                match chain_tx {
-                                    ChainTransaction::Ethereum(eth_tx) => {
-                                        let is_contract = eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty();
-                                        (is_contract, Some(eth_tx.chain_id))
-                                    }
-                                    _ => (false, None),
+                        let is_claim_reward_round = {
+                            let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
+                            claim_reward_rounds.contains(&round)
+                        };
+
+                        let has_dkg = self.has_dkg_share().await;
+
+                        let (is_contract_tx, maybe_chain_id) = {
+                            let max_attempts = if has_dkg { 1 } else { 50 }; // observer: poll up to ~5s
+                            let mut result = (false, None);
+                            for attempt in 0..max_attempts {
+                                if attempt > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                 }
-                            } else {
-                                (false, None)
-                            }
-                        } else {
-                            // This is a regular transaction - check regular pending transactions for Ethereum
-                            let pending_transactions =
-                                self.pending.pending_transactions.read().await;
-                            if let Some((chain_tx, _tx_bytes, _intent_hash, _transaction_type, _request_id, _original_request)) =
-                                pending_transactions.get(&round)
-                            {
-                                match chain_tx {
-                                    ChainTransaction::Ethereum(eth_tx) => {
-                                        let is_contract = eth_tx.data.is_some()
-                                            && !eth_tx.data.as_ref().unwrap().is_empty();
-                                        (is_contract, Some(eth_tx.chain_id))
+                                let found = if is_withdraw_round {
+                                    let store = self.pending.withdraw_pending_transactions_tics.read().await;
+                                    store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
+                                        ChainTransaction::Ethereum(eth_tx) => {
+                                            let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
+                                            Some((is_contract, Some(eth_tx.chain_id)))
+                                        }
+                                        _ => None,
+                                    })
+                                } else if is_claim_reward_round {
+                                    let store = self.pending.claim_reward_pending_transactions_tics.read().await;
+                                    store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
+                                        ChainTransaction::Ethereum(eth_tx) => {
+                                            let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
+                                            Some((is_contract, Some(eth_tx.chain_id)))
+                                        }
+                                        _ => None,
+                                    })
+                                } else {
+                                    let store = self.pending.pending_transactions.read().await;
+                                    store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
+                                        ChainTransaction::Ethereum(eth_tx) => {
+                                            let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
+                                            Some((is_contract, Some(eth_tx.chain_id)))
+                                        }
+                                        _ => None,
+                                    })
+                                };
+                                if let Some(val) = found {
+                                    result = val;
+                                    if attempt > 0 {
+                                        info!(
+                                            "✅ [SIGNING] Observer node found TX data for round {} after {} attempts (~{}ms)",
+                                            round, attempt + 1, attempt * 100
+                                        );
                                     }
-                                    _ => (false, None), // Only handle Ethereum transactions in this function
+                                    break;
                                 }
-                            } else {
-                                (false, None)
+                                if attempt == max_attempts - 1 && !has_dkg {
+                                    warn!(
+                                        "⚠️ [SIGNING] Observer node could not find TX data for round {} after {}ms, proceeding without it",
+                                        round, max_attempts * 100
+                                    );
+                                }
                             }
+                            result
                         };
 
                         info!(
@@ -4512,46 +4600,47 @@ impl SigningNode {
         }
 
         // 2. Get tx data for this slot from user_to_vault_btc_batch
+        // Observer nodes (no DKG share) may not have BTC batch data yet — poll up to ~5s
+        let has_dkg = self.has_dkg_share().await;
+        let max_attempts = if has_dkg { 1 } else { 50 };
+
         let (_unsigned_tx, _extras, total_inputs) = {
-            let batch = self.pending.user_to_vault_btc_batch.read().await;
-            let entries = batch.get(&round).ok_or_else(|| {
+            let mut result = None;
+            for attempt in 0..max_attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                let batch = self.pending.user_to_vault_btc_batch.read().await;
+                if let Some(entries) = batch.get(&round) {
+                    if let Some((_, _user_eth, chain_tx, _, extras_opt)) = entries.iter().find(|(h, ..)| h == &slot_id) {
+                        if let ChainTransaction::Bitcoin(t) = chain_tx {
+                            if let Some(extras) = extras_opt {
+                                if attempt > 0 {
+                                    info!(
+                                        "✅ [BTC_UTV] Observer node found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
+                                        round, slot_id, attempt + 1, attempt * 100
+                                    );
+                                }
+                                result = Some((t.clone(), extras.clone(), t.inputs.len()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                if attempt == max_attempts - 1 && !has_dkg {
+                    warn!(
+                        "⚠️ [BTC_UTV] Observer node could not find BTC batch data for round {} slot {} after {}ms",
+                        round, slot_id, max_attempts * 100
+                    );
+                }
+            }
+            result.ok_or_else(|| {
                 anyhow!(
-                    "[BTC_UTV] No user_to_vault_btc_batch for round {} (slot {})",
+                    "[BTC_UTV] No user_to_vault_btc_batch for round {} slot {} (observer timeout)",
                     round,
                     slot_id
                 )
-            })?;
-            let (_, _user_eth, chain_tx, _, extras_opt) = entries
-                .iter()
-                .find(|(h, ..)| h == &slot_id)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "[BTC_UTV] No slot {} in user_to_vault_btc_batch for round {}",
-                        slot_id,
-                        round
-                    )
-                })?;
-
-            let btc_tx = match chain_tx {
-                ChainTransaction::Bitcoin(t) => t.clone(),
-                _ => {
-                    return Err(anyhow!(
-                        "[BTC_UTV] Slot {} round {} is not a Bitcoin transaction",
-                        slot_id,
-                        round
-                    ))
-                }
-            };
-
-            let extras = extras_opt.clone().ok_or_else(|| {
-                anyhow!(
-                    "[BTC_UTV] Missing BtcRoundExtras for slot {} round {}",
-                    slot_id,
-                    round
-                )
-            })?;
-
-            (btc_tx.clone(), extras, btc_tx.inputs.len())
+            })?
         };
 
         info!(
@@ -4909,41 +4998,48 @@ impl SigningNode {
     async fn finalize_btc_utv_slot(&mut self, round: u64, slot_id: String) -> Result<()> {
         let slot_key: RoundSlotKey = (round, slot_id.clone());
 
+        // Observer nodes (no DKG share) may not have BTC batch data yet — poll up to ~5s
+        let has_dkg = self.has_dkg_share().await;
+        let max_attempts = if has_dkg { 1 } else { 50 };
+
         // Get tx data, user_eth_address, and extras
         let (unsigned_tx, user_eth_address, extras) = {
-            let batch = self.pending.user_to_vault_btc_batch.read().await;
-            let entries = batch.get(&round).ok_or_else(|| {
+            let mut result = None;
+            for attempt in 0..max_attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                let batch = self.pending.user_to_vault_btc_batch.read().await;
+                if let Some(entries) = batch.get(&round) {
+                    if let Some((_, user_eth, chain_tx, _, extras_opt)) = entries.iter().find(|(h, ..)| h == &slot_id) {
+                        if let ChainTransaction::Bitcoin(t) = chain_tx {
+                            if let Some(extras) = extras_opt {
+                                if attempt > 0 {
+                                    info!(
+                                        "✅ [BTC_UTV] Observer node found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
+                                        round, slot_id, attempt + 1, attempt * 100
+                                    );
+                                }
+                                result = Some((t.clone(), user_eth.clone(), extras.clone()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                if attempt == max_attempts - 1 && !has_dkg {
+                    warn!(
+                        "⚠️ [BTC_UTV] Observer node could not find BTC batch data for round {} slot {} after {}ms",
+                        round, slot_id, max_attempts * 100
+                    );
+                }
+            }
+            result.ok_or_else(|| {
                 anyhow!(
-                    "[finalize_btc_utv] No batch for round {} slot {}",
+                    "[finalize_btc_utv] No batch data for round {} slot {} (observer timeout)",
                     round,
                     slot_id
                 )
-            })?;
-            let (_, user_eth, chain_tx, _, extras_opt) = entries
-                .iter()
-                .find(|(h, ..)| h == &slot_id)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "[finalize_btc_utv] No slot {} in batch for round {}",
-                        slot_id,
-                        round
-                    )
-                })?;
-
-            let btc_tx = match chain_tx {
-                ChainTransaction::Bitcoin(t) => t.clone(),
-                _ => return Err(anyhow!("[finalize_btc_utv] Slot {} is not Bitcoin", slot_id)),
-            };
-
-            let extras = extras_opt.clone().ok_or_else(|| {
-                anyhow!(
-                    "[finalize_btc_utv] Missing extras for slot {} round {}",
-                    slot_id,
-                    round
-                )
-            })?;
-
-            (btc_tx, user_eth.clone(), extras)
+            })?
         };
 
         let total_inputs = unsigned_tx.inputs.len();
@@ -5121,41 +5217,56 @@ impl SigningNode {
             claim_reward_rounds.contains(&round)
         };
 
+        // Observer nodes (no DKG share) may not have BTC TX data yet — poll up to ~5s
+        let has_dkg = self.has_dkg_share().await;
+        let max_attempts = if has_dkg { 1 } else { 50 };
+
         let (unsigned_tx, extras, total_inputs) = {
-            let (chain_tx, extras_opt) = if is_claim_reward_round {
-                let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
-                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
-                    claim_reward_pt.get(&round).ok_or_else(|| {
-                        error!(
-                            "[handle_btc_signature_for_round] No claim-reward pending tx for round {}",
-                            round
+            let mut found_data: Option<(ChainTransaction, Option<BtcRoundExtras>)> = None;
+            for attempt in 0..max_attempts {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                let data = if is_claim_reward_round {
+                    let store = self.pending.claim_reward_pending_transactions_btc.read().await;
+                    store.get(&round).map(|(chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt)| {
+                        (chain_tx.clone(), extras_opt.clone())
+                    })
+                } else if is_withdraw_round {
+                    let store = self.pending.withdraw_pending_transactions_btc.read().await;
+                    store.get(&round).map(|(chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt)| {
+                        (chain_tx.clone(), extras_opt.clone())
+                    })
+                } else {
+                    let store = self.pending.pending_transactions_btc.read().await;
+                    store.get(&round).map(|(chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt)| {
+                        (chain_tx.clone(), extras_opt.clone())
+                    })
+                };
+                if let Some(val) = data {
+                    if attempt > 0 {
+                        info!(
+                            "✅ [BTC] Observer node found BTC TX data for round {} after {} attempts (~{}ms)",
+                            round, attempt + 1, attempt * 100
                         );
-                        anyhow!("no claim-reward pending tx for round {}", round)
-                    })?;
-                (chain_tx.clone(), extras_opt.clone())
-            } else if is_withdraw_round {
-                let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
-                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
-                    withdraw_pt.get(&round).ok_or_else(|| {
-                        error!(
-                            "[handle_btc_signature_for_round] No withdraw pending tx for round {}",
-                            round
-                        );
-                        anyhow!("no withdraw pending tx for round {}", round)
-                    })?;
-                (chain_tx.clone(), extras_opt.clone())
-            } else {
-                let pt = self.pending.pending_transactions_btc.read().await;
-                let (chain_tx, _raw, _intent_hash, _tx_type_opt, extras_opt) =
-                    pt.get(&round).ok_or_else(|| {
-                        error!(
-                            "[handle_btc_signature_for_round] No pending tx for round {}",
-                            round
-                        );
-                        anyhow!("no pending tx for round {}", round)
-                    })?;
-                (chain_tx.clone(), extras_opt.clone())
-            };
+                    }
+                    found_data = Some(val);
+                    break;
+                }
+                if attempt == max_attempts - 1 && !has_dkg {
+                    warn!(
+                        "⚠️ [BTC] Observer node could not find BTC TX data for round {} after {}ms",
+                        round, max_attempts * 100
+                    );
+                }
+            }
+            let (chain_tx, extras_opt) = found_data.ok_or_else(|| {
+                error!(
+                    "[handle_btc_signature_for_round] No pending tx for round {} (observer timeout)",
+                    round
+                );
+                anyhow!("no pending tx for round {}", round)
+            })?;
 
             let btc_tx = match chain_tx {
                 ChainTransaction::Bitcoin(t) => t.clone(),
@@ -5766,6 +5877,7 @@ impl SigningNode {
         request_id: Option<String>,
         chain_tx_json: Option<String>,
         user_eth_address: Option<String>,
+        batch_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         // Check if this node is the final node for the specific round
         let is_final_node = {
@@ -5790,9 +5902,14 @@ impl SigningNode {
 
         // If this node already has the TX data locally (DKG final node that built it), skip
         let already_has_local_data = if slot_id.is_empty() {
-            // Non-batch: check pending_transactions
-            let pending = self.pending.pending_transactions.read().await;
-            pending.contains_key(&round)
+            // Non-batch: check all non-batch stores (pending, withdraw, claim-reward — both ETH and BTC)
+            let in_pending = self.pending.pending_transactions.read().await.contains_key(&round);
+            let in_withdraw_tics = self.pending.withdraw_pending_transactions_tics.read().await.contains_key(&round);
+            let in_claim_tics = self.pending.claim_reward_pending_transactions_tics.read().await.contains_key(&round);
+            let in_pending_btc = self.pending.pending_transactions_btc.read().await.contains_key(&round);
+            let in_withdraw_btc = self.pending.withdraw_pending_transactions_btc.read().await.contains_key(&round);
+            let in_claim_btc = self.pending.claim_reward_pending_transactions_btc.read().await.contains_key(&round);
+            in_pending || in_withdraw_tics || in_claim_tics || in_pending_btc || in_withdraw_btc || in_claim_btc
         } else {
             // Batch slot: check appropriate batch store
             let tics_batch = self.pending.user_to_vault_tics_batch.read().await;
@@ -5837,6 +5954,7 @@ impl SigningNode {
             transaction_type: transaction_type.clone(),
             request_id: request_id.clone(),
             user_eth_address: user_eth_address.clone(),
+            batch_identifiers: batch_identifiers.clone(),
         };
 
         let mut received_store = self.pending.received_tx_data.write().await;
@@ -5898,12 +6016,48 @@ impl SigningNode {
             }
         };
 
+        // Parse the transaction type string into the enum
+        let parsed_tx_type = transaction_type.as_ref().and_then(|t| {
+            match t.as_str() {
+                "UserToVault" => Some(crate::types::TransactionType::UserToVault),
+                "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
+                "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
+                "IntentStatusUpdate" => Some(crate::types::TransactionType::IntentStatusUpdate),
+                "ClaimReward" => Some(crate::types::TransactionType::ClaimReward),
+                "PeerInvalidation" => Some(crate::types::TransactionType::PeerInvalidation),
+                _ => {
+                    warn!(
+                        "⚠️ [SIGNING] Unknown transaction_type string '{}' for round {}, storing as None",
+                        t, round
+                    );
+                    None
+                }
+            }
+        });
+
+        let user_eth = verified_entry.user_eth_address.clone().unwrap_or_default();
+
+        // Populate intent_hashes_by_round for observer nodes so that
+        // store_transaction_id_for_round can detect batch N2T / IntentStatusUpdate rounds
+        // and broadcast tx-id for ALL intents in the batch (not just the first one).
+        if let Some(ref batch_ids) = verified_entry.batch_identifiers {
+            if !batch_ids.is_empty() {
+                let mut intent_map = self.pending.intent_hashes_by_round.write().await;
+                if !intent_map.contains_key(&round) {
+                    info!(
+                        "💾 [SIGNING] Observer: populated intent_hashes_by_round for round {} with {} intent hashes from TransactionDataForFinalNode",
+                        round, batch_ids.len()
+                    );
+                    intent_map.insert(round, batch_ids.clone());
+                }
+            }
+        }
+
         // Store in appropriate pending store based on whether this is batch or non-batch
         if !slot_id.is_empty() {
             // Batch slot: determine if TICS or BTC from the ChainTransaction variant
             match &chain_tx {
                 crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
-                    let user_eth = verified_entry.user_eth_address.unwrap_or_default();
                     let mut store = self.pending.user_to_vault_tics_batch.write().await;
                     let batch_entries = store.entry(round).or_insert_with(Vec::new);
                     if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
@@ -5920,7 +6074,12 @@ impl SigningNode {
                     }
                 }
                 crate::chain_abstraction::ChainTransaction::Bitcoin(_) => {
-                    let user_eth = verified_entry.user_eth_address.unwrap_or_default();
+                    // Compute BtcRoundExtras for observer nodes (UTV batch always uses user key)
+                    let extras = self.compute_btc_extras_for_observer(
+                        &Some(crate::types::TransactionType::UserToVault),
+                        &user_eth,
+                        round,
+                    ).await;
                     let mut store = self.pending.user_to_vault_btc_batch.write().await;
                     let batch_entries = store.entry(round).or_insert_with(Vec::new);
                     if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
@@ -5929,7 +6088,7 @@ impl SigningNode {
                             user_eth,
                             chain_tx,
                             tx_bytes,
-                            None, // BtcRoundExtras will be computed during finalization if needed
+                            extras,
                         ));
                         info!(
                             "💾 [SIGNING] Stored verified BTC batch slot {} (round {}) after threshold verification",
@@ -5939,33 +6098,157 @@ impl SigningNode {
                 }
             }
         } else {
-            // Non-batch: store in pending_transactions
-            let parsed_tx_type = transaction_type.as_ref().and_then(|t| {
-                match t.as_str() {
-                    "UserToVault" => Some(crate::types::TransactionType::UserToVault),
-                    "NetworkToTarget" => Some(crate::types::TransactionType::NetworkToTarget),
-                    "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
-                    _ => None,
-                }
-            });
+            // Non-batch: route to the correct type-specific store based on chain variant + tx type
+            let is_withdraw = matches!(parsed_tx_type, Some(crate::types::TransactionType::WithdrawLiquidity));
+            let is_claim_reward = matches!(parsed_tx_type, Some(crate::types::TransactionType::ClaimReward));
 
-            let mut pending = self.pending.pending_transactions.write().await;
-            if !pending.contains_key(&round) {
-                pending.insert(
-                    round,
-                    (
-                        chain_tx,
-                        tx_bytes,
-                        intent_hash,
-                        parsed_tx_type,
-                        request_id,
-                        None,
-                    ),
-                );
-                info!(
-                    "💾 [SIGNING] Stored verified TX data for round {} after threshold verification",
-                    round
-                );
+            // Use batch_identifiers from the verified entry if available (for withdraw/claim batches),
+            // otherwise fall back to wrapping intent_hash in a Vec.
+            let identifiers_for_store = verified_entry.batch_identifiers.clone()
+                .or_else(|| intent_hash.clone().map(|h| vec![h]));
+
+            match &chain_tx {
+                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                    // ETH non-batch: route to correct TICS pending store
+                    if is_withdraw {
+                        let mut store = self.pending.withdraw_pending_transactions_tics.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    identifiers_for_store,
+                                    parsed_tx_type,
+                                    request_id,
+                                    None,
+                                ),
+                            );
+                            // Mark as withdraw round
+                            let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                            withdraw_rounds.insert(round);
+                            info!(
+                                "💾 [SIGNING] Stored verified TICS withdraw TX for round {} after threshold verification",
+                                round
+                            );
+                        }
+                    } else if is_claim_reward {
+                        let mut store = self.pending.claim_reward_pending_transactions_tics.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    identifiers_for_store,
+                                    parsed_tx_type,
+                                    request_id,
+                                    None,
+                                ),
+                            );
+                            // Mark as claim reward round
+                            let mut claim_reward_rounds = self.pending.claim_reward_rounds.write().await;
+                            claim_reward_rounds.insert(round);
+                            info!(
+                                "💾 [SIGNING] Stored verified TICS claim-reward TX for round {} after threshold verification",
+                                round
+                            );
+                        }
+                    } else {
+                        // Regular ETH (UserToVault, NetworkToTarget, IntentStatusUpdate, PeerInvalidation, etc.)
+                        let mut pending = self.pending.pending_transactions.write().await;
+                        if !pending.contains_key(&round) {
+                            pending.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    intent_hash,
+                                    parsed_tx_type,
+                                    request_id,
+                                    None,
+                                ),
+                            );
+                            info!(
+                                "💾 [SIGNING] Stored verified ETH TX for round {} (type: {:?}) after threshold verification",
+                                round, transaction_type
+                            );
+                        }
+                    }
+                }
+                crate::chain_abstraction::ChainTransaction::Bitcoin(_) => {
+                    // BTC non-batch: route to correct BTC pending store
+                    let extras = self.compute_btc_extras_for_observer(
+                        &parsed_tx_type,
+                        &user_eth,
+                        round,
+                    ).await;
+
+                    // Re-compute identifiers for BTC branch (ETH branch consumed the first copy)
+                    let btc_identifiers = verified_entry.batch_identifiers.clone()
+                        .or_else(|| intent_hash.map(|h| vec![h]));
+
+                    if is_withdraw {
+                        let mut store = self.pending.withdraw_pending_transactions_btc.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    btc_identifiers,
+                                    parsed_tx_type,
+                                    extras,
+                                ),
+                            );
+                            let mut withdraw_rounds = self.pending.withdraw_rounds.write().await;
+                            withdraw_rounds.insert(round);
+                            info!(
+                                "💾 [SIGNING] Stored verified BTC withdraw TX for round {} after threshold verification",
+                                round
+                            );
+                        }
+                    } else if is_claim_reward {
+                        let mut store = self.pending.claim_reward_pending_transactions_btc.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    btc_identifiers,
+                                    parsed_tx_type,
+                                    extras,
+                                ),
+                            );
+                            let mut claim_reward_rounds = self.pending.claim_reward_rounds.write().await;
+                            claim_reward_rounds.insert(round);
+                            info!(
+                                "💾 [SIGNING] Stored verified BTC claim-reward TX for round {} after threshold verification",
+                                round
+                            );
+                        }
+                    } else {
+                        // Regular BTC (N2T, UserToVault non-batch, etc.)
+                        let mut store = self.pending.pending_transactions_btc.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    btc_identifiers,
+                                    parsed_tx_type,
+                                    extras,
+                                ),
+                            );
+                            info!(
+                                "💾 [SIGNING] Stored verified BTC TX for round {} (type: {:?}) after threshold verification",
+                                round, transaction_type
+                            );
+                        }
+                    }
+                }
             }
         }
 
