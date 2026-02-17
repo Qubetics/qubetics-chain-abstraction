@@ -1527,18 +1527,11 @@ impl NonceManager {
                     tuples.push(tuple);
                 }
 
-                let tuples_count = tuples.len();
-                // Count includes other peers + our own local values
-                let total_contributors = state.k_shares.len() + 1;
-                info!(
-                    "🎉🟣 [NONCE-BATCH] Created {} nonce tuples for batch {} (from {} nodes: {} peers + this node) 🟣🎉",
-                    tuples_count, batch_id, total_contributors, state.k_shares.len()
-                );
-
                 drop(batches); // Release lock before async calls
 
                 // Store all tuples
                 let tuples_for_broadcast = tuples.clone();
+                let tuples_count = tuples_for_broadcast.len();
                 for tuple in tuples {
                     self.storage.store_nonce_tuple(&tuple).await?;
                 }

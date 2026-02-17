@@ -782,23 +782,6 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Store the intent in database (duplicate already rejected above)
-                if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
-                    if let Err(e) = user_intent_manager
-                        .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
-                        .await
-                    {
-                        warn!(
-                            "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
-                            intent_hash, e
-                        );
-                        return Ok(());
-                    }
-                } else {
-                    warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
-                    return Ok(());
-                }
-
                 // Each node: fetch prices, compute target amount; store only when network has sufficient funds
                 const MIN_BTC_INTENT_SATS: u128 = 550;
                 let parsed_amount = match intent.amount.parse::<u128>() {
@@ -865,8 +848,21 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Check network balance for target chain; store target amount only when sufficient
-                let network_address = if let Some(dkg_node) = &self.dkg_node {
+                // BTC->TICS detection for treasury vault checks.
+                let is_btc_to_tics = (intent.source_chain.eq_ignore_ascii_case("btc")
+                    || intent.source_chain.eq_ignore_ascii_case("bitcoin"))
+                    && (intent.target_chain.eq_ignore_ascii_case("tics")
+                        || intent.target_chain.eq_ignore_ascii_case("qubetics"));
+
+                // Check network balance for target chain:
+                // - TICS->BTC: DKG BTC address (vault/main BTC).
+                // - BTC->TICS: Treasury Vault contract address on TICS, not the DKG ETH address.
+                // - Same-chain: DKG address on that chain.
+                let network_address = if is_btc_to_tics {
+                    std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS").unwrap_or_else(|_| {
+                        "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string()
+                    })
+                } else if let Some(dkg_node) = &self.dkg_node {
                     match dkg_node.get_final_public_key().await {
                         Some(final_public) => {
                             if intent.target_chain.eq_ignore_ascii_case("btc")
@@ -915,25 +911,46 @@ impl MpcNetworkLayer {
                     false
                 };
 
-                if has_sufficient_funds {
-                    if let Some(user_intent_manager) = &self.user_intent_manager {
+                // If funds are not sufficient, reject the intent completely (do not store).
+                if !has_sufficient_funds {
+                    return Ok(());
+                }
+
+                // At this point the intent is accepted. Enforce invariant:
+                // if the intent is stored, its target_amount must also be stored.
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    if let Err(e) = user_intent_manager
+                        .store_intent_target_amount(&intent_hash, target_amount)
+                        .await
+                    {
+                        warn!(
+                            "❌ [GOSSIPSUB] Failed to store target amount for {}: {}. Rejecting intent.",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+
+                    // Only after successfully storing target_amount do we persist the intent itself.
+                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
                         if let Err(e) = user_intent_manager
-                            .store_intent_target_amount(&intent_hash, target_amount)
+                            .store_intent_hash(intent_hash_bytes, &user_eth_addr, &intent)
                             .await
                         {
                             warn!(
-                                "❌ [GOSSIPSUB] Failed to store target amount for {}: {}",
+                                "❌ [GOSSIPSUB] Failed to store intent hash {}: {}",
                                 intent_hash, e
                             );
-                        } else {
-                            info!(
-                                "💾 [GOSSIPSUB] Stored target amount {} for intent {} (network has sufficient funds)",
-                                target_amount, intent_hash
-                            );
+                            return Ok(());
                         }
+                    } else {
+                        warn!("❌ [GOSSIPSUB] Invalid intent hash format: {}", intent_hash);
+                        return Ok(());
                     }
-                } else {
-                    return Ok(());
+
+                    info!(
+                        "💾 [GOSSIPSUB] Stored target amount {} and intent {} (network has sufficient funds)",
+                        target_amount, intent_hash
+                    );
                 }
 
                 // At this stage, the intent has been fully validated, stored, and its target

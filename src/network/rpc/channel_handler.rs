@@ -2155,23 +2155,8 @@ impl MpcNetworkLayer {
                     info!("⏭️ [NETWORK] Skipping gossip broadcast - only UserToVault deposits are gossiped");
                     return Ok(());
                 }
-                info!("🌐 [NETWORK] Broadcasting UserToVault deposit to P2P network");
-                let deposit_intent_msg = GossipsubMessage::DepositIntent {
-                    intent: intent.clone(),
-                    intent_id: intent_id.clone(),
-                    user_eth_address: user_eth_address.clone(),
-                    amount,
-                    signature: signature.clone(),
-                };
-                let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
 
-                // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("deposit-intents");
-                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
-                info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
-
-                // Calculate intent hash from the intent
+                // Calculate intent hash from the intent (used both for logging and DB keys)
                 let intent_hash = {
                     let calculated_hash = crate::utils::calculate_intent_hash(&intent)
                         .map_err(|e| anyhow::anyhow!("Failed to calculate intent hash: {}", e))?;
@@ -2179,7 +2164,9 @@ impl MpcNetworkLayer {
                     calculated_hash
                 };
 
-                // Each node: fetch prices, compute target amount; store only when network has sufficient funds
+                // Each node: fetch prices, compute target amount; reject intents immediately when
+                // network funds are insufficient. If an intent is accepted and eventually stored
+                // in the DB by gossip handling, its converted target amount will also be stored.
                 const MIN_BTC_INTENT_SATS: u128 = 550;
                 let parsed_amount = match intent.amount.parse::<u128>() {
                     Ok(a) => a,
@@ -2202,6 +2189,8 @@ impl MpcNetworkLayer {
                 };
                 let (target_amount, has_sufficient_funds) = if is_same_chain {
                     let target_amount = intent.amount.parse::<u128>().unwrap();
+
+                    // For same-chain flows, use the DKG address on the corresponding chain.
                     let network_address = if let Some(dkg_node) = &self.dkg_node {
                         match dkg_node.get_final_public_key().await {
                             Some(final_public) => {
@@ -2218,6 +2207,7 @@ impl MpcNetworkLayer {
                     } else {
                         String::new()
                     };
+
                     let sufficient = if !network_address.is_empty() {
                         let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
                             || intent.target_chain.eq_ignore_ascii_case("bitcoin")
@@ -2259,82 +2249,106 @@ impl MpcNetworkLayer {
                                 }
                             };
                             let is_tics_to_btc = (intent.source_chain.eq_ignore_ascii_case("tics")
-                            || intent.source_chain.eq_ignore_ascii_case("qubetics"))
-                            && (intent.target_chain.eq_ignore_ascii_case("btc")
-                                || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
-                        if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
-                            warn!(
-                                "⚠️ [CHANNEL] TICS->BTC intent {} below minimum: {} satoshis (min {})",
-                                intent_hash, target_amount, MIN_BTC_INTENT_SATS
-                            );
-                            return Ok(());
-                        }
-                        let network_address = if let Some(dkg_node) = &self.dkg_node {
-                            match dkg_node.get_final_public_key().await {
-                                Some(final_public) => {
-                                    if intent.target_chain.eq_ignore_ascii_case("btc")
-                                        || intent.target_chain.eq_ignore_ascii_case("bitcoin")
-                                    {
-                                        crate::utils::get_btc_address_from_group_key(final_public)
-                                    } else {
-                                        crate::utils::get_eth_address_from_group_key(final_public)
-                                    }
-                                }
-                                None => String::new(),
+                                || intent.source_chain.eq_ignore_ascii_case("qubetics"))
+                                && (intent.target_chain.eq_ignore_ascii_case("btc")
+                                    || intent.target_chain.eq_ignore_ascii_case("bitcoin"));
+                            if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
+                                warn!(
+                                    "⚠️ [CHANNEL] TICS->BTC intent {} below minimum: {} satoshis (min {})",
+                                    intent_hash, target_amount, MIN_BTC_INTENT_SATS
+                                );
+                                return Ok(());
                             }
-                        } else {
-                            String::new()
-                        };
-                        let sufficient = if !network_address.is_empty() {
-                            let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
-                                || intent.target_chain.eq_ignore_ascii_case("bitcoin")
-                            {
-                                "btc"
+
+                            // BTC->TICS detection for treasury vault checks.
+                            let is_btc_to_tics =
+                                (intent.source_chain.eq_ignore_ascii_case("btc")
+                                    || intent.source_chain.eq_ignore_ascii_case("bitcoin"))
+                                    && (intent.target_chain.eq_ignore_ascii_case("tics")
+                                        || intent.target_chain.eq_ignore_ascii_case("qubetics"));
+
+                            // For cross-chain flows:
+                            // - TICS->BTC: use DKG BTC address (vault/main BTC).
+                            // - BTC->TICS: use Treasury Vault contract address on TICS, not the DKG ETH address.
+                            let network_address = if is_btc_to_tics {
+                                std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                                    .unwrap_or_else(|_| {
+                                        "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string()
+                                    })
+                            } else if let Some(dkg_node) = &self.dkg_node {
+                                match dkg_node.get_final_public_key().await {
+                                    Some(final_public) => {
+                                        if intent.target_chain.eq_ignore_ascii_case("btc")
+                                            || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                                        {
+                                            crate::utils::get_btc_address_from_group_key(
+                                                final_public,
+                                            )
+                                        } else {
+                                            crate::utils::get_eth_address_from_group_key(
+                                                final_public,
+                                            )
+                                        }
+                                    }
+                                    None => String::new(),
+                                }
                             } else {
-                                "eth"
+                                String::new()
                             };
-                            match fetch_network_balance(&network_address, blockchain).await {
-                                Ok(network_balance) => {
-                                    if network_balance < target_amount {
-                                        warn!(
-                                            "⚠️ [CHANNEL] Insufficient network balance for intent {}: have {}, need {}",
-                                            intent_hash, network_balance, target_amount
-                                        );
-                                        false
-                                    } else {
-                                        true
+
+                            let sufficient = if !network_address.is_empty() {
+                                let blockchain = if intent.target_chain.eq_ignore_ascii_case("btc")
+                                    || intent.target_chain.eq_ignore_ascii_case("bitcoin")
+                                {
+                                    "btc"
+                                } else {
+                                    "eth"
+                                };
+                                match fetch_network_balance(&network_address, blockchain).await {
+                                    Ok(network_balance) => {
+                                        if network_balance < target_amount {
+                                            warn!(
+                                                "⚠️ [CHANNEL] Insufficient network balance for intent {}: have {}, need {}",
+                                                intent_hash, network_balance, target_amount
+                                            );
+                                            false
+                                        } else {
+                                            true
+                                        }
                                     }
+                                    Err(_) => false,
                                 }
-                                Err(_) => false,
-                            }
-                        } else {
-                            false
-                        };
-                        (target_amount, sufficient)
+                            } else {
+                                false
+                            };
+
+                            (target_amount, sufficient)
                     }
                     Err(_) => return Ok(()),
                 }
                 };
 
-                if has_sufficient_funds {
-                    if let Some(user_intent_manager) = &self.user_intent_manager {
-                        let _ = user_intent_manager
-                            .store_intent_target_amount(&intent_hash, target_amount)
-                            .await;
-                        info!(
-                            "💾 [CHANNEL] Stored target amount {} for intent {} (network has sufficient funds)",
-                            target_amount, intent_hash
-                        );
-                    }
-                } else {
+                // If funds are not sufficient, reject the intent at RPC level (no gossip broadcast).
+                if !has_sufficient_funds {
                     return Ok(());
                 }
 
-                // Intent is broadcast and stored as Pending; skip immediate UserToVault processing.
-                info!(
-                    "⏸️ [LOCAL] Deposit intent {} stored as Pending; skipping immediate UserToVault processing",
-                    intent_hash
-                );
+                // Only once we know the network has sufficient funds do we broadcast the intent.
+                info!("🌐 [NETWORK] Broadcasting UserToVault deposit to P2P network");
+                let deposit_intent_msg = GossipsubMessage::DepositIntent {
+                    intent: intent.clone(),
+                    intent_id: intent_id.clone(),
+                    user_eth_address: user_eth_address.clone(),
+                    amount,
+                    signature: signature.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&deposit_intent_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
+
+                // Broadcast to all peers via gossipsub
+                let topic = gossipsub::IdentTopic::new("deposit-intents");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
             }
             ChannelMessage::TransactionFailure {
                 sequencer_request_id,
