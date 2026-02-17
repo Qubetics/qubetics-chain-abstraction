@@ -241,7 +241,7 @@ impl<'a> BitcoinSigner<'a> {
             }
 
             // DKG nodes: sign each input and broadcast signatures + TX data
-            // Observer nodes: just add to batch_storage for final node reconstruction
+            // Non-DKG nodes: just add to batch_storage for final node reconstruction
             if has_dkg {
                 let signing_key = match key_opt {
                     Some(scalar) => SigningNode::derive_secp_secret(&scalar)?,
@@ -396,9 +396,9 @@ impl<'a> BitcoinSigner<'a> {
         }
 
         if !has_dkg {
-            info!(
-                "ℹ️ [BTC_UTV_BATCH] Observer node {} stored batch data for round {} ({} slots) — signing skipped",
-                self.node.id, round, batch_storage.len()
+            debug!(
+                "ℹ️ [BTC_UTV_BATCH] Stored batch data for round {} ({} slots) — signing skipped (no DKG share)",
+                round, batch_storage.len()
             );
         }
 
@@ -738,11 +738,7 @@ impl SigningNode {
                 }
             }
         } else {
-            // ===== Observer node: skip signing, just prepare TX data for aggregation =====
-            info!(
-                "ℹ️ [BTC-SIGNING] Observer node {} preparing BTC TX (no signing) for round {}",
-                self.id, current_round
-            );
+            // ===== Non-DKG node: skip signing, just prepare TX data for aggregation =====
         }
 
         // ===== Stash BTC extras alongside the unsigned tx for the finalizer =====

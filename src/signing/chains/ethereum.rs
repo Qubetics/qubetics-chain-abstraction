@@ -711,7 +711,7 @@ impl SigningNode {
             );
         }
 
-        // DKG nodes: create ECDSA signature; Observer nodes: skip signing
+        // DKG nodes create ECDSA signature; non-DKG nodes skip signing
         if has_dkg {
             // Determine which key to use for signing
             let signing_key = if let Some(tweaked_share) = user_tweaked_share {
@@ -824,11 +824,7 @@ impl SigningNode {
                 request_id, original_request,
             ).await
         } else {
-            // Observer node: skip signing, just advance VRF and store TX
-            info!(
-                "ℹ️ [SIGNING] Observer node {} preparing contract TX (no signing)",
-                self.id
-            );
+            // Non-DKG node: skip signing, just advance VRF and store TX
 
             // Synchronize VRF rounds and advance to keep in sync with DKG nodes
             let round = if let Some(vrf_service) = self.coordination.vrf_service() {
@@ -838,9 +834,9 @@ impl SigningNode {
                 0
             };
 
-            info!(
-                "💾 [SIGNING] Observer node {} stored contract TX for round {} (ready for final-node reconstruction)",
-                self.id, round
+            debug!(
+                "💾 [SIGNING] Stored contract TX for round {} (ready for final-node reconstruction)",
+                round
             );
 
             // Store original transaction (same as DKG path, without signature broadcast)
@@ -1064,8 +1060,8 @@ impl SigningNode {
                 if let Some(val) = found {
                     result = val;
                     if attempt > 0 {
-                        info!(
-                            "✅ [SIGNING] Observer node found TX data for reconstruction of round {} after {} attempts (~{}ms)",
+                        debug!(
+                            "✅ [SIGNING] Found TX data for reconstruction of round {} after {} attempts (~{}ms)",
                             round, attempt + 1, attempt * 100
                         );
                     }
@@ -1073,7 +1069,7 @@ impl SigningNode {
                 }
                 if attempt == max_attempts - 1 && !has_dkg {
                     warn!(
-                        "⚠️ [SIGNING] Observer node could not find TX data for reconstruction of round {} after {}ms",
+                        "⚠️ [SIGNING] Could not find TX data for reconstruction of round {} after {}ms",
                         round, max_attempts * 100
                     );
                 }
@@ -1291,7 +1287,7 @@ impl SigningNode {
         aggregated_signature: &[u8],
         recovery_id: u8,
     ) -> Result<Option<String>> {
-        // Observer nodes (no DKG share) may not have batch data yet — poll up to ~5s
+        // Nodes without a DKG share may not have batch data yet — poll up to ~5s
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
@@ -1305,8 +1301,8 @@ impl SigningNode {
                 if let Some(entries) = batch.get(&round) {
                     if let Some(entry) = entries.iter().find(|(h, ..)| h == slot_id) {
                         if attempt > 0 {
-                            info!(
-                                "✅ [SIGNING] Observer node found TICS batch data for round {} slot {} after {} attempts (~{}ms)",
+                            debug!(
+                                "✅ [SIGNING] Found TICS batch data for round {} slot {} after {} attempts (~{}ms)",
                                 round, slot_id, attempt + 1, attempt * 100
                             );
                         }
@@ -1316,7 +1312,7 @@ impl SigningNode {
                 }
                 if attempt == max_attempts - 1 && !has_dkg {
                     warn!(
-                        "⚠️ [SIGNING] Observer node could not find TICS batch data for round {} slot {} after {}ms",
+                        "⚠️ [SIGNING] Could not find TICS batch data for round {} slot {} after {}ms",
                         round, slot_id, max_attempts * 100
                     );
                 }
@@ -1707,7 +1703,7 @@ impl SigningNode {
         );
 
         // DKG nodes: sign each slot and broadcast signatures + TX data
-        // Observer nodes: batch data is already stored above — skip signing
+        // Non-DKG nodes: batch data is already stored above — skip signing
         if has_dkg {
             for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
                 let signing_key = match key_opt {
@@ -1834,9 +1830,9 @@ impl SigningNode {
                 }
             }
         } else {
-            info!(
-                "ℹ️ [TICS_UTV_BATCH] Observer node {} stored batch data for round {} ({} slots) — signing skipped",
-                self.id, round, batch_slot_count
+            debug!(
+                "ℹ️ [TICS_UTV_BATCH] Stored batch data for round {} ({} slots) — signing skipped (no DKG share)",
+                round, batch_slot_count
             );
         }
         Ok(())

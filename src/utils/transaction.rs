@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use ethabi::ethereum_types::U256;
 use ethabi::{Function, Param, ParamType, StateMutability, Token};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn}; // for Token::Uint
+use tracing::{debug, info, warn}; // for Token::Uint
 
 // use rlp::RlpStream;
 
@@ -1389,13 +1389,9 @@ pub async fn create_chain_transaction_from_contract_call(
     info!("  - Gas Limit: {}", gas_limit);
     info!("  - Gas Price: {}", gas_price);
     info!("  - Chain ID: {}", chain_id);
-    info!(
-        "  - Calldata: 0x{}",
-        calldata
-            .as_ref()
-            .map(hex::encode)
-            .unwrap_or_else(|| "".to_string())
-    );
+    // Avoid logging full calldata bytes at info level to keep logs compact
+    let calldata_len = calldata.as_ref().map(|c| c.len()).unwrap_or(0);
+    info!("  - Calldata length: {} bytes", calldata_len);
 
     let ethereum_tx = EthereumTransaction {
         to: contract_address_env,
@@ -1437,13 +1433,17 @@ pub async fn create_solver_rewards_update_transaction(
     info!("🔧 [CONTRACT] From address: {}", from_address);
 
     let calldata = encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
-    info!("🔧 [CONTRACT] Calldata: {:?}", calldata);
+    // Keep detailed calldata logs at debug level only
+    debug!(
+        "🔧 [CONTRACT] Prepared solver rewards calldata ({} bytes)",
+        calldata.as_ref().map(|c| c.len()).unwrap_or(0)
+    );
     let calldata_hex = calldata
         .as_ref()
         .map(|d| format!("0x{}", hex::encode(d)))
         .unwrap_or_else(|| "0x".to_string());
 
-    info!("🔧 [CONTRACT] Calldata prepared: {}", calldata_hex);
+    debug!("🔧 [CONTRACT] Calldata prepared: {}", calldata_hex);
 
     let estimated_gas = estimate_gas_for_deposit_intent(
         from_address,
@@ -1694,9 +1694,12 @@ pub async fn create_solver_remove_liquidity_transaction(
             .ok_or_else(|| anyhow::anyhow!("Failed to encode removeLiquidity calldata"))?;
     let calldata_hex = format!("0x{}", hex::encode(&calldata));
     info!(
-        "🔧 [CONTRACT][LIQ] removeLiquidity calldata: {} ({} bytes)",
-        calldata_hex,
+        "🔧 [CONTRACT][LIQ] removeLiquidity calldata length: {} bytes",
         calldata.len()
+    );
+    debug!(
+        "🔧 [CONTRACT][LIQ] removeLiquidity calldata hex: {}",
+        calldata_hex
     );
 
     let estimated_gas = estimate_gas_for_deposit_intent(
