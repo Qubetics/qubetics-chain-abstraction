@@ -3,8 +3,6 @@ use crate::types::nonce::{NonceGenState, NoncePoolMetrics, NonceTuple};
 use crate::types::secp::SerializablePoint;
 use anyhow::Result;
 use std::collections::HashMap;
-use tracing::info;
-
 /// Storage for nonce tuples and generation state.
 ///
 /// This module handles persistence of:
@@ -35,11 +33,6 @@ impl NonceStorage {
         if !tuple.consumed {
             self.add_to_available_ids(&tuple.tuple_id).await?;
         }
-
-        info!(
-            "💾 [NONCE_STORAGE] Stored nonce tuple: {} (consumed: {})",
-            tuple.tuple_id, tuple.consumed
-        );
         Ok(())
     }
 
@@ -105,11 +98,6 @@ impl NonceStorage {
 
             // Remove from available IDs
             self.remove_from_available_ids(tuple_id).await?;
-
-            info!(
-                "🔒 [NONCE_STORAGE] Consumed nonce tuple: {} (NEVER reuse)",
-                tuple_id
-            );
             Ok(())
         } else {
             Err(anyhow::anyhow!("Nonce tuple not found: {}", tuple_id))
@@ -172,13 +160,6 @@ impl NonceStorage {
             }
         }
 
-        if deleted > 0 {
-            info!(
-                "🗑️ [NONCE_STORAGE] Cleaned up {} old consumed nonces",
-                deleted
-            );
-        }
-
         Ok(deleted)
     }
 
@@ -213,11 +194,6 @@ impl NonceStorage {
             if available_ids.len() != original_len {
                 self.db.put_string(keys::NONCE_AVAILABLE_IDS, &available_ids)?;
             }
-
-            info!(
-                "🗑️ [NONCE_STORAGE] Deleted {} stale nonces (had <{} contributors)",
-                deleted, min_contributors
-            );
         }
 
         Ok(deleted)
@@ -243,13 +219,6 @@ impl NonceStorage {
         let empty: Vec<String> = Vec::new();
         self.db.put_string(keys::NONCE_AVAILABLE_IDS, &empty)?;
 
-        if count > 0 {
-            info!(
-                "🗑️ [NONCE_STORAGE] Flushed ALL {} nonces from pool (DKG node restart)",
-                count
-            );
-        }
-
         Ok(count)
     }
 
@@ -261,10 +230,6 @@ impl NonceStorage {
     pub async fn store_batch_state(&self, state: &NonceGenState) -> Result<()> {
         let key = format!("{}{}", keys::NONCE_BATCH, state.batch_id);
         self.db.put_string(&key, state)?;
-        info!(
-            "💾 [NONCE_STORAGE] Stored batch state: {} (status: {:?})",
-            state.batch_id, state.status
-        );
         Ok(())
     }
 
@@ -278,7 +243,6 @@ impl NonceStorage {
     pub async fn delete_batch_state(&self, batch_id: &str) -> Result<()> {
         let key = format!("{}{}", keys::NONCE_BATCH, batch_id);
         self.db.delete_string(&key)?;
-        info!("🗑️ [NONCE_STORAGE] Deleted batch state: {}", batch_id);
         Ok(())
     }
 
@@ -295,10 +259,6 @@ impl NonceStorage {
     ) -> Result<()> {
         let key = format!("{}{}:{}", keys::NONCE_COMMITMENT, batch_id, from_peer);
         self.db.put_string(&key, &commitment.to_vec())?;
-        info!(
-            "💾 [NONCE_STORAGE] Stored commitment from {} for batch {}",
-            from_peer, batch_id
-        );
         Ok(())
     }
 
@@ -328,10 +288,6 @@ impl NonceStorage {
         for key in keys_vec {
             self.db.delete_string(&key)?;
         }
-        info!(
-            "🗑️ [NONCE_STORAGE] Cleared commitments for batch {}",
-            batch_id
-        );
         Ok(())
     }
 
@@ -348,10 +304,6 @@ impl NonceStorage {
     ) -> Result<()> {
         let key = format!("{}{}:{}", keys::NONCE_R_POINT, batch_id, from_peer);
         self.db.put_string(&key, r_point)?;
-        info!(
-            "💾 [NONCE_STORAGE] Stored R point from {} for batch {}",
-            from_peer, batch_id
-        );
         Ok(())
     }
 
@@ -377,7 +329,6 @@ impl NonceStorage {
         for key in keys_vec {
             self.db.delete_string(&key)?;
         }
-        info!("🗑️ [NONCE_STORAGE] Cleared R points for batch {}", batch_id);
         Ok(())
     }
 
@@ -444,7 +395,6 @@ impl NonceStorage {
         self.clear_commitments(batch_id).await?;
         self.clear_r_points(batch_id).await?;
         self.delete_batch_state(batch_id).await?;
-        info!("🧹 [NONCE_STORAGE] Cleaned up batch: {}", batch_id);
         Ok(())
     }
 }

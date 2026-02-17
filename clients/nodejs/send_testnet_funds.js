@@ -16,7 +16,7 @@ const api = axios.create({
 // Configuration – Mempool.space API for Testnet3 (UTXO + broadcast)
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'n26NGpZeeG9znQaKe1CvQuUnmyUrdTrhKG',
+    targetAddress: 'mrAzVGDhrxWHV9RUkyRjJiFiicVVBBgUKh',
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
     rpcEndpoint: 'https://mempool.space/testnet/api',
     amountPerTx: 1000, // satoshis

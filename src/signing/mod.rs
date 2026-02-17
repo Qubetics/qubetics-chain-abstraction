@@ -2494,10 +2494,11 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
 
+        // Number of TICS UserToVault intents to pick per batch (default 10 if env not set)
         let max_per_batch = std::env::var("MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(20);
+            .unwrap_or(10);
 
         let exclusion_set: HashSet<String> = {
             let guard = self.last_tics_user_to_vault_batch_hashes.read().map_err(|e| anyhow!("lock poisoned: {}", e))?;
