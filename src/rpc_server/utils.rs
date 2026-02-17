@@ -154,7 +154,7 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
 
 pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
     let base_url =
-        std::env::var("BACKEND_API_URL").unwrap_or_else(|_| "http://172.16.15.63:7322".to_string());
+        std::env::var("BACKEND_API_URL").unwrap_or_else(|_| "https://stage-crypto-api.qubetics.work".to_string());
     let url = format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS");
     let client = Client::new();
 
@@ -435,7 +435,7 @@ pub fn recover_eth_address_secp(
 /// Fetch network address balance from the API
 pub async fn fetch_network_balance(address: &str, blockchain: &str) -> Result<u128, String> {
     let base_url = std::env::var("BACKEND_API_URL")
-        .unwrap_or_else(|_| "https://stage-testnet4-crypto-api.qubetics.work".to_string());
+        .unwrap_or_else(|_| "https://stage-crypto-api.qubetics.work".to_string());
     let url = format!(
         "{}/api/v1/balance/{}?blockchain={}",
         base_url, address, blockchain

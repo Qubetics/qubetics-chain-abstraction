@@ -125,7 +125,7 @@ impl BroadcastConfig {
 
         if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
             btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
-                "https://api.blockcypher.com/v1/btc/test3/txs/push".to_string()
+                "https://stage-crypto-api.qubetics.work/api/v1/tx/broadcast".to_string()
             });
         }
 

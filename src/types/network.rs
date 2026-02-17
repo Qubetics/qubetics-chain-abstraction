@@ -53,12 +53,8 @@ pub fn init_network_type_from_env() -> Result<NetworkType> {
         return Ok(nt);
     }
 
-    let raw = std::env::var(NETWORK_ENV_KEY).map_err(|_| {
-        anyhow!(
-            "{} env var missing (expected 'testnet' or 'mainnet')",
-            NETWORK_ENV_KEY
-        )
-    })?;
+    let raw = std::env::var(NETWORK_ENV_KEY)
+        .unwrap_or_else(|_| "testnet".to_string());
     let parsed = NetworkType::parse(&raw).ok_or_else(|| {
         anyhow!(
             "{} must be 'testnet' or 'mainnet' (got '{}')",
@@ -88,12 +84,8 @@ pub fn is_testnet() -> bool {
 
 /// Resolve the RPC URL for the Qubetics chain directly from environment variables.
 pub fn qubetics_rpc_url_from_env() -> Result<String> {
-    let raw = std::env::var(ETH_RPC_ENV_KEY).map_err(|_| {
-        anyhow!(
-            "{} env var missing; set it in your .env file (e.g. https://rpc-testnet.qubetics.work)",
-            ETH_RPC_ENV_KEY
-        )
-    })?;
+    let raw = std::env::var(ETH_RPC_ENV_KEY)
+        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
 
     let trimmed = raw.trim();
     if trimmed.is_empty() {

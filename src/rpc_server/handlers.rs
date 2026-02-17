@@ -1287,13 +1287,13 @@ async fn fetch_solver_liquidity_from_contract(
     normalized_address: &str,
 ) -> Result<(Option<String>, Option<String>), String> {
     let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
     let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+        .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
     let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "1".to_string())
+        .unwrap_or_else(|_| "9029".to_string())
         .parse::<u64>()
-        .unwrap_or(1);
+        .unwrap_or(9029);
 
     if contract_address == "0x0000000000000000000000000000000000000000" {
         return Err("Solver contract address not configured".to_string());
@@ -1853,8 +1853,10 @@ pub(crate) async fn handle_withdraw_liquidity(
     let wants_btc = req.amount_btc.is_some();
 
     let (minimum_liquidity_tics, minimum_liquidity_btc) = if wants_tics || wants_btc {
-        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS").unwrap_or_default();
-        let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL").unwrap_or_default();
+        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+        let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
             .unwrap_or_else(|_| "9029".to_string())
             .parse::<u64>()
@@ -2228,7 +2230,7 @@ pub(crate) async fn handle_add_liquidity(
 
     // 1) Load VERIFICATION_ADDRESS from env (must NOT be hardcoded).
     let verification_address_raw =
-        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "".to_string());
+        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string());
     if verification_address_raw.trim().is_empty() {
         warn!("❌ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured");
         return Ok(warp::reply::json(&AddLiquidityResponse {

@@ -43,8 +43,8 @@ impl MpcNetworkLayer {
             .ok()
             .and_then(|val| val.parse::<u64>().ok())
             .unwrap_or_else(|| {
-                info!("GLOBAL_CLOCK_INTERVAL_SECONDS not set, defaulting to 60 seconds");
-                60
+                info!("GLOBAL_CLOCK_INTERVAL_SECONDS not set, defaulting to 35 seconds");
+                35
             });
 
         // Calculate next epoch-aligned trigger time for synchronized global clock

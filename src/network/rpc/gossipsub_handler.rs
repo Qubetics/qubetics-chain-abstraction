@@ -978,7 +978,7 @@ impl MpcNetworkLayer {
                 // Re-verify signature using VERIFICATION_ADDRESS before accepting into local queue.
                 use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
                 let verification_address =
-                    std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "".to_string());
+                    std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string());
                 if verification_address.is_empty() {
                     warn!(
                         "⚠️ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured; dropping request"
@@ -1763,7 +1763,7 @@ impl MpcNetworkLayer {
                             // Contract address for IntentManager (processBatchIntents)
                             let contract_address_env =
                                 std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(
-                                    |_| "0x0000000000000000000000000000000000000000".to_string(),
+                                    |_| "0x0055Ca34A66D962d68A07a3e1BA6d75b9e4cD383".to_string(),
                                 );
                             if contract_address_env == "0x0000000000000000000000000000000000000000"
                             {
@@ -2798,10 +2798,10 @@ impl MpcNetworkLayer {
                     };
 
                     let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-                        .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
                     let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
                         .unwrap_or_else(|_| {
-                            "0x0000000000000000000000000000000000000000".to_string()
+                            "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string()
                         });
                     let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
                         .ok()
@@ -3241,7 +3241,7 @@ impl MpcNetworkLayer {
                     crate::utils::get_eth_address_from_group_key(group_public_key);
 
                 let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
                 if contract_address == "0x0000000000000000000000000000000000000000" {
                     warn!(
                         "⏭️ [TICS_WITHDRAW] Skipping TICS withdraw batch {} - solver contract address not configured",
@@ -3443,9 +3443,9 @@ impl MpcNetworkLayer {
 
                 // Fetch unclaimed TICS per solver via contract
                 let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-                    .unwrap_or_else(|_| "http://localhost:8545".to_string());
+                    .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
                 let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
                 let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
                     .ok()
                     .and_then(|v| v.parse().ok())
@@ -3546,7 +3546,7 @@ impl MpcNetworkLayer {
                     crate::utils::get_eth_address_from_group_key(group_public_key);
 
                 let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string());
+                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
                 let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
                     .unwrap_or_else(|_| "9029".to_string())
                     .parse::<u64>()

@@ -849,13 +849,13 @@ impl SigningNode {
         raw_tx_hex: &str,
         is_testnet: bool,
     ) -> Result<Option<String>> {
-        let default_url = if is_testnet {
-            "https://mempool.space/testnet/api/tx"
-        } else {
-            "https://mempool.space/api/tx"
-        };
-
-        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| default_url.to_string());
+        let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
+            if is_testnet {
+                "https://stage-crypto-api.qubetics.work/api/v1/tx/broadcast".to_string()
+            } else {
+                "https://mempool.space/api/tx".to_string()
+            }
+        });
         info!("Broadcasting transaction to: {}", url);
 
         let client = Client::new();
