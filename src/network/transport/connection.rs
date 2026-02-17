@@ -169,6 +169,11 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         info!("📡 New peer {} connected; announcing to mesh", peer_id);
 
+        // NOTE: Pending invalidation check is handled earlier in
+        // handle_connection_established() (swarm_events.rs) — before the peer
+        // is added to kademlia/gossipsub. By the time we reach here, the peer
+        // has already passed all validation gates.
+
         // Assign and persist index based on DB state
         let tentative_index = self.assign_and_persist_index(&peer_id);
         info!("assigned_index : {:?}", tentative_index);

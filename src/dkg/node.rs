@@ -199,6 +199,27 @@ impl DKGNode {
         Ok(())
     }
 
+    /// Restore in-memory DKG status to Completed from persisted storage.
+    /// Called when a main DKG node restarts and already has valid DKG data on disk.
+    /// Does NOT delete any data - only restores the in-memory state.
+    pub async fn restore_completed_state(&mut self) -> Result<()> {
+        // Verify critical data exists in storage before restoring
+        let has_secret = self.storage.get_final_secret().await?.is_some();
+        let has_public = self.storage.get_final_public().await?.is_some();
+        let has_index = self.storage.get_my_permanent_index().await?.is_some();
+
+        if !has_secret || !has_public || !has_index {
+            return Err(anyhow!(
+                "Cannot restore DKG state: missing critical data (secret={}, public={}, index={})",
+                has_secret, has_public, has_index
+            ));
+        }
+
+        self.transition_status(DKGStatus::Completed)?;
+        info!("✅ [RECONNECT] Restored DKG status to Completed from persisted storage");
+        Ok(())
+    }
+
     pub fn set_completion_callback(&mut self, callback: DKGCompletionCallback) {
         self.completion_callback = Some(callback);
         info!("🔗 [DKG] Node {} set completion callback", self.id);

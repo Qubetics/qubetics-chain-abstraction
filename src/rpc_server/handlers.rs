@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::rpc_server::utils::get_actual_dkg_secret_share;
 use crate::{
     contract::{ContractClient, ContractConfig, SolverManagerContract},
-    database::DkgStorage,
+    database::{Database, DkgStorage},
     types::{
         intent::{DepositIntent, DepositIntentResponse, TransactionType},
         messaging::ChannelMessage,
@@ -21,11 +21,11 @@ use crate::{
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
             GetSolverRewardsResponse, HeartbeatResponse, IntentDetailsResponse,
             IntentsSolvedCountResponse, NodeIdResponse, PendingClaimRewardRequest,
-            PendingIntentsCountResponse, PendingWithdrawRequest, RequestContext,
-            SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse,
-            UserCountResponse, UserInfoResponse, UserMpcDepositRequest,
-            UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
-            WithdrawLiquidityResponse,
+            PendingIntentsCountResponse, PendingWithdrawRequest, RejoinStatusResponse,
+            RequestContext, SolverLiquidityRequest, SolverLiquidityResponse,
+            UnclaimedRewardEntry, UptimeResponse, UserCountResponse, UserInfoResponse,
+            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
         IntentStatus,
     },
@@ -2577,4 +2577,41 @@ pub(crate) async fn handle_get_network_addresses(
             error_message: None,
         },
     ))
+}
+
+pub(crate) async fn handle_rejoin_status(
+    solver_id: String,
+    database: Arc<Database>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let prefix = format!(
+        "{}{}",
+        crate::database::keys::PENDING_DISCONNECTION,
+        solver_id
+    );
+
+    let pending_keys = database
+        .get_keys_with_prefix_async(&prefix)
+        .await
+        .unwrap_or_default();
+
+    let blocked = !pending_keys.is_empty();
+    let pending_records = pending_keys.len();
+
+    let message = if blocked {
+        format!(
+            "Node {} is blocked from rejoining — {} pending invalidation transaction(s) must complete first",
+            solver_id, pending_records
+        )
+    } else {
+        format!("Node {} is clear to rejoin the network", solver_id)
+    };
+
+    info!("📋 [REJOIN_STATUS] solver_id={}, blocked={}, pending_records={}", solver_id, blocked, pending_records);
+
+    Ok(warp::reply::json(&RejoinStatusResponse {
+        solver_id,
+        blocked,
+        pending_records,
+        message,
+    }))
 }

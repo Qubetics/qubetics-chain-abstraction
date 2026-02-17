@@ -380,7 +380,12 @@ impl NodeContext {
         {
             let mut sn = signing_node.lock().await;
             sn.init_nonce_manager(total, dkg_signer_count);
-            info!("🔐 [MAIN] Initialized NonceManager for random nonce generation (dkg_signer_count={})", dkg_signer_count);
+            // On restart, if this node already holds a DKG secret share, mark the
+            // NonceManager so it can initiate nonce generation.  For fresh nodes
+            // the flag stays false until DKG completes (set in gossipsub_handler).
+            let is_signer = sn.has_dkg_share().await;
+            sn.set_nonce_manager_dkg_signer(is_signer).await;
+            info!("🔐 [MAIN] Initialized NonceManager (dkg_signer_count={}, is_dkg_signer={})", dkg_signer_count, is_signer);
         }
 
         self.user_intent_manager = Some(db_user_intent_manager);
