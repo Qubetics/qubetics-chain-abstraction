@@ -1483,6 +1483,17 @@ impl SigningNode {
         }
     }
 
+    /// Mark the NonceManager as belonging to a DKG signer (or not).
+    ///
+    /// Only DKG signers initiate the commit-reveal nonce generation protocol.
+    /// Observer nodes passively receive nonces via NonceTupleBroadcast.
+    pub async fn set_nonce_manager_dkg_signer(&self, is_signer: bool) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.set_is_dkg_signer(is_signer);
+        }
+    }
+
     /// Handle a new node joining - delete stale nonces and regenerate.
     ///
     /// When a new node joins, all existing nonces become stale because
@@ -1497,6 +1508,18 @@ impl SigningNode {
             if let Err(e) = mgr.handle_node_joined(new_total).await {
                 warn!("⚠️ [SIGNING] Failed to handle node join in NonceManager: {}", e);
             }
+        }
+    }
+
+    /// Flush the entire nonce pool (called on DKG node restart).
+    /// The node may have missed NonceInvalidation messages while offline,
+    /// so all old nonces are deleted. A fresh pool is synced from a peer afterwards.
+    pub async fn flush_nonce_pool(&self) -> Result<usize> {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.flush_all_nonces().await
+        } else {
+            Ok(0)
         }
     }
 

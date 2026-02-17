@@ -362,3 +362,12 @@ pub struct UserCountResponse {
     pub count: u64,
     pub message: String,
 }
+
+/// Response for GET /rejoin-status/:solver_id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RejoinStatusResponse {
+    pub solver_id: String,
+    pub blocked: bool,
+    pub pending_records: usize,
+    pub message: String,
+}

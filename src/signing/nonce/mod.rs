@@ -99,6 +99,13 @@ pub struct NonceManager {
 
     /// Flag indicating if a generation batch is currently in progress
     generation_in_progress: Arc<AtomicBool>,
+
+    /// Whether this node is a DKG signer (holds a DKG secret share).
+    /// Only DKG signers can initiate or join the commit-reveal nonce
+    /// generation protocol.  Observer nodes receive finalized nonces
+    /// passively via NonceTupleBroadcast and must NOT call
+    /// start_generation / join_generation / maybe_trigger_generation.
+    is_dkg_signer: AtomicBool,
 }
 
 impl NonceManager {
@@ -133,7 +140,21 @@ impl NonceManager {
             request_counter: AtomicU64::new(0),
             startup_ready: Arc::new(AtomicBool::new(false)),
             generation_in_progress: Arc::new(AtomicBool::new(false)),
+            is_dkg_signer: AtomicBool::new(false),
         }
+    }
+
+    /// Mark this node as a DKG signer (holds a DKG secret share).
+    /// Must be called after DKG completion or on restart when a share is found
+    /// in storage.  Until this is set, nonce generation is suppressed.
+    pub fn set_is_dkg_signer(&self, value: bool) {
+        self.is_dkg_signer.store(value, Ordering::SeqCst);
+        info!("🔑 [NONCE] is_dkg_signer set to {}", value);
+    }
+
+    /// Check if this node is a DKG signer.
+    pub fn is_dkg_signer(&self) -> bool {
+        self.is_dkg_signer.load(Ordering::SeqCst)
     }
 
     /// Check if startup pre-generation is complete
@@ -250,6 +271,37 @@ impl NonceManager {
         }
 
         Ok(())
+    }
+
+    /// Flush the entire nonce pool and cancel any in-progress generation.
+    ///
+    /// Called when a main DKG node restarts after being offline. Because the node
+    /// may have missed NonceInvalidation messages while down, we cannot trust any
+    /// of the old nonces. The node will request a fresh pool from a connected peer
+    /// via RequestNoncePoolSync after this call.
+    pub async fn flush_all_nonces(&self) -> Result<usize> {
+        // Cancel any in-progress generation batches
+        {
+            let mut batches = self.active_batches.write().await;
+            if !batches.is_empty() {
+                info!(
+                    "⏹️ [NONCE] Cancelling {} in-progress batches during flush",
+                    batches.len()
+                );
+                batches.clear();
+            }
+        }
+        self.generation_in_progress.store(false, Ordering::SeqCst);
+
+        // Delete all nonce tuples from storage
+        let deleted = self.storage.delete_all_nonces().await?;
+
+        info!(
+            "🗑️ [NONCE] Flushed entire nonce pool ({} nonces) - will sync from peer",
+            deleted
+        );
+
+        Ok(deleted)
     }
 
     /// Get the current total number of nodes
@@ -421,6 +473,11 @@ impl NonceManager {
 
     /// Trigger generation if needed and not already in progress
     async fn maybe_trigger_generation(&self) {
+        // Observer nodes never initiate generation.
+        if !self.is_dkg_signer.load(Ordering::SeqCst) {
+            return;
+        }
+
         // Check if generation is already in progress
         if self.generation_in_progress.swap(true, Ordering::SeqCst) {
             return; // Already generating
@@ -470,6 +527,14 @@ impl NonceManager {
     /// IMPORTANT: Only counts VALID nonces (num_contributors >= dkg_signer_count).
     /// Stale nonces from previous sessions with fewer DKG signers don't count!
     pub async fn startup_pregenerate(&self) -> Result<()> {
+        // Observer nodes get nonces via NonceTupleBroadcast / NoncePoolSync,
+        // so they should never initiate the commit-reveal protocol.
+        if !self.is_dkg_signer.load(Ordering::SeqCst) {
+            info!("⏭️ [NONCE] Observer node — skipping startup_pregenerate (nonces received via broadcast/sync)");
+            self.set_startup_ready();
+            return Ok(());
+        }
+
         // Count only VALID nonces (not stale ones)
         let valid_count = self.count_valid_nonces().await?;
         let total_count = self.storage.available_nonce_count().await?;
@@ -867,6 +932,13 @@ impl NonceManager {
     ///
     /// Generates batch_size nonces in a single commit-reveal cycle
     pub async fn start_generation(&self, round: u64) -> Result<String> {
+        // Observer nodes must NOT initiate commit-reveal — they receive nonces
+        // via NonceTupleBroadcast instead.
+        if !self.is_dkg_signer.load(Ordering::SeqCst) {
+            info!("⏭️ [NONCE] Skipping start_generation — this node is not a DKG signer (observer)");
+            return Err(anyhow::anyhow!("Observer node cannot start nonce generation"));
+        }
+
         // Don't start nonce generation if the node hasn't discovered peers yet.
         let dkg_signers = self.dkg_signer_count.load(Ordering::SeqCst);
         if dkg_signers == 0 {
@@ -938,6 +1010,12 @@ impl NonceManager {
     /// This is called when we receive a RequestNonceGeneration from another node.
     /// We use THEIR batch_id so all nodes create nonces with the same tuple_ids.
     pub async fn join_generation(&self, batch_id: &str, round: u64, batch_size: usize) -> Result<()> {
+        // Observer nodes must NOT participate in commit-reveal.
+        if !self.is_dkg_signer.load(Ordering::SeqCst) {
+            info!("⏭️ [NONCE] Skipping join_generation for batch {} — not a DKG signer (observer)", batch_id);
+            return Ok(());
+        }
+
         // Check if we're already participating in this batch
         {
             let batches = self.active_batches.read().await;

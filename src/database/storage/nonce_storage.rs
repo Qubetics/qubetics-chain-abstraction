@@ -223,6 +223,36 @@ impl NonceStorage {
         Ok(deleted)
     }
 
+    /// Delete ALL nonce tuples from the pool (both consumed and unconsumed).
+    ///
+    /// Called when a DKG node restarts and needs to flush its entire nonce pool
+    /// because it may have missed NonceInvalidation messages while offline.
+    /// After flushing, the node requests a fresh pool from a connected peer.
+    ///
+    /// Returns the number of nonces deleted.
+    pub async fn delete_all_nonces(&self) -> Result<usize> {
+        let prefix = keys::NONCE_TUPLE;
+        let keys_to_delete: Vec<String> = self.db.get_keys_with_prefix(prefix)?;
+        let count = keys_to_delete.len();
+
+        for key in &keys_to_delete {
+            self.db.delete_string(key)?;
+        }
+
+        // Clear the available IDs list entirely
+        let empty: Vec<String> = Vec::new();
+        self.db.put_string(keys::NONCE_AVAILABLE_IDS, &empty)?;
+
+        if count > 0 {
+            info!(
+                "🗑️ [NONCE_STORAGE] Flushed ALL {} nonces from pool (DKG node restart)",
+                count
+            );
+        }
+
+        Ok(count)
+    }
+
     // ============================================================
     // Nonce Generation Batch State
     // ============================================================

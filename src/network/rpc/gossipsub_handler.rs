@@ -101,7 +101,10 @@ impl MpcNetworkLayer {
                                     if let Some(nm) = signing_node.nonce_manager() {
                                         let nm_guard = nm.lock().await;
                                         nm_guard.update_dkg_signer_count(count);
-                                        info!("🔢 [DKG] Updated NonceManager dkg_signer_count to {} after DKG completion", count);
+                                        // This node completed DKG — it holds a secret share and
+                                        // can participate in the commit-reveal nonce protocol.
+                                        nm_guard.set_is_dkg_signer(true);
+                                        info!("🔢 [DKG] Updated NonceManager dkg_signer_count={} and is_dkg_signer=true after DKG completion", count);
                                     }
                                 }
                             }
