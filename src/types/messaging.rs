@@ -355,6 +355,10 @@ pub enum ChannelMessage {
     StatusRequest {
         responder: oneshot::Sender<NodeStatus>,
     },
+    /// Request this node's complete multiaddr (e.g. for node-info RPC).
+    NodeMultiaddrRequest {
+        responder: oneshot::Sender<Option<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -33,10 +33,15 @@ use crate::{
 };
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 
+use crate::utils::transaction::DUST_LIMIT_SATS;
+
 use super::{
     errors::{RpcError, TransactionError},
     utils::{normalize_eth_signature, recover_eth_address_secp},
 };
+
+/// Minimum TICS unclaimed to allow a claim (1 TICS = 10^18 wei).
+const MIN_CLAIM_TICS_WEI: u64 = 1_000_000_000_000_000_000;
 
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
@@ -1113,6 +1118,7 @@ pub(crate) async fn handle_get_node_id(
 pub(crate) async fn handle_get_node_info(
     dkg_storage: Arc<DkgStorage>,
     node_id: String,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📊 HTTP: Received node info request");
 
@@ -1125,13 +1131,32 @@ pub(crate) async fn handle_get_node_info(
     let peer_indices = dkg_storage.get_all_peer_indices().ok();
     let peer_count = peer_indices.as_ref().map(|p| p.len()).unwrap_or(0);
 
+    let multiaddr = {
+        let (responder, receiver) = tokio::sync::oneshot::channel();
+        if message_tx
+            .lock()
+            .await
+            .send(ChannelMessage::NodeMultiaddrRequest { responder })
+            .await
+            .is_err()
+        {
+            None
+        } else {
+            tokio::time::timeout(Duration::from_secs(2), receiver)
+                .await
+                .ok()
+                .and_then(|r| r.ok().flatten())
+        }
+    };
+
     info!(
-        "✅ HTTP: Node info: peers={}, dkg={}",
-        peer_count, dkg_status
+        "✅ HTTP: Node info: peers={}, dkg={}, multiaddr={:?}",
+        peer_count, dkg_status, multiaddr
     );
 
     Ok(warp::reply::json(&serde_json::json!({
         "node_id": node_id,
+        "multiaddr": multiaddr,
         "status": "active",
         "dkg_status": dkg_status,
         "peer_count": peer_count,
@@ -1357,6 +1382,66 @@ async fn fetch_solver_liquidity_from_contract(
     Ok((liquidity_btc, liquidity_tics))
 }
 
+/// Fetch unclaimed reward amounts for a solver from the on-chain SolverManager contract.
+/// Uses SOLVER_CONTRACT_* env vars. Returns (btc_unclaimed, tics_unclaimed) as decimal strings.
+async fn fetch_solver_unclaimed_rewards_from_contract(
+    normalized_address: &str,
+) -> Result<(String, String), String> {
+    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+    let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+        .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+        .unwrap_or_else(|_| "9029".to_string())
+        .parse::<u64>()
+        .unwrap_or(9029);
+
+    if contract_address == "0x0000000000000000000000000000000000000000" {
+        return Err("Solver contract address not configured".to_string());
+    }
+
+    let contract_addr = contract_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver contract address: {e}"))?;
+
+    let config = ContractConfig {
+        rpc_url: rpc_url.clone(),
+        contract_address: contract_addr,
+        chain_id,
+    };
+
+    let client = ContractClient::new(config.clone())
+        .map_err(|e| format!("Failed to create contract client: {e}"))?;
+
+    let solver_contract = SolverManagerContract::new(&config, client.provider())
+        .map_err(|e| format!("Failed to create solver contract interface: {e}"))?;
+
+    let solver_addr = normalized_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid solver EVM address {normalized_address}: {e}"))?;
+
+    let solver_id = solver_contract
+        .get_solver_id(solver_addr)
+        .await
+        .map_err(|e| format!("Failed to get solver ID: {e}"))?;
+
+    if solver_id.trim().is_empty() {
+        return Err("Address is not a registered solver on the contract".to_string());
+    }
+
+    let rewards = solver_contract
+        .get_solvers_unclaimed_rewards(vec![solver_id])
+        .await
+        .map_err(|e| format!("Failed to get unclaimed rewards: {e}"))?;
+
+    let (btc, tics) = rewards
+        .first()
+        .map(|r| (r.1.to_string(), r.2.to_string()))
+        .unwrap_or_else(|| ("0".to_string(), "0".to_string()));
+
+    Ok((btc, tics))
+}
+
 pub(crate) async fn handle_get_solver_liquidity(
     req: SolverLiquidityRequest,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -1452,6 +1537,8 @@ pub(crate) async fn handle_get_solver_rewards(
         return Ok(warp::reply::json(&GetSolverRewardsResponse {
             status: "error".to_string(),
             solver_address: req.solver_address,
+            reward_btc: None,
+            reward_tics: None,
             unclaimed_rewards: vec![],
             message: "Solver address is required".to_string(),
             error_message: Some("solver_address cannot be empty".to_string()),
@@ -1465,9 +1552,28 @@ pub(crate) async fn handle_get_solver_rewards(
             return Ok(warp::reply::json(&GetSolverRewardsResponse {
                 status: "error".to_string(),
                 solver_address: req.solver_address,
+                reward_btc: None,
+                reward_tics: None,
                 unclaimed_rewards: vec![],
                 message: "Invalid solver address format".to_string(),
                 error_message: Some(format!("Invalid address format: {e}")),
+            }));
+        }
+    };
+
+    // Fetch unclaimed reward amounts from the SolverManager contract.
+    let (reward_btc, reward_tics) = match fetch_solver_unclaimed_rewards_from_contract(&normalized_address).await {
+        Ok((btc, tics)) => (Some(btc), Some(tics)),
+        Err(e) => {
+            warn!("⚠️ [SOLVER_REWARDS] Failed to fetch contract rewards for {}: {}", normalized_address, e);
+            return Ok(warp::reply::json(&GetSolverRewardsResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                unclaimed_rewards: vec![],
+                message: e.clone(),
+                error_message: Some(e),
             }));
         }
     };
@@ -1488,6 +1594,8 @@ pub(crate) async fn handle_get_solver_rewards(
             return Ok(warp::reply::json(&GetSolverRewardsResponse {
                 status: "error".to_string(),
                 solver_address: normalized_address.clone(),
+                reward_btc: reward_btc.clone(),
+                reward_tics: reward_tics.clone(),
                 unclaimed_rewards: vec![],
                 message: "Failed to load pending claim rewards".to_string(),
                 error_message: Some(e.to_string()),
@@ -1510,13 +1618,18 @@ pub(crate) async fn handle_get_solver_rewards(
 
     let count = unclaimed_rewards.len();
     info!(
-        "✅ Solver {} has {} unclaimed reward request(s)",
-        normalized_address, count
+        "✅ Solver {} has contract rewards BTC={}, TICS={}; {} pending claim request(s)",
+        normalized_address,
+        reward_btc.as_deref().unwrap_or("?"),
+        reward_tics.as_deref().unwrap_or("?"),
+        count
     );
 
     Ok(warp::reply::json(&GetSolverRewardsResponse {
         status: "success".to_string(),
         solver_address: normalized_address,
+        reward_btc,
+        reward_tics,
         unclaimed_rewards,
         message: format!(
             "{} unclaimed reward request(s) (use claim_reward to submit a new claim)",
@@ -1661,6 +1774,186 @@ pub(crate) async fn handle_claim_reward(
                 reward_tics: None,
                 message: "You already have a claim reward request in progress (Pending or Batched). Wait for it to complete.".to_string(),
                 error_message: Some("One claim reward request at a time per solver".to_string()),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
+    }
+
+    // Reject if solver has no unclaimed rewards on the contract (RPC-only check; no contract revert).
+    {
+        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "9029".to_string())
+            .parse::<u64>()
+            .unwrap_or(9029);
+        let contract_addr = match contract_address.parse::<Address>() {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] Invalid SOLVER_CONTRACT_ADDRESS: {}", e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Solver contract configuration error".to_string(),
+                    error_message: Some("Invalid contract address".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let config = ContractConfig {
+            rpc_url: rpc_url.clone(),
+            contract_address: contract_addr,
+            chain_id,
+        };
+        let client = match ContractClient::new(config.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] Contract client failed: {}", e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Failed to check unclaimed rewards".to_string(),
+                    error_message: Some("Contract client unavailable".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let contract = match SolverManagerContract::new(&config, client.provider()) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] SolverManagerContract::new failed: {}", e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Failed to check unclaimed rewards".to_string(),
+                    error_message: Some("Contract interface unavailable".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let solver_addr = match normalized_address.parse::<Address>() {
+            Ok(a) => a,
+            Err(_) => {
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Invalid solver address".to_string(),
+                    error_message: Some("Invalid solver address".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let solver_id = match contract.get_solver_id(solver_addr).await {
+            Ok(id) if !id.trim().is_empty() => id,
+            Ok(_) => {
+                info!(
+                    "🚫 [CLAIM_REWARD] Rejecting claim for {}: not a registered solver",
+                    normalized_address
+                );
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Address is not a registered solver".to_string(),
+                    error_message: Some("Not a registered solver".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] get_solver_id failed for {}: {}", normalized_address, e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Failed to verify solver on contract".to_string(),
+                    error_message: Some("Contract call failed".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let rewards = match contract
+            .get_solvers_unclaimed_rewards(vec![solver_id])
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("⚠️ [CLAIM_REWARD] get_solvers_unclaimed_rewards failed: {}", e);
+                return Ok(warp::reply::json(&ClaimRewardResponse {
+                    status: "error".to_string(),
+                    ethereum_address: req.ethereum_address.clone(),
+                    btc_address: req.btc_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    message: "Failed to fetch unclaimed rewards".to_string(),
+                    error_message: Some("Contract call failed".to_string()),
+                    tics_reward_tx_id: None,
+                    btc_reward_tx_id: None,
+                }));
+            }
+        };
+        let (btc_unclaimed, tics_unclaimed) = rewards
+            .first()
+            .map(|r| (r.1, r.2))
+            .unwrap_or((U256::zero(), U256::zero()));
+        let wants_btc = req.btc_address.is_some();
+        let wants_tics = req.ethereum_address.is_some();
+        let btc_dust = U256::from(DUST_LIMIT_SATS);
+        let min_tics = U256::from(MIN_CLAIM_TICS_WEI);
+        if wants_btc && btc_unclaimed <= btc_dust {
+            info!(
+                "🚫 [CLAIM_REWARD] Rejecting claim for {}: BTC rewards below dust ({})",
+                normalized_address, DUST_LIMIT_SATS
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "No BTC rewards available to claim (below dust threshold)".to_string(),
+                error_message: Some("BTC reward below dust threshold".to_string()),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
+        if wants_tics && tics_unclaimed <= min_tics {
+            info!(
+                "🚫 [CLAIM_REWARD] Rejecting claim for {}: TICS rewards not above 1 TICS",
+                normalized_address
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                ethereum_address: req.ethereum_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "No TICS rewards available to claim (minimum 1 TICS)".to_string(),
+                error_message: Some("TICS reward must be above 1 TICS".to_string()),
                 tics_reward_tx_id: None,
                 btc_reward_tx_id: None,
             }));

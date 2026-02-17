@@ -227,6 +227,7 @@ pub async fn start_http_server(
         .and(warp::get())
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_node_id(node_id.clone()))
+        .and(with_message_tx(message_tx.clone()))
         .and_then(handle_get_node_info);
 
     let get_status = warp::path("status")

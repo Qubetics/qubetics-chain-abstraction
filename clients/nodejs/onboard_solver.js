@@ -10,21 +10,38 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '../../.env') });
 
 // -------- CONFIG --------
-const RPC_URL = process.env.RPC_URL;
-const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
+const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL || process.env.RPC_URL;
+const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_CONTRACT_ADDRESS || process.env.SOLVER_MANAGER_ADDRESS;
+
+if (!RPC_URL) {
+  console.error('❌ RPC URL required. Set SOLVER_CONTRACT_RPC_URL or RPC_URL in .env');
+  process.exit(1);
+}
+if (!CONTRACT_ADDRESS || !CONTRACT_ADDRESS.startsWith('0x')) {
+  console.error('❌ SolverManager contract address required. Set SOLVER_MANAGER_CONTRACT_ADDRESS or SOLVER_MANAGER_ADDRESS in .env');
+  process.exit(1);
+}
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
-// EIP-712 signer: signs typed data (onboard, validate). Must match solver identity.
-// Uses SOLVER1_PK from .env.
-const signerWallet = new ethers.Wallet(process.env.SOLVER1_PK, provider);
+// Three payer keys: each pays gas for its own solver (1,2,3).
+const SOLVER_PAYER_KEYS = ['SOLVER1_PK', 'SOLVER2_PK', 'SOLVER3_PK'];
+const payerWallets = SOLVER_PAYER_KEYS.map((key) => {
+  const pk = process.env[key];
+  if (!pk) {
+    console.error(`❌ ${key} (payer PK) is required in .env`);
+    process.exit(1);
+  }
+  return new ethers.Wallet(pk, provider);
+});
 
-// Tx sender: pays gas and is msg.sender for contract calls.
-// Set TX_SENDER_PK in .env to use a different account for sending; if unset, signerWallet is used.
-const txSenderPk = process.env.TX_SENDER_PK;
-const txSender = txSenderPk
-  ? new ethers.Wallet(txSenderPk, provider)
-  : signerWallet;
+// Single EIP-712 signer key: signs onboard/validate for ALL solvers.
+const eip712Pk = process.env.EIP712_SIGNER_PK;
+if (!eip712Pk) {
+  console.error('❌ EIP712_SIGNER_PK is required in .env to sign onboard/validate (EIP-712)');
+  process.exit(1);
+}
+const eip712Signer = new ethers.Wallet(eip712Pk, provider);
 
 // -------- ABI (ONLY WHAT WE USE) --------
 const ABI = [
@@ -138,17 +155,19 @@ async function grantMPCRole(targetAddress) {
 
 /**
  * Onboard a solver
+ * - signerWallet: EIP-712 signer (shared for all solvers)
+ * - txWallet: pays gas (per-solver payer)
  */
-async function onboardSolver(solverId, solverName, chainIds, solverAddresses) {
+async function onboardSolver(solverId, solverName, chainIds, solverAddresses, signerWallet, txWallet) {
   console.log(`\n📝 Onboarding solver: ${solverId}\n`);
 
   const network = await provider.getNetwork();
-  const chainId = Number(network.chainId);
+  const chainIdNum = Number(network.chainId);
 
   const domain = {
     name: "SolverManager",
     version: "1",
-    chainId,
+    chainId: chainIdNum,
     verifyingContract: CONTRACT_ADDRESS
   };
 
@@ -167,6 +186,7 @@ async function onboardSolver(solverId, solverName, chainIds, solverAddresses) {
   let nonce = await solverManager.getNonce(signerWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
+  console.log("Signer:", signerWallet.address);
   console.log("Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
 
@@ -195,7 +215,7 @@ async function onboardSolver(solverId, solverName, chainIds, solverAddresses) {
 
   console.log("\n🚀 Sending onboard transaction...\n");
 
-  const solverManagerWithSigner = solverManager.connect(txSender);
+  const solverManagerWithSigner = solverManager.connect(txWallet);
   const tx = await solverManagerWithSigner.onboardSolver(
     solverId,
     solverName,
@@ -264,24 +284,27 @@ async function checkSolverLiquidity(solverId) {
 }
 
 /**
- * Validate a solver (makes it active)
+ * Validate a solver (makes it active).
+ * - signerWallet: EIP-712 signer (shared for all solvers)
+ * - txWallet: pays gas (per-solver payer)
  */
-async function validateSolver(solverId) {
+async function validateSolver(solverId, signerWallet, txWallet) {
   console.log(`\n🔐 Validating solver: ${solverId}\n`);
 
   const network = await provider.getNetwork();
-  const chainId = Number(network.chainId);
+  const chainIdNum = Number(network.chainId);
 
   const domain = {
     name: "SolverManager",
     version: "1",
-    chainId,
+    chainId: chainIdNum,
     verifyingContract: CONTRACT_ADDRESS
   };
 
   let nonce = await solverManager.getNonce(signerWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
+  console.log("Signer:", signerWallet.address);
   console.log("Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
 
@@ -304,7 +327,7 @@ async function validateSolver(solverId) {
 
   console.log("\n🚀 Sending validate transaction...\n");
 
-  const solverManagerWithSigner = solverManager.connect(txSender);
+  const solverManagerWithSigner = solverManager.connect(txWallet);
   const tx = await solverManagerWithSigner.validateSolverId(deadline, validateSig);
 
   console.log("Transaction Hash:", tx.hash);
@@ -323,11 +346,11 @@ async function validateSolver(solverId) {
 /**
  * Test addLiquidityBatch function
  */
-async function testAddLiquidityBatch(deposits) {
+async function testAddLiquidityBatch(deposits, txWallet) {
   console.log(`\n💧 Testing addLiquidityBatch with ${deposits.length} deposit(s)\n`);
 
   try {
-    const solverManagerWithSigner = solverManager.connect(txSender);
+    const solverManagerWithSigner = solverManager.connect(txWallet);
 
     console.log("Deposits:");
     deposits.forEach((deposit, i) => {
@@ -363,68 +386,190 @@ async function testAddLiquidityBatch(deposits) {
 }
 
 // =====================================================
-// MAIN FUNCTION
+// MAIN: 3 SOLVERS — ONBOARD, VALIDATE, ADD LIQUIDITY
 // =====================================================
 
+// Shared chain config for all solvers: 0 = BTC, 9029 = EVM/Qubetics
+const CHAIN_IDS = [0, 9029];
+
+/** Normalize for uniqueness check: ETH lowercase, BTC as-is. */
+function normalizeAddress(addr, chain) {
+  if (!addr || typeof addr !== "string") return "";
+  const s = addr.trim();
+  return chain === "eth" ? s.toLowerCase() : s;
+}
+
+/**
+ * Ensure all 3 solvers have 2 whitelisted addresses each (1 ETH, 1 BTC) and all 6 are unique.
+ */
+function assertUniqueWhitelistedAddresses(solverConfigs) {
+  const ethAddresses = [];
+  const btcAddresses = [];
+  for (const c of solverConfigs) {
+    const eth = normalizeAddress(c.ethAddress, "eth");
+    const btc = normalizeAddress(c.btcAddress, "btc");
+    if (!eth || !btc) {
+      throw new Error(
+        `Solver ${c.solverId} must have both ethAddress and btcAddress set (whitelisted addresses).`
+      );
+    }
+    ethAddresses.push(eth);
+    btcAddresses.push(btc);
+  }
+  const ethSet = new Set(ethAddresses);
+  const btcSet = new Set(btcAddresses);
+  if (ethSet.size !== 3) {
+    const dup = ethAddresses.filter((e, i) => ethAddresses.indexOf(e) !== i);
+    throw new Error(
+      `All 3 ETH whitelisted addresses must be unique. Duplicates or missing: ${dup.join(", ") || "check ethAddress per solver"}`
+    );
+  }
+  if (btcSet.size !== 3) {
+    const dup = btcAddresses.filter((e, i) => btcAddresses.indexOf(e) !== i);
+    throw new Error(
+      `All 3 BTC whitelisted addresses must be unique. Duplicates or missing: ${dup.join(", ") || "check btcAddress per solver"}`
+    );
+  }
+  // Cross-check: no ETH address equals a BTC address (by value)
+  const allNormalized = [...ethAddresses, ...btcAddresses];
+  if (new Set(allNormalized).size !== 6) {
+    throw new Error("ETH and BTC whitelisted addresses must not repeat across solvers.");
+  }
+  console.log("✓ All 6 whitelisted addresses (3 ETH + 3 BTC) are unique.\n");
+}
+
 async function main() {
-  console.log("🚀 SolverManager Utility Script\n");
+  console.log("🚀 SolverManager — 3 Solvers: Onboard, Validate, Add Liquidity\n");
 
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
 
   console.log("Chain ID:", chainId);
   console.log("SolverManager:", CONTRACT_ADDRESS);
-  console.log("EIP-712 signer (solver identity):", signerWallet.address);
-  console.log("Tx sender (pays gas):", txSender.address);
-  if (txSenderPk) {
-    console.log("(Using separate TX_SENDER_PK for transactions)");
-  }
+  console.log("EIP-712 signer (shared):", eip712Signer.address);
+  console.log("Payers (gas senders):", payerWallets.map((w, i) => `Solver ${i + 1}: ${w.address}`).join(", "));
   console.log("\n" + "=".repeat(80) + "\n");
 
-  // ⚠️ CONFIGURE YOUR SOLVER DETAILS HERE
-  const solverId = "SOLVER_xxx";
-  const solverName = "Alpha_ayush_123";
-  const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics
-  const solverAddresses = [
-    "tb1qfm6g7k5d0p3r7m0yq7x7u7w7k0c7m2k9qz7l9a",  // BTC address (testnet)
-    "0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF"   // EVM address
+  // Signers: SOLVER1_PK, SOLVER2_PK, SOLVER3_PK in .env = the 3 private keys from addr_gen.js.
+  // Whitelisted addresses (do not fund): 3 ETH + 3 BTC below, one pair per solver; all unique.
+  const SOLVER_ETH_ADDRESSES = [
+    "0x7B1a2c3D4E5f60718293a4b5C6d7E8F901234567",
+    "0xA1b2C3d4E5F60718293A4b5c6D7e8F901234568",
+    "0x1234567890aBCdEf1234567890abCDef12345678"
+  ];
+  const SOLVER_BTC_ADDRESSES = [
+    "bc1q9y2u8v7d6s5r4t3p2n1m0l9k8j7h6g5f4d3c2b",
+    "bc1q2w3e4r5t6y7u8i9o0pplkjhgfdsazxcvbnm123",
+    "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
   ];
 
-  // UNCOMMENT THE FUNCTION YOU WANT TO RUN:
+  const solverConfigs = [
+    {
+      solverId: "12D3KooWJUCBJ99wWnd2bF222XHeqRzzNeFQT9ZTD5vfwPc9sHRV",
+      solverName: "Solver_Alphaaaa",
+      ethAddress: process.env.SOLVER1_ETH || SOLVER_ETH_ADDRESSES[0],
+      btcAddress: process.env.SOLVER1_BTC || SOLVER_BTC_ADDRESSES[0],
+      signer: eip712Signer,
+      txSender: payerWallets[0]
+    },
+    {
+      solverId: "12D3KooWQLmPhQvkcG2ysWWQGBT7fuWEEwEVShbRWtLe1y3bN8oC",
+      solverName: "Solver_Betaaaa",
+      ethAddress: process.env.SOLVER2_ETH || SOLVER_ETH_ADDRESSES[1],
+      btcAddress: process.env.SOLVER2_BTC || SOLVER_BTC_ADDRESSES[1],
+      signer: eip712Signer,
+      txSender: payerWallets[1]
+    },
+    {
+      solverId: "12D3KooWBQD5KA83cpZLXi2d82XeR6YmMfJJn7iooJixkFCNnFD2",
+      solverName: "Solver_Gammaaaa",
+      ethAddress: process.env.SOLVER3_ETH || SOLVER_ETH_ADDRESSES[2],
+      btcAddress: process.env.SOLVER3_BTC || SOLVER_BTC_ADDRESSES[2],
+      signer: eip712Signer,
+      txSender: payerWallets[2]
+    }
+  ].map((c) => ({
+    ...c,
+    // Order must match CHAIN_IDS [0, 9029]: index 0 = BTC, index 1 = ETH
+    solverAddresses: [c.btcAddress, c.ethAddress]
+  }));
 
-  // 1. Check solver status (full details)
-  // await checkSolverStatus(solverId);
+  assertUniqueWhitelistedAddresses(solverConfigs);
 
-  // 2. Check solver liquidity only (quick check)
-  // await checkSolverLiquidity(solverId);
+  // Keep large wei amounts as strings to avoid JS number overflow (ethers accepts string for uint256).
+  const liquidityAmountEVMStr = process.env.LIQUIDITY_AMOUNT_EVM || "10000000000000000000"; // 10 * 10^18 wei
+  const liquidityAmountBTCStr = process.env.LIQUIDITY_AMOUNT_BTC || "10000";
+  const liquidityAmountEVM = ethers.BigNumber.from(liquidityAmountEVMStr);
+  const liquidityAmountBTC = ethers.BigNumber.from(liquidityAmountBTCStr);
 
-  // 3. Onboard solver (if not already onboarded)
-  await onboardSolver(solverId, solverName, chainIds, solverAddresses);
+  // --- 1. Onboard each solver ---
+  // console.log("\n" + "=".repeat(80));
+  // console.log("STEP 1: ONBOARD (3 solvers)");
+  // console.log("=".repeat(80));
 
-  // 4. Validate solver (REQUIRED to make it active!)
-  // Uncomment this after onboarding:
-  await validateSolver(solverId);
+  // for (const cfg of solverConfigs) {
+  //   await onboardSolver(
+  //     cfg.solverId,
+  //     cfg.solverName,
+  //     CHAIN_IDS,
+  //     cfg.solverAddresses,
+  //     cfg.signer,
+  //     cfg.txSender
+  //   );
+  // }
 
-  // 5. Check MPC role for an address
-  // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
-  // await checkMPCRole(mpcAddress);
+  // --- 2. Validate each solver ---
+  // console.log("\n" + "=".repeat(80));
+  // console.log("STEP 2: VALIDATE (3 solvers)");
+  // console.log("=".repeat(80));
 
-  // 6. Grant MPC role (requires admin privileges)
-  // const mpcAddress = "0xa37117b7285cfbc429dac7067009d6f18c73332d";
-  // await grantMPCRole(mpcAddress);
+  // for (const cfg of solverConfigs) {
+  //   await validateSolver(cfg.solverId, cfg.signer, cfg.txSender);
+  // }
 
-  // 7. Test addLiquidityBatch
-  // const deposits = [
-  //   {
-  //     solverId: "SOLVER_002",
-  //     amount: 1000,
-  //     chainType: 1  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
-  //   }
-  // ];
-  // await testAddLiquidityBatch(deposits);
+  // --- 3. Add liquidity (one batch: all 3 solvers) ---
+  console.log("\n" + "=".repeat(80));
+  console.log("STEP 3: ADD LIQUIDITY BATCH (3 solvers)");
+  console.log("=".repeat(80));
+
+  const deposits = [];
+  for (const cfg of solverConfigs) {
+    if (liquidityAmountEVM.gt(0)) {
+      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountEVM, chainType: 1 }); // 1 = EVM
+    }
+    if (liquidityAmountBTC.gt(0)) {
+      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountBTC, chainType: 0 });   // 0 = BTC
+    }
+  }
+
+  if (deposits.length > 0) {
+    // Use payer 1 to pay gas for the liquidity batch.
+    await testAddLiquidityBatch(deposits, payerWallets[0]);
+  } else {
+    console.log("\n⚠️  No liquidity added (set LIQUIDITY_AMOUNT_EVM and/or LIQUIDITY_AMOUNT_BTC in .env)");
+  }
+
+  // --- 4. Final check: are all solvers active? ---
+  console.log("\n" + "=".repeat(80));
+  console.log("STEP 4: CHECK SOLVER STATUS (active or not)");
+  console.log("=".repeat(80));
+
+  const statuses = [];
+  for (const cfg of solverConfigs) {
+    const status = await checkSolverStatus(cfg.solverId);
+    statuses.push({ solverId: cfg.solverId, ...status });
+  }
+
+  console.log("\n📋 Summary:");
+  const active = statuses.filter((s) => s.isActive);
+  const inactive = statuses.filter((s) => !s.isActive);
+  for (const s of statuses) {
+    console.log(`  ${s.solverId}: ${s.isActive ? "✅ ACTIVE" : "❌ NOT ACTIVE"} (onboarded: ${s.isOnboarded})`);
+  }
+  console.log(`\n  Total: ${active.length} active, ${inactive.length} inactive`);
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ DONE!");
+  console.log("✅ DONE — 3 solvers onboarded, validated, liquidity added, status checked.");
   console.log("=".repeat(80));
 }
 

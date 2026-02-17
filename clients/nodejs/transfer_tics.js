@@ -23,7 +23,7 @@ const { parseUnits, formatUnits } = utils;
 // Configuration
 const QUBETICS_RPC_URL = 'https://rpc-testnet.qubetics.work';
 const QUBETICS_CHAIN_ID = 9029;
-const TICS_AMOUNT = 10000; // Amount in TICS (whole units)
+const TICS_AMOUNT = 1000; // Amount in TICS (whole units)
 // TICS uses 10 decimals on this chain; adjust if your deployment differs.
 const TICS_DECIMALS = 18;
 

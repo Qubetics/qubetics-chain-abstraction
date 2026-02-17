@@ -169,6 +169,16 @@ impl MpcNetworkLayer {
                 }
             }
 
+            ChannelMessage::NodeMultiaddrRequest { responder } => {
+                let listen_addrs: Vec<Multiaddr> = swarm.listeners().cloned().collect();
+                let multiaddr = listen_addrs.first().map(|a| {
+                    format!("{}/p2p/{}", a, self.local_peer_id)
+                });
+                if responder.send(multiaddr).is_err() {
+                    warn!("❌ [NODE_MULTIADDR] Failed to send multiaddr response to requester");
+                }
+            }
+
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1
@@ -2165,6 +2175,17 @@ impl MpcNetworkLayer {
                     info!("🔐 [LOCAL] Calculated intent hash: {}", calculated_hash);
                     calculated_hash
                 };
+
+                // Never accept/broadcast an intent hash that is already in storage (duplicate).
+                if let Some(ref uim) = self.user_intent_manager {
+                    if uim.get_intent(&intent_hash).await.is_some() {
+                        warn!(
+                            "⚠️ [CHANNEL] Rejecting DepositIntent - intent hash {} already in storage (duplicate); no broadcast",
+                            intent_hash
+                        );
+                        return Ok(());
+                    }
+                }
 
                 // Each node: fetch prices, compute target amount; reject intents immediately when
                 // network funds are insufficient. If an intent is accepted and eventually stored

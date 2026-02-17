@@ -20,6 +20,7 @@ use crate::{
         p2p::SerializablePeerId, signing::SigningMessage, vrf::VrfRoundSyncResponse,
         ChannelMessage, GossipsubMessage, IntentStatus,
     },
+    utils::transaction::DUST_LIMIT_SATS,
 };
 
 use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
@@ -40,6 +41,9 @@ struct PendingAddLiquidityRecord {
 }
 
 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
+
+/// Minimum TICS unclaimed to include in a claim batch (1 TICS = 10^18 wei).
+const MIN_CLAIM_TICS_WEI: u64 = 1_000_000_000_000_000_000;
 
 impl MpcNetworkLayer {
     /// Main gossipsub message handler - delegates to specific message type handlers
@@ -2854,7 +2858,7 @@ impl MpcNetworkLayer {
                         .map(|r| r.1)
                         .unwrap_or(ethers::types::U256::zero());
                     let amount_sats: u64 = btc_unclaimed.as_u64();
-                    if amount_sats < 546 {
+                    if amount_sats <= DUST_LIMIT_SATS {
                         continue;
                     }
                     batch_outputs.push(BatchOutput {
@@ -3516,7 +3520,7 @@ impl MpcNetworkLayer {
                         Err(_) => continue,
                     };
                     let tics_unclaimed = rewards.first().map(|r| r.2).unwrap_or(U256::zero());
-                    if tics_unclaimed.is_zero() {
+                    if tics_unclaimed <= U256::from(MIN_CLAIM_TICS_WEI) {
                         continue;
                     }
                     per_solver_tics.insert(solver_address_lower.clone(), tics_unclaimed);

@@ -22,7 +22,7 @@ const RPC_NODES = [
   // 'http://127.0.0.1:8082',
   // 'http://127.0.0.1:8083',
   // 'http://127.0.0.1:8084',
-  'http://124.243.185.174:8082',
+  'http://127.0.0.1:8082',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -118,7 +118,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "d59977f42a29d6604c97ece9e514e890c4d635537c82acfb6b28856f9195eb9f",
   // "21bb33fee6969b26a87f777f77b7c206f3259015db5305eb0e3b2a7dd42d36f1",
   // "94bac31302d892ae2c1e474ecb0483475577ff716df6bd383a2094395345fdcf",
-  "9bb89847d2252cfd377d89e0ff64fb71d32b18d1dd70be86169ae15fb780e7b4",
+  // "9bb89847d2252cfd377d89e0ff64fb71d32b18d1dd70be86169ae15fb780e7b4",
   // // // Additional accounts (36-100) - Properly generated random keys
   // "83ed11e04b47ea2ddf6130d1d1e57e7a63078c7d5f3b0dfd136054335459997d",
   // "0744de5c810af18e045ea8e23264f1e368b06effcd92cbff951a545b914db485",
@@ -174,9 +174,9 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "a9b9e65588ce7c6a848f1c1b774fe97355df42c320dfe1f4bb7f080e6502886d",
   // "a68d106da7edc096afc315832153baf0fa44390b21dde28cbb8cab83318af549",
   // "bd38393080ca0608a825dc2555e60e1c6c1a54a5a3d45ac0d6def14503550d98",
-  // "ef137a62fa9c0ab2a0bd13d4afffec895424952f96bb3536b8c0fdd616b10778",
-  // "f74194d2cc8893a0c814455a22ffc6895624eea4e2e4388356002fe8b6aaa3c0",
-  // "0ee6024eb7a687b8e0f705913ce232079437105f05616abba45b048b1f882fe8",
+  "ef137a62fa9c0ab2a0bd13d4afffec895424952f96bb3536b8c0fdd616b10778",
+  "f74194d2cc8893a0c814455a22ffc6895624eea4e2e4388356002fe8b6aaa3c0",
+  "0ee6024eb7a687b8e0f705913ce232079437105f05616abba45b048b1f882fe8",
   // "da794137eb016a06e6f97375298e189983efc8204214902eef884bdb0e79927e",
   // "bdf8f80d26a676c94739e77584457de74656f47ad86c0fb9304e0171f5b38dd2",
   // "168a0ea51e814d488fb0f6c009945ffe494a907e532e633b6d1acc3cb540e11e",
@@ -387,8 +387,8 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "57c673278d785e8e74146e5239d009d2d334319f2f32b7eec1130febe0fceafb",
   // "2490ec47dbbd0fae14c3a9eadc6c886e9ca8cac2fb34d725c1269e1ad839f2de",
   // "8141e8e2bfe302ea4b63d7c6ac37b03e2cda56918c1312c5724478f4ac77383a",
-  "3c27fcb05a46a7b043ae31c7619058c1d8f9c2d67ea4935d1ee7b70bc9b46599",
-  "b00ed967d107dcd7c1c6a9d3551b992673951c6d3589c849b9c288572d009425"
+  // "3c27fcb05a46a7b043ae31c7619058c1d8f9c2d67ea4935d1ee7b70bc9b46599",
+  // "b00ed967d107dcd7c1c6a9d3551b992673951c6d3589c849b9c288572d009425"
   ];
 }
 
@@ -536,7 +536,7 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address,  // ETH address
+      source_address: userInfo.data.derived_eth_address,  // BTC address
       // source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
@@ -866,7 +866,7 @@ async function step2_SubmitTransactions() {
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
     // const amount = "5000000000000000000";  // 12 TICS
-    const amount = "700";  // btc
+    const amount = "800000000000000000000";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });

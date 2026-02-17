@@ -11,17 +11,20 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '../../.env') });
 
 // -------- CONFIG --------
-const RPC_URL = process.env.RPC_URL;
+const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL || process.env.RPC_URL;
 const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://127.0.0.1:8082';
-// const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://124.243.185.174:8083';
-// const MPC_RPC_URL = process.env.MPC_RPC_URL || 'http://172.16.12.140:8082';
-const API_KEY = process.env.RPC_API_KEY || '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
-const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_ADDRESS;
+const API_KEY = process.env.RPC_API_KEY || '';
+const CONTRACT_ADDRESS = process.env.SOLVER_MANAGER_CONTRACT_ADDRESS || process.env.SOLVER_MANAGER_ADDRESS;
+
+if (!RPC_URL || !CONTRACT_ADDRESS) {
+  console.error('Set SOLVER_CONTRACT_RPC_URL (or RPC_URL) and SOLVER_MANAGER_CONTRACT_ADDRESS (or SOLVER_MANAGER_ADDRESS) in .env');
+  process.exit(1);
+}
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
 // SOLVER_004 config - can be overridden with env vars
-const SOLVER_ID = process.env.SOLVER_ID || 'SOLVER_003';
+const SOLVER_ID = "12D3KooWJUCBJ99wWnd2bF222XHeqRzzNeFQT9ZTD5vfwPc9sHRV";
 const SOLVER_ETH_ADDRESS = process.env.SOLVER_ETH_ADDRESS || '0x19B8C629B407D7E714F9FBF0DbbCd55085F5e7D8';
 const SOLVER_BTC_ADDRESS = process.env.SOLVER_BTC_ADDRESS || 'tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42';
 
