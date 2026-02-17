@@ -5,26 +5,20 @@
  * ============================
  * Onboards solvers, validates them, and adds both EVM (TICS) and BTC liquidity.
  *
- * EIP-712 Signing Pattern:
- *   - Each solver's `privateKey` is used ONLY for signing EIP-712 messages.
- *     The signer's address becomes the solver's on-chain identity.
- *   - A separate `TX_SENDER_PK` (gas payer) sends the transactions on-chain.
- *     The contract recovers the solver identity from the EIP-712 signature,
- *     NOT from msg.sender. This allows a single funded wallet to pay gas for
- *     all solvers without needing to fund each solver key.
- *
- * IMPORTANT: Each solver MUST use a different private key for EIP-712 signing.
- *
- * Usage:
- *   node setup_solver.js
+ * How the contract works:
+ *   - The `validatorAddress` (stored on-chain) signs EIP-712 messages to authorize
+ *     onboarding and validation. This is a "permission slip" from the validator.
+ *   - Each solver sends the transaction themselves (msg.sender). The contract maps
+ *     msg.sender as the solver's on-chain EVM identity. One address = one solver.
+ *   - addLiquidityBatch has no msg.sender restriction, so anyone can call it.
  *
  * Required .env variables (loaded from project root ../../.env):
  *   SOLVER_CONTRACT_RPC_URL   - Qubetics RPC endpoint
  *   SOLVER_CONTRACT_ADDRESS   - SolverManager contract address
- *   TX_SENDER_PK              - Private key for the gas-paying wallet (sends all txs)
- *                                If not set, falls back to each solver's own key.
+ *   VALIDATOR_PK              - Private key of the validator (signs EIP-712 messages)
  *
- * Configure solvers in the SOLVERS array below. Each entry needs its own privateKey.
+ * Configure solvers in the SOLVERS array below.
+ * Each solver's `privateKey` is used to send transactions — msg.sender becomes the solver identity.
  */
 
 import dotenv from 'dotenv';
@@ -39,13 +33,13 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '../../.env') });
 
 // ============================================================
-// SOLVERS CONFIG — each solver has its own private key for EIP-712 signing.
-// The EIP-712 signer address is the solver's on-chain identity.
-// TX_SENDER_PK from .env is used to pay gas and send transactions.
+// SOLVERS CONFIG
+// Each solver's privateKey is used to SEND transactions (msg.sender = solver identity).
+// The validator key (from .env) signs EIP-712 messages to authorize actions.
 // ============================================================
 const SOLVERS = [
   {
-    // Solver 1
+    // Solver 1 — this key's address becomes the solver's on-chain identity
     privateKey: "a5d6d05532a0f6ee1de3586a2da787429a8b62289d776ca084783c8dc9ffa5a7",
     solverId: "12D3KooWJX7Gxkfp7UviibMhfi8VMVFyGpYAgFJm2LBqR3tJ2y9P",
     solverName: "Solver_1",
@@ -58,7 +52,7 @@ const SOLVERS = [
     btcLiquidityAmount: "10000",               // in satoshis
   },
   // {
-  //   // Solver 2 — use a DIFFERENT private key
+  //   // Solver 2 — use a DIFFERENT private key (different msg.sender = different solver)
   //   privateKey: "15d5488130680e229fb5edceadec7c9a58b6236b5b5c08e339f89236f3ef59b2",
   //   solverId: "",
   //   solverName: "Solver_2",
@@ -90,19 +84,22 @@ const SOLVERS = [
 // ============================================================
 const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL || process.env.RPC_URL;
 const CONTRACT_ADDRESS = process.env.SOLVER_CONTRACT_ADDRESS || process.env.SOLVER_MANAGER_ADDRESS;
-
-const TX_SENDER_PK = process.env.TX_SENDER_PK;
+const VALIDATOR_PK = process.env.VALIDATOR_PK;
 
 if (!RPC_URL || !CONTRACT_ADDRESS) {
   console.error("SOLVER_CONTRACT_RPC_URL and SOLVER_CONTRACT_ADDRESS must be set in .env");
   process.exit(1);
 }
 
+if (!VALIDATOR_PK) {
+  console.error("VALIDATOR_PK must be set in .env (the validator's private key for EIP-712 signing)");
+  process.exit(1);
+}
+
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
-// Gas payer wallet — sends all transactions. If TX_SENDER_PK is not set, we fall back
-// to using each solver's own key (created per-solver in main loop).
-const txSender = TX_SENDER_PK ? new ethers.Wallet(TX_SENDER_PK, provider) : null;
+// Validator wallet — signs EIP-712 messages (must match validatorAddress on contract)
+const validatorWallet = new ethers.Wallet(VALIDATOR_PK, provider);
 
 const ABI = [
   "function getNonce(address) view returns (uint256)",
@@ -114,9 +111,7 @@ const ABI = [
   "function isSolverOnboarded(string) view returns (bool)",
   "function getSolverChainAmount(string,uint256) view returns (uint256)",
   "function getSolver(string) view returns (tuple(string,string,uint256[],string[],bool,bool,uint256,uint256))",
-  "function MPC_ROLE() view returns (bytes32)",
-  "function hasRole(bytes32,address) view returns (bool)",
-  "function grantRole(bytes32,address)",
+  "function validatorAddress() view returns (address)",
 ];
 
 const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
@@ -175,10 +170,11 @@ async function checkStatus(solverId) {
 }
 
 // ============================================================
-// ONBOARD — EIP-712 signed by solver key, tx sent by gas payer
-// The contract recovers the solver identity from the signature.
+// ONBOARD
+// - Validator signs EIP-712 message (authorization)
+// - Solver sends the transaction (msg.sender = solver identity)
 // ============================================================
-async function onboard(signerWallet, senderWallet, config) {
+async function onboard(solverWallet, config) {
   const isOnboarded = await contract.isSolverOnboarded(config.solverId);
   if (isOnboarded) {
     console.log("    Already onboarded — skipping.");
@@ -186,13 +182,13 @@ async function onboard(signerWallet, senderWallet, config) {
   }
 
   const domain = await getEip712Domain();
-  // Nonce is for the EIP-712 signer (solver identity), not the tx sender
-  const nonce = await contract.getNonce(signerWallet.address);
+  // Nonce is the validator's nonce (contract uses nonces[validatorAddress])
+  const nonce = await contract.getNonce(validatorWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
-  console.log(`    EIP-712 signer: ${signerWallet.address} (solver identity on-chain)`);
-  console.log(`    Tx sender:      ${senderWallet.address} (gas payer)`);
-  console.log(`    Nonce:          ${nonce.toString()}`);
+  console.log(`    Validator (EIP-712 signer): ${validatorWallet.address}`);
+  console.log(`    Solver (msg.sender):        ${solverWallet.address}`);
+  console.log(`    Validator nonce:            ${nonce.toString()}`);
 
   const types = {
     OnboardSolver: [
@@ -214,13 +210,13 @@ async function onboard(signerWallet, senderWallet, config) {
     deadline,
   };
 
-  // Solver key signs the EIP-712 message (determines on-chain identity)
-  const signature = await signerWallet._signTypedData(domain, types, message);
+  // Validator signs the EIP-712 message (authorization)
+  const signature = await validatorWallet._signTypedData(domain, types, message);
 
-  // Gas payer sends the transaction
+  // Solver sends the transaction (msg.sender becomes the solver identity)
   console.log("    Sending onboard tx...");
-  const contractWithSender = contract.connect(senderWallet);
-  const tx = await contractWithSender.onboardSolver(
+  const contractWithSolver = contract.connect(solverWallet);
+  const tx = await contractWithSolver.onboardSolver(
     config.solverId,
     config.solverName,
     config.chainIds,
@@ -236,23 +232,25 @@ async function onboard(signerWallet, senderWallet, config) {
 }
 
 // ============================================================
-// VALIDATE — EIP-712 signed by solver key, tx sent by gas payer
+// VALIDATE
+// - Validator signs EIP-712 message (authorization)
+// - Solver sends the transaction (msg.sender must match onboarded address)
 // ============================================================
-async function validate(signerWallet, senderWallet, solverId) {
-  const isActive = await contract.isSolverActive(solverId);
-  if (isActive) {
-    console.log("    Already validated and active — skipping.");
+async function validate(solverWallet, solverId) {
+  const isValidated = await contract.isSolverIdValidated(solverWallet.address);
+  if (isValidated) {
+    console.log("    Already validated — skipping.");
     return true;
   }
 
   const domain = await getEip712Domain();
-  // Nonce is for the EIP-712 signer (solver identity)
-  const nonce = await contract.getNonce(signerWallet.address);
+  // Nonce is the validator's nonce (contract uses nonces[validatorAddress])
+  const nonce = await contract.getNonce(validatorWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
-  console.log(`    EIP-712 signer: ${signerWallet.address} (solver identity)`);
-  console.log(`    Tx sender:      ${senderWallet.address} (gas payer)`);
-  console.log(`    Nonce:          ${nonce.toString()}`);
+  console.log(`    Validator (EIP-712 signer): ${validatorWallet.address}`);
+  console.log(`    Solver (msg.sender):        ${solverWallet.address}`);
+  console.log(`    Validator nonce:            ${nonce.toString()}`);
 
   const types = {
     ValidateSolver: [
@@ -264,13 +262,13 @@ async function validate(signerWallet, senderWallet, solverId) {
 
   const message = { solverId, nonce, deadline };
 
-  // Solver key signs the EIP-712 message
-  const signature = await signerWallet._signTypedData(domain, types, message);
+  // Validator signs the EIP-712 message (authorization)
+  const signature = await validatorWallet._signTypedData(domain, types, message);
 
-  // Gas payer sends the transaction
+  // Solver sends the transaction (msg.sender must be the onboarded solver)
   console.log("    Sending validate tx...");
-  const contractWithSender = contract.connect(senderWallet);
-  const tx = await contractWithSender.validateSolverId(deadline, signature);
+  const contractWithSolver = contract.connect(solverWallet);
+  const tx = await contractWithSolver.validateSolverId(deadline, signature);
 
   console.log(`    Tx: ${tx.hash}`);
   const receipt = await tx.wait();
@@ -279,21 +277,21 @@ async function validate(signerWallet, senderWallet, solverId) {
 }
 
 // ============================================================
-// ADD LIQUIDITY — one tx per chain type (TICS first, then BTC)
-// Sent by gas payer (needs MPC_ROLE on the sender address)
+// ADD LIQUIDITY
+// No msg.sender restriction — anyone can call. We use the solver wallet here.
 // ============================================================
-async function addLiquidity(senderWallet, config) {
-  const contractWithSender = contract.connect(senderWallet);
+async function addLiquidity(solverWallet, config) {
+  const contractWithSolver = contract.connect(solverWallet);
 
   // 1. Add TICS liquidity
   if (config.evmLiquidityAmount && config.evmLiquidityAmount !== "0") {
     console.log(`    [TICS] ${formatAmount(config.evmLiquidityAmount, 'TICS')}`);
     console.log(`    [TICS] Sending addLiquidityBatch...`);
 
-    const tx = await contractWithSender.addLiquidityBatch([{
+    const tx = await contractWithSolver.addLiquidityBatch([{
       solverId: config.solverId,
       amount: config.evmLiquidityAmount,
-      chainType: 1,  // 1 = EVM/TICS
+      chainType: 1,  // 1 = TICS
     }]);
 
     console.log(`    [TICS] Tx: ${tx.hash}`);
@@ -311,7 +309,7 @@ async function addLiquidity(senderWallet, config) {
     console.log(`    [BTC]  ${formatAmount(config.btcLiquidityAmount, 'BTC')}`);
     console.log(`    [BTC]  Sending addLiquidityBatch...`);
 
-    const tx = await contractWithSender.addLiquidityBatch([{
+    const tx = await contractWithSolver.addLiquidityBatch([{
       solverId: config.solverId,
       amount: config.btcLiquidityAmount,
       chainType: 0,  // 0 = BTC
@@ -343,7 +341,18 @@ async function main() {
   console.log(`  Chain ID:    ${network.chainId}`);
   console.log(`  Contract:    ${CONTRACT_ADDRESS}`);
   console.log(`  Solvers:     ${SOLVERS.length}`);
+  console.log(`  Validator:   ${validatorWallet.address} (EIP-712 signer)`);
   console.log("=".repeat(60));
+
+  // Verify validator matches on-chain validatorAddress
+  const onChainValidator = await contract.validatorAddress();
+  if (onChainValidator.toLowerCase() !== validatorWallet.address.toLowerCase()) {
+    console.error(`\nERROR: VALIDATOR_PK address (${validatorWallet.address}) does not match`);
+    console.error(`       on-chain validatorAddress (${onChainValidator})`);
+    console.error("       The contract will reject all signatures.");
+    process.exit(1);
+  }
+  console.log(`  Validator verified against on-chain address.`);
 
   // Validate that all solver private keys are unique
   const seenKeys = new Set();
@@ -351,59 +360,50 @@ async function main() {
     const normalized = solver.privateKey.replace(/^0x/, '').toLowerCase();
     if (seenKeys.has(normalized)) {
       console.error(`\nERROR: Duplicate private key found for solver "${solver.solverId}".`);
-      console.error("Each solver MUST have a unique private key (the signer = on-chain identity).");
+      console.error("Each solver MUST have a unique private key (unique msg.sender = unique solver).");
       process.exit(1);
     }
     seenKeys.add(normalized);
   }
 
-  if (txSender) {
-    console.log(`  Tx Sender:   ${txSender.address} (gas payer for all txs)`);
-  } else {
-    console.log(`  Tx Sender:   (using each solver's own key — set TX_SENDER_PK to separate)`);
-  }
-
   for (let i = 0; i < SOLVERS.length; i++) {
     const config = SOLVERS[i];
-    // EIP-712 signer — determines solver's on-chain identity
-    const signerWallet = new ethers.Wallet(config.privateKey, provider);
-    // Gas payer — sends transactions. Falls back to solver key if TX_SENDER_PK not set.
-    const senderWallet = txSender || signerWallet;
+    // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
+    const solverWallet = new ethers.Wallet(config.privateKey, provider);
 
     console.log(`\n${"#".repeat(60)}`);
     console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
-    console.log(`  EIP-712 Signer: ${signerWallet.address} (solver identity)`);
-    console.log(`  Tx Sender:      ${senderWallet.address} (gas payer)`);
+    console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
     console.log(`${"#".repeat(60)}`);
 
     // Step 0: Check current status
     console.log(`\n  [Status]`);
     await checkStatus(config.solverId);
 
-    // Step 1: Onboard (EIP-712 signed by solver key, tx sent by gas payer)
+    // Step 1: Onboard (validator signs EIP-712, solver sends tx)
     console.log(`\n  [Onboard]`);
     try {
-      await onboard(signerWallet, senderWallet, config);
+      await onboard(solverWallet, config);
     } catch (e) {
       console.error(`    ERROR: ${e.message}`);
       if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
       continue;
     }
 
-    // Step 2: Validate (EIP-712 signed by solver key, tx sent by gas payer)
+    // Step 2: Validate (validator signs EIP-712, solver sends tx)
     console.log(`\n  [Validate]`);
     try {
-      await validate(signerWallet, senderWallet, config.solverId);
+      await validate(solverWallet, config.solverId);
     } catch (e) {
       console.error(`    ERROR: ${e.message}`);
       if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
       continue;
     }
 
-    // Step 3: Add liquidity (sent by gas payer — needs MPC_ROLE on sender address)
+    // Step 3: Add liquidity (solver sends tx, no special auth needed)
     console.log(`\n  [Add Liquidity]`);
     try {
-      await addLiquidity(senderWallet, config);
+      await addLiquidity(solverWallet, config);
     } catch (e) {
       console.error(`    ERROR: ${e.message}`);
       if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
