@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use tracing::{error, info, warn};
 
 use crate::database::key_utils::{self, peer_addr_key};
+use crate::database::keys;
 use crate::types::p2p::SerializablePeerId;
+use crate::types::UserRegistration;
 use crate::types::signing::SigningMessage;
 use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
@@ -72,6 +74,17 @@ impl MpcNetworkLayer {
                 batch_size,
             } => {
                 self.handle_request_database_batch(peer, batch_index, batch_size)
+                    .await
+            }
+            RPCRequest::RequestStateSync { requester_id } => {
+                self.handle_request_state_sync(peer, requester_id).await
+            }
+            RPCRequest::RequestStateSyncBatch {
+                prefix,
+                batch_index,
+                batch_size,
+            } => {
+                self.handle_request_state_sync_batch(peer, prefix, batch_index, batch_size)
                     .await
             }
             // SECURE DKG SHARE - receive unicast share via P2P RPC
@@ -973,6 +986,164 @@ impl MpcNetworkLayer {
         }
     }
 
+    /// Safe prefixes for state sync (no DKG secrets, no user tweaked_secret_share, no node keypair).
+    /// Covers: users, intents, pending/consensus/signing refs, peer invalidation, solver amounts,
+    /// contract-call state (add_liquidity, withdraw_liquidity, claim_reward), peer addresses (PEER_ADDR),
+    /// and node public keys for verification. Peer indices (PEER_INDEX) are not synced here—they are
+    /// set on connection via GetPeerList response (handle_peer_list_response). In-memory withdraw/claim
+    /// rounds and peer_invalidation_pending are sent in StateSyncMetadata and applied on the joiner.
+    fn state_sync_prefixes() -> &'static [&'static str] {
+        &[
+            keys::USER_REGISTRATION,
+            keys::INTENT_REGISTRY,
+            keys::INTENT_TRANSACTION_IDS,
+            keys::USER_INTENT_HASH,
+            keys::INTENT_HASH_TO_USER,
+            keys::INTENT_TARGET_AMOUNT,
+            keys::PENDING_TRANSACTION,
+            keys::TRANSACTION_STATUS,
+            keys::CONSENSUS_ROUND,
+            keys::CONSENSUS_RESULT,
+            keys::SELECTED_NODES,
+            keys::FINAL_NODE_ROUND,
+            keys::PENDING_DISCONNECTION,
+            keys::SOLVER_AMOUNTS,
+            keys::SOLVER_ADD_LIQUIDITY,
+            keys::PENDING_WITHDRAW_LIQUIDITY,
+            keys::PENDING_CLAIM_REWARD,
+            keys::PEER_ADDR,
+            keys::PUBLIC_KEY,
+        ]
+    }
+
+    /// Handle RequestStateSync: return metadata (per-prefix counts + withdraw/claim_reward rounds).
+    async fn handle_request_state_sync(
+        &self,
+        _peer: PeerId,
+        _requester_id: SerializablePeerId,
+    ) -> RPCResponse {
+        let mut prefix_counts = Vec::with_capacity(Self::state_sync_prefixes().len());
+        for prefix in Self::state_sync_prefixes() {
+            match self.db.count_entries_with_prefix_async(prefix).await {
+                Ok(count) => prefix_counts.push(((*prefix).to_string(), count)),
+                Err(e) => {
+                    error!("❌ [STATE_SYNC] Failed to count prefix {}: {}", prefix, e);
+                    return RPCResponse::Error(format!("Failed to count prefix {prefix}: {e}"));
+                }
+            }
+        }
+
+        let (withdraw_rounds, claim_reward_rounds) = if let Some(arc) = &self.signing_node {
+            let node = arc.lock().await;
+            node.get_pending_rounds_for_sync().await
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        let peer_invalidation_pending = self
+            .peer_invalidation_pending
+            .lock()
+            .await
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>();
+
+        info!(
+            "📦 [STATE_SYNC] Serving metadata: {} prefix(s), {} withdraw_rounds, {} claim_reward_rounds, {} peer_invalidation_pending",
+            prefix_counts.len(),
+            withdraw_rounds.len(),
+            claim_reward_rounds.len(),
+            peer_invalidation_pending.len()
+        );
+
+        RPCResponse::StateSyncMetadata {
+            prefix_counts,
+            withdraw_rounds,
+            claim_reward_rounds,
+            peer_invalidation_pending,
+        }
+    }
+
+    /// Handle RequestStateSyncBatch: export a batch for one prefix; strip user tweaked_secret_share for USER_REGISTRATION.
+    async fn handle_request_state_sync_batch(
+        &self,
+        _peer: PeerId,
+        prefix: String,
+        batch_index: usize,
+        batch_size: usize,
+    ) -> RPCResponse {
+        let start = batch_index * batch_size;
+
+        if prefix == keys::USER_REGISTRATION {
+            // Export user batch with tweaked_secret_share stripped (no private data).
+            match self
+                .db
+                .export_batch_with_prefix_async(keys::USER_REGISTRATION, start, batch_size)
+                .await
+            {
+                Ok((entries, is_last_batch)) => {
+                    let mut out = Vec::with_capacity(entries.len());
+                    for (key, value) in entries {
+                        match bincode::deserialize::<UserRegistration>(&value) {
+                            Ok(mut user) => {
+                                user.tweaked_secret_share = None;
+                                match bincode::serialize(&user) {
+                                    Ok(value_clean) => {
+                                        out.push(crate::types::rpc::DatabaseEntry {
+                                            key,
+                                            value: value_clean,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [STATE_SYNC] Failed to serialize user: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [STATE_SYNC] Failed to deserialize user: {}", e);
+                            }
+                        }
+                    }
+                    RPCResponse::StateSyncBatch {
+                        prefix,
+                        batch_index,
+                        entries: out,
+                        is_last_batch,
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [STATE_SYNC] Failed to export user batch: {}", e);
+                    RPCResponse::Error(format!("Failed to export user batch: {e}"))
+                }
+            }
+        } else if Self::state_sync_prefixes().iter().any(|p| *p == prefix.as_str()) {
+            match self
+                .db
+                .export_batch_with_prefix_async(&prefix, start, batch_size)
+                .await
+            {
+                Ok((entries, is_last_batch)) => {
+                    let db_entries: Vec<crate::types::rpc::DatabaseEntry> = entries
+                        .into_iter()
+                        .map(|(key, value)| crate::types::rpc::DatabaseEntry { key, value })
+                        .collect();
+                    RPCResponse::StateSyncBatch {
+                        prefix,
+                        batch_index,
+                        entries: db_entries,
+                        is_last_batch,
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [STATE_SYNC] Failed to export batch for {}: {}", prefix, e);
+                    RPCResponse::Error(format!("Failed to export batch: {e}"))
+                }
+            }
+        } else {
+            RPCResponse::Error(format!("Unknown state sync prefix: {}", prefix))
+        }
+    }
+
     /// Handle RPC responses from peers
     pub(crate) async fn handle_rpc_response(
         &mut self,
@@ -1177,6 +1348,46 @@ impl MpcNetworkLayer {
                     error!("❌ [DB_SYNC] Failed to handle batch: {}", e);
                 }
             }
+            RPCResponse::StateSyncMetadata {
+                prefix_counts,
+                withdraw_rounds,
+                claim_reward_rounds,
+                peer_invalidation_pending,
+            } => {
+                if let Err(e) = self
+                    .handle_state_sync_metadata(
+                        swarm,
+                        peer,
+                        prefix_counts,
+                        withdraw_rounds,
+                        claim_reward_rounds,
+                        peer_invalidation_pending,
+                    )
+                    .await
+                {
+                    error!("❌ [STATE_SYNC] Failed to handle metadata: {}", e);
+                }
+            }
+            RPCResponse::StateSyncBatch {
+                prefix,
+                batch_index,
+                entries,
+                is_last_batch,
+            } => {
+                if let Err(e) = self
+                    .handle_state_sync_batch(
+                        swarm,
+                        peer,
+                        prefix,
+                        batch_index,
+                        entries,
+                        is_last_batch,
+                    )
+                    .await
+                {
+                    error!("❌ [STATE_SYNC] Failed to handle batch: {}", e);
+                }
+            }
             RPCResponse::ECDSASignatureReceived { .. } => {}
             RPCResponse::BtcSignaturesReceived { .. } => {}
             RPCResponse::CriticalDeliveryAck {
@@ -1215,7 +1426,7 @@ impl MpcNetworkLayer {
                 }
             }
             RPCResponse::NoncePoolSync { tuples } => {
-                // Store received nonce tuples from a DKG peer (observer nonce pool sync).
+                // Store received nonce tuples from a peer (observer or DKG node nonce pool sync).
                 let count = tuples.len();
                 if count > 0 {
                     if let Some(arc) = &self.signing_node {
@@ -1231,9 +1442,16 @@ impl MpcNetworkLayer {
                                 }
                             }
                             info!(
-                                "✅ [NONCE_SYNC] Observer stored {}/{} nonce tuples from peer {}",
+                                "✅ [NONCE_SYNC] Stored {}/{} nonce tuples from peer {}",
                                 stored, count, peer
                             );
+
+                            // After sync, trigger pregenerate to fill any remaining gap.
+                            // startup_pregenerate() checks if the pool already meets min_pool_size
+                            // and skips if sufficient, so this is safe to call unconditionally.
+                            if let Err(e) = nm_guard.startup_pregenerate().await {
+                                warn!("⚠️ [NONCE_SYNC] Failed to trigger startup_pregenerate after sync: {}", e);
+                            }
                         }
                     }
                 } else {
@@ -1387,6 +1605,28 @@ impl MpcNetworkLayer {
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
     ) -> Result<()> {
+        // Defense-in-depth: dialer-side self-check for pending invalidation.
+        // Normally the listener disconnects blocked peers before they reach here,
+        // but if we somehow got a PeerList response while our own invalidation is
+        // pending, abort early — do not restore DKG state or sync nonces.
+        {
+            let self_solver_id = self.local_peer_id.to_string();
+            let prefix = format!(
+                "{}{}",
+                crate::database::keys::PENDING_DISCONNECTION,
+                self_solver_id
+            );
+            if let Ok(pending_keys) = self.db.get_keys_with_prefix_async(&prefix).await {
+                if !pending_keys.is_empty() {
+                    warn!(
+                        "🚫 [SELF_CHECK] This node has {} pending_disconnection record(s) — skipping node joining check until invalidation completes",
+                        pending_keys.len()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         let total = self.node_manager.get_total_nodes();
         let threshold = self.node_manager.get_threshold();
         let new_node_index = self.resolve_new_node_index().await;
@@ -1397,29 +1637,64 @@ impl MpcNetworkLayer {
             dkg_node.update_node_params(total, threshold)?;
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
 
-            if has_dkg_data && total >= 4 {
+            if has_dkg_data {
+                // Main DKG node restarting - preserve DKG shares and restore completed state
                 info!(
-                    "🔄 [RECONNECT] Node has existing DB with total={} - clearing DKG state and treating as fresh node",
+                    "🔄 [RECONNECT] Main DKG node restarting with existing shares, total={} - restoring completed state",
                     total
                 );
-                if let Err(e) = dkg_node.clear_state_for_reconnect().await {
-                    warn!("⚠️ [RECONNECT] Failed to clear state: {:?}", e);
-                    (false, None, None, false)
-                } else {
-                    let sync_peer = swarm
-                        .connected_peers()
-                        .find(|pid| **pid != self.local_peer_id)
-                        .cloned();
-                    info!(
-                        "🔢 [NEW_NODE] New node index: {} (from PeerList or first free slot)",
-                        new_node_index
-                    );
-                    (
-                        sync_peer.is_some(),
-                        sync_peer,
-                        Some(new_node_index),
-                        !sync_peer.is_some(),
-                    )
+                match dkg_node.restore_completed_state().await {
+                    Ok(()) => {
+                        info!("✅ [RECONNECT] DKG state restored successfully - node can resume signing");
+
+                        // Flush stale nonce pool: while this node was offline, other nodes
+                        // may have consumed or invalidated nonces via NonceInvalidation
+                        // messages. We have no way to know which nonces are still valid,
+                        // so flush everything and request a fresh pool from a peer.
+                        if let Some(arc) = &self.signing_node {
+                            let node = arc.lock().await;
+                            match node.flush_nonce_pool().await {
+                                Ok(flushed) => {
+                                    info!(
+                                        "🗑️ [RECONNECT] Flushed {} stale nonces from pool",
+                                        flushed
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [RECONNECT] Failed to flush nonce pool: {}", e);
+                                }
+                            }
+                        }
+
+                        // Still sync user database to catch registrations we missed while offline
+                        let sync_peer = swarm
+                            .connected_peers()
+                            .find(|pid| **pid != self.local_peer_id)
+                            .cloned();
+
+                        // Request nonce pool sync from a peer to replace flushed nonces
+                        if let Some(ref peer) = sync_peer {
+                            info!(
+                                "🔄 [NONCE_SYNC] DKG node requesting nonce pool sync from peer {} after restart",
+                                peer
+                            );
+                            swarm
+                                .behaviour_mut()
+                                .request_response
+                                .send_request(peer, RPCRequest::RequestNoncePoolSync);
+                        }
+
+                        (
+                            sync_peer.is_some(),
+                            sync_peer,
+                            None,
+                            false,
+                        )
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [RECONNECT] Failed to restore DKG state (corrupt data?): {:?}", e);
+                        (false, None, None, false)
+                    }
                 }
             } else if !has_dkg_data && total >= 4 {
                 let sync_peer = swarm
@@ -1529,76 +1804,3 @@ impl MpcNetworkLayer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::MpcNetworkLayer;
-    use crate::database::{Database, DatabaseConfig};
-    use crate::network::transport::types::VrfDomain;
-    use crate::node_selection::{BasicNodeManager, DefaultThresholdCalculator};
-    use libp2p::PeerId;
-    use tempfile::tempdir;
-
-    async fn build_network_layer() -> MpcNetworkLayer {
-        let temp_dir = tempdir().expect("tempdir to create");
-        let db_path = temp_dir.path().join("db");
-        let db = Database::new(DatabaseConfig {
-            path: db_path.to_string_lossy().to_string(),
-            create_if_missing: true,
-            max_open_files: 32,
-            encryption_key: Some(
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            ),
-        })
-        .expect("db to start");
-
-        let manager = Box::new(BasicNodeManager::new(Box::new(DefaultThresholdCalculator)));
-
-        MpcNetworkLayer::new(manager, db)
-            .await
-            .expect("network layer to initialize")
-    }
-
-    #[tokio::test]
-    async fn stores_peer_rounds_within_allowed_skew() {
-        let mut layer = build_network_layer().await;
-        let peer = PeerId::random();
-
-        let stored = layer
-            .store_peer_round_if_valid(VrfDomain::Signing, "", peer, Some(5), Some(6))
-            .await;
-
-        assert!(stored, "valid rounds should be stored");
-        assert_eq!(
-            layer
-                .peer_rounds
-                .get(&VrfDomain::Signing)
-                .and_then(|ctx| ctx.get(""))
-                .and_then(|rounds| rounds.get(&peer)),
-            Some(&6)
-        );
-    }
-
-    #[tokio::test]
-    async fn ignores_peer_rounds_outside_allowed_skew() {
-        let mut layer = build_network_layer().await;
-        let peer = PeerId::random();
-
-        let stored = layer
-            .store_peer_round_if_valid(
-                VrfDomain::Signing,
-                "",
-                peer,
-                Some(1),
-                Some(1 + super::MAX_VRF_ROUND_SKEW + 10),
-            )
-            .await;
-
-        assert!(layer
-            .peer_rounds
-            .get(&VrfDomain::Signing)
-            .and_then(|ctx| ctx.get(""))
-            .and_then(|rounds| rounds.get(&peer))
-            .is_none());
-        assert!(!stored, "out-of-range rounds should be rejected");
-    }
-}

@@ -88,20 +88,39 @@ impl MpcNetworkLayer {
 
         let remote_addr = endpoint.get_remote_address();
 
-        // ===== SOLVER VALIDATION (disabled for testing) =====
-        // match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
-        // {
-        //     Ok(_) => {}
-        //     Err(e) => {
-        //         warn!(
-        //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-        //             peer_id, remote_addr, e
-        //         );
-        //         swarm.disconnect_peer_id(peer_id).ok();
-        //         return Ok(());
-        //     }
-        // }
-        // ===== END SOLVER VALIDATION =====
+        // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
+
+        // 1. Solver contract validation (disabled for testing)
+        match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+                    peer_id, remote_addr, e
+                );
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
+            }
+        }
+
+        // 2. Pending invalidation check — block peer if invalidateSolverIds txn is in-flight
+        {
+            let solver_id = peer_id.to_string();
+            let prefix = format!("{}{}", keys::PENDING_DISCONNECTION, solver_id);
+            if let Ok(pending_keys) = self.db.get_keys_with_prefix_async(&prefix).await {
+                if !pending_keys.is_empty() {
+                    warn!(
+                        "🚫 [REJOIN_BLOCKED] Peer {} has {} pending_disconnection record(s) — rejecting connection until invalidation transaction completes",
+                        peer_id, pending_keys.len()
+                    );
+                    swarm.disconnect_peer_id(peer_id).ok();
+                    return Ok(());
+                }
+            }
+        }
+
+        // ===== END VALIDATION GATES =====
 
         // Track connected peer
         self.connected_peers_cache.insert(peer_id);
@@ -205,7 +224,16 @@ impl MpcNetworkLayer {
                 .request_response
                 .send_request(&peer_id, RPCRequest::GetPeerList);
 
-            // Also request VRF round sync when connecting
+            // Request full state sync when joining (users without shares, intents, pending tx, rounds)
+            if self.needs_state_sync && !self.state_sync_state.in_progress {
+                self.needs_state_sync = false;
+                if let Err(e) = self.sync_state_sync_from_peer(swarm, peer_id).await {
+                    warn!("❌ [STATE_SYNC] Failed to start state sync: {:?}", e);
+                    self.needs_state_sync = true;
+                }
+            }
+
+            // Also request VRF round sync when connecting (after state sync completes if that ran)
             if !self.vrf_round_requested && !self.needs_database_sync {
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,

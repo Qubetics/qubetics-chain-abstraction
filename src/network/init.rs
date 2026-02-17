@@ -14,7 +14,7 @@ use crate::database::{keys, Database};
 use crate::node_selection::NodeMembership;
 
 use crate::network::config::NetworkConfig;
-use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
+use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState, StateSyncState};
 use crate::network::rpc::channel_monitor::ChannelHealthMonitor;
 use crate::network::rpc::retry_manager::RetryManager;
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, MPC_TOPICS};
@@ -92,6 +92,8 @@ impl MpcNetworkLayer {
             db,
             db_sync_state: DatabaseSyncState::new(),
             needs_database_sync: false,
+            state_sync_state: StateSyncState::new(),
+            needs_state_sync: true, // New node requests full state from first peer it connects to
             bootstrap_addresses: network_config.bootstrap_peers,
             bootstrap_peer_ids: Vec::new(),
             discovery_seeds: network_config.discovery_seeds,

@@ -97,6 +97,46 @@ impl SigningNode {
         self.threshold = new_threshold;
     }
 
+    /// Return (withdraw_rounds, claim_reward_rounds) for state sync (no private data).
+    pub async fn get_pending_rounds_for_sync(&self) -> (Vec<u64>, Vec<u64>) {
+        let wr: Vec<u64> = self
+            .pending
+            .withdraw_rounds
+            .read()
+            .await
+            .iter()
+            .copied()
+            .collect();
+        let cr: Vec<u64> = self
+            .pending
+            .claim_reward_rounds
+            .read()
+            .await
+            .iter()
+            .copied()
+            .collect();
+        (wr, cr)
+    }
+
+    /// Apply synced withdraw/claim_reward rounds from a peer (used when joining the network).
+    pub async fn apply_synced_pending_rounds(
+        &self,
+        withdraw_rounds: &[u64],
+        claim_reward_rounds: &[u64],
+    ) {
+        if withdraw_rounds.is_empty() && claim_reward_rounds.is_empty() {
+            return;
+        }
+        let mut wr = self.pending.withdraw_rounds.write().await;
+        for r in withdraw_rounds {
+            wr.insert(*r);
+        }
+        let mut cr = self.pending.claim_reward_rounds.write().await;
+        for r in claim_reward_rounds {
+            cr.insert(*r);
+        }
+    }
+
     pub fn vrf_service(&self) -> Option<&VrfService> {
         self.coordination.vrf_service()
     }
@@ -1483,6 +1523,18 @@ impl SigningNode {
         }
     }
 
+
+    /// Mark the NonceManager as belonging to a DKG signer (or not).
+    ///
+    /// Only DKG signers initiate the commit-reveal nonce generation protocol.
+    /// Observer nodes passively receive nonces via NonceTupleBroadcast.
+    pub async fn set_nonce_manager_dkg_signer(&self, is_signer: bool) {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.set_is_dkg_signer(is_signer);
+        }
+    }
+
     /// Handle a new node joining - delete stale nonces and regenerate.
     ///
     /// When a new node joins, all existing nonces become stale because
@@ -1497,6 +1549,18 @@ impl SigningNode {
             if let Err(e) = mgr.handle_node_joined(new_total).await {
                 warn!("⚠️ [SIGNING] Failed to handle node join in NonceManager: {}", e);
             }
+        }
+    }
+
+    /// Flush the entire nonce pool (called on DKG node restart).
+    /// The node may have missed NonceInvalidation messages while offline,
+    /// so all old nonces are deleted. A fresh pool is synced from a peer afterwards.
+    pub async fn flush_nonce_pool(&self) -> Result<usize> {
+        if let Some(manager) = &self.nonce_manager {
+            let mgr = manager.lock().await;
+            mgr.flush_all_nonces().await
+        } else {
+            Ok(0)
         }
     }
 
