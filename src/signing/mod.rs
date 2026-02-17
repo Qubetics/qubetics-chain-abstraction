@@ -1913,7 +1913,7 @@ impl SigningNode {
                 let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
                     .ok()
                     .and_then(|val| val.parse::<u64>().ok())
-                    .unwrap_or(60);
+                    .unwrap_or(35);
 
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2247,7 +2247,7 @@ impl SigningNode {
         let max_intents_per_cycle = std::env::var("MAX_INTENTS_PER_CYCLE")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(20);
+            .unwrap_or(13);
         
         // Get user intent manager
         let user_intent_manager = self.user_intent_manager
@@ -2393,7 +2393,7 @@ impl SigningNode {
             let max_btc_withdraw_per_cycle = std::env::var("MAX_BTC_WITHDRAW_PER_CYCLE")
                 .ok()
                 .and_then(|val| val.parse::<usize>().ok())
-                .unwrap_or(20);
+                .unwrap_or(15);
 
             let db = user_intent_manager.get_database();
 
