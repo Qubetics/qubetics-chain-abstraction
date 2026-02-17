@@ -734,7 +734,7 @@ impl SigningNode {
         // All nodes MUST have the same aggregated_k, k_inv, r, and z values
         info!(
             "🔵🔵🔵 [SIGNING-NONCE] Partial Signature Computation 🔵🔵🔵\n\
-             ╔══════════════════════════════════════════════════════════════════════════════╗\n\
+             ╔════════════��═════════════════════════════════════════════════════════════════╗\n\
              ║  tuple_id:                     {}                   ║\n\
              ║  aggregated_k (first 8 bytes): 0x{}                             ║\n\
              ║  k_inv (first 8 bytes):        0x{}                             ║\n\
@@ -7790,6 +7790,30 @@ impl SigningNode {
             solver_ids
         );
 
+        // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
+        // SECURITY: Nonces are REQUIRED - abort batch if unavailable
+        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.reserve_nonces_for_batch(&["peer_invalidation_batch".to_string()]).await {
+                Ok(assignments) => {
+                    if let Some(tuple_id) = assignments.get("peer_invalidation_batch") {
+                        info!("🔐 [PEER_INVALIDATION] Reserved nonce {} for peer invalidation batch", tuple_id);
+                        tuple_id.clone()
+                    } else {
+                        tracing::error!("🔴 [PEER_INVALIDATION] No nonce assigned - aborting batch (will retry next epoch)");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("🔴 [PEER_INVALIDATION] Failed to reserve nonce: {} - aborting batch (will retry next epoch)", e);
+                    return Ok(());
+                }
+            }
+        } else {
+            tracing::error!("🔴 [PEER_INVALIDATION] NonceManager not available - aborting batch (will retry next epoch)");
+            return Ok(());
+        };
+
         // Broadcast PeerInvalidationBatch via ChannelMessage
         let timestamp = chrono::Utc::now().to_rfc3339();
         let node_id = self.id.clone();
@@ -7800,6 +7824,7 @@ impl SigningNode {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id: Some(nonce_tuple_id),
             })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send peer invalidation batch message: {}", e))?;

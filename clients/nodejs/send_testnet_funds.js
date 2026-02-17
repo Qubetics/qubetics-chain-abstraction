@@ -20,7 +20,7 @@ const CONFIG = {
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
     rpcEndpoint: 'https://mempool.space/testnet/api',
     amountPerTx: 1000, // satoshis
-    numberOfTx: 20,
+    numberOfTx: 3,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
 
