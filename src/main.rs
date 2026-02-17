@@ -188,7 +188,8 @@ impl NodeContext {
 
         let env_filter = EnvFilter::builder()
             .with_default_directive(LevelFilter::INFO.into())
-            .parse("")?;
+            // Allow overriding via RUST_LOG; fall back to no extra directives.
+            .parse(std::env::var("RUST_LOG").unwrap_or_default())?;
 
         tracing_subscriber::registry()
             .with(env_filter)
@@ -381,7 +382,6 @@ impl NodeContext {
             // the flag stays false until DKG completes (set in gossipsub_handler).
             let is_signer = sn.has_dkg_share().await;
             sn.set_nonce_manager_dkg_signer(is_signer).await;
-            info!("🔐 [MAIN] Initialized NonceManager (dkg_signer_count={}, is_dkg_signer={})", dkg_signer_count, is_signer);
         }
 
         self.user_intent_manager = Some(db_user_intent_manager);

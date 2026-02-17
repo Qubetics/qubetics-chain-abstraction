@@ -214,10 +214,7 @@ impl MpcNetworkLayer {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
                 } else {
-                    info!(
-                        "Received VRF selection message but node manager is not VRF-based: {:?}",
-                        vrf_msg
-                    );
+                    debug!("Received VRF selection message but node manager is not VRF-based (ignored)");
                 }
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
@@ -1338,12 +1335,8 @@ impl MpcNetworkLayer {
 
                     // DIFFERENT: Process based on batch type
                     if batch_type == "BTC" {
-                    // Observer nodes skip BTC batch entirely — TX data arrives via per-slot TransactionDataForFinalNode
                     if !is_dkg_participant {
-                        info!(
-                            "ℹ️ [INTENT_BATCH] Observer node skipping BTC batch TX creation and signing for round {} (no DKG share)",
-                            round
-                        );
+                        // Non-participating nodes skip BTC batch creation/signing; TX data arrives via per-slot messages.
                         return Ok(());
                     }
                         // BITCOIN BATCH TRANSACTION FLOW

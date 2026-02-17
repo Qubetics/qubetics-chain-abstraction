@@ -387,7 +387,8 @@ impl ConsensusNode {
     /// Store the operation type that triggered VRF for this round
     pub fn set_operation_type_for_round(&mut self, round: u64, operation_type: String) {
         self.operation_types_by_round.insert(round, operation_type);
-        info!(
+        // Keep this at debug level to avoid noisy per-round logs at info.
+        debug!(
             "📝 [CONSENSUS] Stored operation type '{}' for round {}",
             self.operation_types_by_round.get(&round).unwrap(),
             round

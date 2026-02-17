@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub use generation::NonceGenerator;
 
@@ -149,7 +149,7 @@ impl NonceManager {
     /// in storage.  Until this is set, nonce generation is suppressed.
     pub fn set_is_dkg_signer(&self, value: bool) {
         self.is_dkg_signer.store(value, Ordering::SeqCst);
-        info!("🔑 [NONCE] is_dkg_signer set to {}", value);
+        debug!("🔑 [NONCE] is_dkg_signer set to {}", value);
     }
 
     /// Check if this node is a DKG signer.
@@ -165,7 +165,7 @@ impl NonceManager {
     /// Mark startup pre-generation as complete
     pub fn set_startup_ready(&self) {
         self.startup_ready.store(true, Ordering::SeqCst);
-        info!("✅ [NONCE] Startup pre-generation complete, ready to accept signing requests");
+        debug!("✅ [NONCE] Startup pre-generation complete, ready to accept signing requests");
     }
 
     /// Update the total number of nodes.
@@ -176,7 +176,7 @@ impl NonceManager {
     pub fn update_total_nodes(&self, new_total: usize) {
         let old_total = self.total_nodes.swap(new_total, Ordering::SeqCst);
         if old_total != new_total {
-            info!(
+            debug!(
                 "📊 [NONCE] Updated total_nodes: {} -> {} (stale filter still uses dkg_signer_count={})",
                 old_total, new_total, self.dkg_signer_count.load(Ordering::SeqCst)
             );
@@ -190,7 +190,7 @@ impl NonceManager {
     pub fn update_dkg_signer_count(&self, count: usize) {
         let old = self.dkg_signer_count.swap(count, Ordering::SeqCst);
         if old != count {
-            info!(
+            debug!(
                 "📊 [NONCE] Updated dkg_signer_count: {} -> {} (nonces with <{} contributors are now stale)",
                 old, count, count
             );
@@ -222,7 +222,7 @@ impl NonceManager {
 
         let current_dkg_count = self.dkg_signer_count.load(Ordering::SeqCst);
 
-        info!(
+        debug!(
             "🔄🔄🔄 [NONCE] NEW NODE JOINED! total_nodes: {} -> {}, dkg_signer_count={} 🔄🔄🔄",
             old_total, new_total, current_dkg_count
         );
@@ -234,7 +234,7 @@ impl NonceManager {
         let deleted = self.storage.delete_stale_nonces(current_dkg_count).await?;
 
         if deleted > 0 {
-            info!(
+            debug!(
                 "🗑️ [NONCE] Deleted {} stale nonces (num_contributors < dkg_signer_count={})",
                 deleted, current_dkg_count
             );
@@ -244,7 +244,7 @@ impl NonceManager {
         {
             let mut batches = self.active_batches.write().await;
             if !batches.is_empty() {
-                info!(
+                debug!(
                     "⏹️ [NONCE] Cancelling {} in-progress batches (need to restart with new node)",
                     batches.len()
                 );
@@ -254,7 +254,7 @@ impl NonceManager {
         self.generation_in_progress.store(false, Ordering::SeqCst);
 
         // Step 3: Trigger immediate nonce regeneration with all nodes
-        info!(
+        debug!(
             "🚀 [NONCE] Triggering immediate nonce regeneration with {} nodes",
             new_total
         );
@@ -284,7 +284,7 @@ impl NonceManager {
         {
             let mut batches = self.active_batches.write().await;
             if !batches.is_empty() {
-                info!(
+                debug!(
                     "⏹️ [NONCE] Cancelling {} in-progress batches during flush",
                     batches.len()
                 );
@@ -296,7 +296,7 @@ impl NonceManager {
         // Delete all nonce tuples from storage
         let deleted = self.storage.delete_all_nonces().await?;
 
-        info!(
+        debug!(
             "🗑️ [NONCE] Flushed entire nonce pool ({} nonces) - will sync from peer",
             deleted
         );
@@ -336,7 +336,7 @@ impl NonceManager {
             self.storage.consume_nonce_tuple(&tuple.tuple_id).await?;
             self.storage.record_consumption().await?;
 
-            info!(
+            debug!(
                 "🔐 [NONCE] Acquired nonce immediately: {} (contributors: {}, pool size: {})",
                 tuple.tuple_id,
                 tuple.num_contributors,
@@ -353,7 +353,7 @@ impl NonceManager {
         let request_id = self.request_counter.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
 
-        info!(
+        debug!(
             "⏳ [NONCE] No nonces available, queuing request #{} and triggering generation",
             request_id
         );
@@ -366,7 +366,7 @@ impl NonceManager {
                 request_id,
                 queued_at: std::time::Instant::now(),
             });
-            info!(
+            debug!(
                 "📋 [NONCE] Request #{} queued (queue size: {})",
                 request_id, pending.len()
             );
@@ -379,7 +379,7 @@ impl NonceManager {
         let timeout = std::time::Duration::from_millis(self.config.phase_timeout_ms * 5);
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(nonce)) => {
-                info!(
+                debug!(
                     "🔐 [NONCE] Request #{} fulfilled with nonce {}",
                     request_id, nonce.tuple_id
                 );
@@ -452,7 +452,7 @@ impl NonceManager {
             let wait_time = request.queued_at.elapsed();
             if request.response_tx.send(tuple.clone()).is_ok() {
                 fulfilled += 1;
-                info!(
+                debug!(
                     "✅ [NONCE] Fulfilled request #{} with nonce {} (waited {:?})",
                     request.request_id, tuple.tuple_id, wait_time
                 );
@@ -465,7 +465,7 @@ impl NonceManager {
         }
 
         if fulfilled > 0 {
-            info!("📊 [NONCE] Fulfilled {} pending requests", fulfilled);
+            debug!("📊 [NONCE] Fulfilled {} pending requests", fulfilled);
         }
 
         Ok(fulfilled)
@@ -488,7 +488,7 @@ impl NonceManager {
         let needs_generation = match self.count_valid_nonces().await {
             Ok(count) => {
                 if count < self.config.min_pool_size {
-                    info!(
+                    debug!(
                         "🔍 [NONCE] Pool has {} valid nonces (need {}), will generate more",
                         count, self.config.min_pool_size
                     );
@@ -510,7 +510,7 @@ impl NonceManager {
             .unwrap()
             .as_secs();
 
-        info!("🔄 [NONCE] Triggering background nonce generation (round: {})", round);
+        debug!("🔄 [NONCE] Triggering background nonce generation (round: {})", round);
 
         if let Err(e) = self.start_generation(round).await {
             error!("❌ [NONCE] Failed to start generation: {}", e);
@@ -530,7 +530,7 @@ impl NonceManager {
         // Observer nodes get nonces via NonceTupleBroadcast / NoncePoolSync,
         // so they should never initiate the commit-reveal protocol.
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
-            info!("⏭️ [NONCE] Observer node — skipping startup_pregenerate (nonces received via broadcast/sync)");
+            debug!("⏭️ [NONCE] Observer node — skipping startup_pregenerate (nonces received via broadcast/sync)");
             self.set_startup_ready();
             return Ok(());
         }
@@ -548,7 +548,7 @@ impl NonceManager {
         }
 
         if valid_count >= self.config.min_pool_size {
-            info!(
+            debug!(
                 "✅ [NONCE] Pool already has {} valid nonces (min: {}), skipping pre-generation",
                 valid_count, self.config.min_pool_size
             );
@@ -559,7 +559,7 @@ impl NonceManager {
         let needed = self.config.min_pool_size - valid_count;
         let batches_needed = (needed + self.config.batch_size - 1) / self.config.batch_size;
 
-        info!(
+        debug!(
             "🚀 [NONCE] Starting pre-generation: need {} nonces ({} batches of {})",
             needed, batches_needed, self.config.batch_size
         );
@@ -573,7 +573,7 @@ impl NonceManager {
         self.generation_in_progress.store(true, Ordering::SeqCst);
         self.start_generation(round).await?;
 
-        info!("🔄 [NONCE] Pre-generation batch started, will continue until pool is filled");
+        debug!("🔄 [NONCE] Pre-generation batch started, will continue until pool is filled");
 
         Ok(())
     }
@@ -626,7 +626,7 @@ impl NonceManager {
             self.storage.consume_nonce_tuple(&tuple.tuple_id).await?;
             self.storage.record_consumption().await?;
 
-            info!(
+            debug!(
                 "🔐 [NONCE] Acquired nonce tuple: {} (contributors: {}, pool size: {})",
                 tuple.tuple_id,
                 tuple.num_contributors,
@@ -933,10 +933,7 @@ impl NonceManager {
     /// Generates batch_size nonces in a single commit-reveal cycle
     pub async fn start_generation(&self, round: u64) -> Result<String> {
 
-        // Observer nodes must NOT initiate commit-reveal — they receive nonces
-        // via NonceTupleBroadcast instead.
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
-            info!("⏭️ [NONCE] Skipping start_generation — this node is not a DKG signer (observer)");
             return Err(anyhow::anyhow!("Observer node cannot start nonce generation"));
         }
 
@@ -1011,9 +1008,7 @@ impl NonceManager {
     /// This is called when we receive a RequestNonceGeneration from another node.
     /// We use THEIR batch_id so all nodes create nonces with the same tuple_ids.
     pub async fn join_generation(&self, batch_id: &str, round: u64, batch_size: usize) -> Result<()> {
-        // Observer nodes must NOT participate in commit-reveal.
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
-            info!("⏭️ [NONCE] Skipping join_generation for batch {} — not a DKG signer (observer)", batch_id);
             return Ok(());
         }
 

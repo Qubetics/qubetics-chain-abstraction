@@ -2,7 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use libp2p::PeerId;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{info, debug, warn};
 
 use crate::database::{keys, KeyStore};
 
@@ -119,19 +119,14 @@ impl MpcNetworkLayer {
                                 });
                             let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
 
-                            info!(
-                                "✅ [NETWORK] Found user's tweaked share for: {}\n\
-                                 \tTweaked Share PubKey (Self-Calc): 0x{}",
-                                eth_address,
-                                hex::encode(pk.serialize())
+                            debug!(
+                                "✅ [NETWORK] Found user's tweaked share for: {}",
+                                eth_address
                             );
 
                             Some(share_scalar)
                         } else {
-                            warn!(
-                                "❌ [NETWORK] User {} has no tweaked share available",
-                                eth_address
-                            );
+                            // No tweaked share stored for this user; fall back to network DKG share.
                             None
                         }
                     }

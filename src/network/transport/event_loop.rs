@@ -4,7 +4,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{Multiaddr, PeerId};
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
 
@@ -215,7 +215,8 @@ impl MpcNetworkLayer {
             }
         }
         let display_str = entries.join(", ");
-        info!(
+        // This can be quite verbose on large networks; keep at debug level by default.
+        debug!(
             "🕒 PeerList snapshot ({} peers): {}",
             peers.len(),
             display_str
@@ -325,12 +326,8 @@ impl MpcNetworkLayer {
         }
 
         info!(
-            "⏰ [CLOCK] Available nodes for VRF selection: count={}, nodes={:?}",
+            "⏰ [CLOCK] Available nodes for VRF selection: count={}",
             available_nodes.len(),
-            available_nodes
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
         );
 
         // Get VRF service - prefer signing_node, fall back to db_signing_node
@@ -373,11 +370,11 @@ impl MpcNetworkLayer {
                 {
                     Ok(selection_result) => {
                         info!(
-                            "🎯 [CLOCK] VRF selection completed successfully for round {}: {:?}",
-                            round, selection_result
+                            "🎯 [CLOCK] VRF selection completed successfully for round {} (selected_nodes={}, total_nodes={})",
+                            round,
+                            selection_result.selected_nodes.len(),
+                            selection_result.total_nodes,
                         );
-
-
                         return Ok(());
                     }
                     Err(e) => {

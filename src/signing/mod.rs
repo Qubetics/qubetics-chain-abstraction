@@ -929,12 +929,7 @@ impl SigningNode {
             // (due to varying effective_total), producing different aggregated_k values
             // for the same tuple_id — which makes partial signatures incompatible.
             SigningMessage::NonceCommitment { ref from, ref batch_id, round, batch_size, .. } => {
-                if !self.has_dkg_share().await {
-                    info!(
-                        "ℹ️ [SIGNING] Observer node {} ignoring nonce commitment from {} for batch {} (observers receive nonces via NonceTupleBroadcast)",
-                        self.id, from, batch_id
-                    );
-                } else {
+                if self.has_dkg_share().await {
                     info!(
                         "📥 [SIGNING] Node {} received nonce commitment from {} for batch {} round {} (batch_size: {})",
                         self.id, from, batch_id, round, batch_size
@@ -948,12 +943,7 @@ impl SigningNode {
                 }
             }
             SigningMessage::NonceReveal { ref from, ref batch_id, round, .. } => {
-                if !self.has_dkg_share().await {
-                    info!(
-                        "ℹ️ [SIGNING] Observer node {} ignoring nonce reveal from {} for batch {}",
-                        self.id, from, batch_id
-                    );
-                } else {
+                if self.has_dkg_share().await {
                     info!(
                         "📥 [SIGNING] Node {} received nonce reveal from {} for batch {} round {}",
                         self.id, from, batch_id, round
@@ -967,12 +957,7 @@ impl SigningNode {
                 }
             }
             SigningMessage::RequestNonceGeneration { ref batch_id, round: _, ref coordinator_id, batch_size } => {
-                if !self.has_dkg_share().await {
-                    info!(
-                        "ℹ️ [SIGNING] Observer node {} ignoring nonce generation request from {} for batch {}",
-                        self.id, coordinator_id, batch_id
-                    );
-                } else {
+                if self.has_dkg_share().await {
                     info!(
                         "📥 [SIGNING] Node {} received nonce generation request from {} for batch {} (size: {})",
                         self.id, coordinator_id, batch_id, batch_size
@@ -1041,21 +1026,22 @@ impl SigningNode {
             })
             .collect();
 
-        // Log s_shares for debugging
+        // Log s_shares for debugging (debug level to avoid noisy hex in normal logs)
         for (idx, s_bytes) in &s_shares {
-            info!(
+            debug!(
                 "🔶 [SIGNING-SHARE] s_share from index {}: 0x{}",
-                idx, hex::encode(s_bytes)
+                idx,
+                hex::encode(s_bytes)
             );
         }
-        info!(
+        debug!(
             "🔶 [SIGNING-SHARE] Built s_shares with indices: {:?}",
             s_shares.iter().map(|(idx, _)| idx).collect::<Vec<_>>()
         );
 
         // ─── 3) Reconstruct s via Lagrange at x=0 ───────────────────────────────────
         let mut agg_s = self.lagrange_interpolate(&s_shares)?;
-        info!(
+        debug!(
             "🟡 [SIGNING-AGG] Lagrange interpolated s: 0x{} 🟡",
             hex::encode(&agg_s)
         );
@@ -4290,16 +4276,16 @@ impl SigningNode {
                                 if let Some(val) = found {
                                     result = val;
                                     if attempt > 0 {
-                                        info!(
-                                            "✅ [SIGNING] Observer node found TX data for round {} after {} attempts (~{}ms)",
-                                            round, attempt + 1, attempt * 100
-                                        );
+                        debug!(
+                            "✅ [SIGNING] Found TX data for round {} after {} attempts (~{}ms)",
+                            round, attempt + 1, attempt * 100
+                        );
                                     }
                                     break;
                                 }
                                 if attempt == max_attempts - 1 && !has_dkg {
                                     warn!(
-                                        "⚠️ [SIGNING] Observer node could not find TX data for round {} after {}ms, proceeding without it",
+                                        "⚠️ [SIGNING] Could not find TX data for round {} after {}ms, proceeding without it",
                                         round, max_attempts * 100
                                     );
                                 }
@@ -4734,7 +4720,7 @@ impl SigningNode {
         }
 
         // 2. Get tx data for this slot from user_to_vault_btc_batch
-        // Observer nodes (no DKG share) may not have BTC batch data yet — poll up to ~5s
+        // Nodes without a DKG share may not have BTC batch data yet — poll up to ~5s
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
@@ -4750,8 +4736,8 @@ impl SigningNode {
                         if let ChainTransaction::Bitcoin(t) = chain_tx {
                             if let Some(extras) = extras_opt {
                                 if attempt > 0 {
-                                    info!(
-                                        "✅ [BTC_UTV] Observer node found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
+                                    debug!(
+                                        "✅ [BTC_UTV] Found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
                                         round, slot_id, attempt + 1, attempt * 100
                                     );
                                 }
@@ -4763,7 +4749,7 @@ impl SigningNode {
                 }
                 if attempt == max_attempts - 1 && !has_dkg {
                     warn!(
-                        "⚠️ [BTC_UTV] Observer node could not find BTC batch data for round {} slot {} after {}ms",
+                        "⚠️ [BTC_UTV] Could not find BTC batch data for round {} slot {} after {}ms",
                         round, slot_id, max_attempts * 100
                     );
                 }
@@ -5132,7 +5118,7 @@ impl SigningNode {
     async fn finalize_btc_utv_slot(&mut self, round: u64, slot_id: String) -> Result<()> {
         let slot_key: RoundSlotKey = (round, slot_id.clone());
 
-        // Observer nodes (no DKG share) may not have BTC batch data yet — poll up to ~5s
+        // Nodes without a DKG share may not have BTC batch data yet — poll up to ~5s
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
@@ -5149,8 +5135,8 @@ impl SigningNode {
                         if let ChainTransaction::Bitcoin(t) = chain_tx {
                             if let Some(extras) = extras_opt {
                                 if attempt > 0 {
-                                    info!(
-                                        "✅ [BTC_UTV] Observer node found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
+                                    debug!(
+                                        "✅ [BTC_UTV] Found BTC batch data for round {} slot {} after {} attempts (~{}ms)",
                                         round, slot_id, attempt + 1, attempt * 100
                                     );
                                 }
@@ -5162,7 +5148,7 @@ impl SigningNode {
                 }
                 if attempt == max_attempts - 1 && !has_dkg {
                     warn!(
-                        "⚠️ [BTC_UTV] Observer node could not find BTC batch data for round {} slot {} after {}ms",
+                        "⚠️ [BTC_UTV] Could not find BTC batch data for round {} slot {} after {}ms",
                         round, slot_id, max_attempts * 100
                     );
                 }
@@ -5351,7 +5337,7 @@ impl SigningNode {
             claim_reward_rounds.contains(&round)
         };
 
-        // Observer nodes (no DKG share) may not have BTC TX data yet — poll up to ~5s
+        // Nodes without a DKG share may not have BTC TX data yet — poll up to ~5s
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
@@ -5379,8 +5365,8 @@ impl SigningNode {
                 };
                 if let Some(val) = data {
                     if attempt > 0 {
-                        info!(
-                            "✅ [BTC] Observer node found BTC TX data for round {} after {} attempts (~{}ms)",
+                        debug!(
+                            "✅ [BTC] Found BTC TX data for round {} after {} attempts (~{}ms)",
                             round, attempt + 1, attempt * 100
                         );
                     }
@@ -5389,7 +5375,7 @@ impl SigningNode {
                 }
                 if attempt == max_attempts - 1 && !has_dkg {
                     warn!(
-                        "⚠️ [BTC] Observer node could not find BTC TX data for round {} after {}ms",
+                        "⚠️ [BTC] Could not find BTC TX data for round {} after {}ms",
                         round, max_attempts * 100
                     );
                 }

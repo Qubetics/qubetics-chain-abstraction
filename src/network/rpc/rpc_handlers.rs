@@ -1174,9 +1174,9 @@ impl MpcNetworkLayer {
                         // future peer additions don't keep bumping the threshold
                         if !dkg_node.is_initial_dkg_complete().await {
                             if let Err(e) = dkg_node.mark_initial_dkg_complete().await {
-                                warn!("⚠️ [PEER_LIST] Failed to set initial_dkg_complete for observer: {}", e);
+                                warn!("⚠️ [PEER_LIST] Failed to set initial_dkg_complete: {}", e);
                             } else {
-                                info!("✅ [PEER_LIST] Marked initial DKG as complete on observer (dkg_signer_count={})", count);
+                                info!("✅ [PEER_LIST] Marked initial DKG as complete (dkg_signer_count={})", count);
                             }
                         }
                         // Fix signing threshold: observer nodes must use DKG signer threshold
@@ -1185,7 +1185,7 @@ impl MpcNetworkLayer {
                         if let Some(arc) = &self.signing_node {
                             let mut signing_node = arc.lock().await;
                             signing_node.set_threshold(dkg_threshold);
-                            info!("🔄 [THRESHOLD] Observer node signing threshold set to {} (based on {} DKG signers)", dkg_threshold, count);
+                            info!("🔄 [THRESHOLD] Signing threshold set to {} (based on {} DKG signers)", dkg_threshold, count);
                         }
                     }
                     // Also update the NonceManager's dkg_signer_count so observer nodes
@@ -1200,15 +1200,15 @@ impl MpcNetworkLayer {
 
                     // Request nonce pool sync from this peer if we're an observer node
                     // (no DKG share = observer that missed NonceTupleBroadcast during startup).
-                    let is_observer = if let Some(arc) = &self.signing_node {
+                    let needs_nonce_sync = if let Some(arc) = &self.signing_node {
                         let sn = arc.lock().await;
                         !sn.has_dkg_share().await
                     } else {
                         false
                     };
-                    if is_observer {
+                    if needs_nonce_sync {
                         info!(
-                            "🔄 [NONCE_SYNC] Observer node requesting nonce pool sync from peer {}",
+                            "🔄 [NONCE_SYNC] Requesting nonce pool sync from peer {}",
                             peer
                         );
                         swarm

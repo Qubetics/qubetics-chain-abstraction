@@ -41,8 +41,11 @@ use crate::types::rpc_server::{
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT_SECONDS: u64 = 900;
 // Rate limiting configuration
-const RATE_LIMIT_MAX_REQUESTS: u32 = 50000; // Maximum requests per window (per IP)
-const RATE_LIMIT_WINDOW_SECONDS: u64 = 600; // Time window in seconds
+// Per-IP: 10 requests per 60 seconds
+const RATE_LIMIT_MAX_REQUESTS_PER_IP: u32 = 10;
+// Global: 100 requests (all IPs combined) per 60 seconds
+const RATE_LIMIT_MAX_GLOBAL_REQUESTS: u32 = 100;
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -63,31 +66,50 @@ pub async fn start_http_server(
     let database = Arc::new(database);
     let start_time = Arc::new(start_time);
 
-    // Initialize rate limiter
-    let rate_limiter = Arc::new(RateLimiter::new(
-        RATE_LIMIT_MAX_REQUESTS,
+    // Initialize rate limiters
+    let ip_rate_limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_MAX_REQUESTS_PER_IP,
+        Duration::from_secs(RATE_LIMIT_WINDOW_SECONDS),
+    ));
+    let global_rate_limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_MAX_GLOBAL_REQUESTS,
         Duration::from_secs(RATE_LIMIT_WINDOW_SECONDS),
     ));
 
-    // Start background cleanup task for rate limiter
-    let rate_limiter_cleanup = rate_limiter.clone();
+    // Start background cleanup task for per-IP rate limiter
+    let ip_rate_limiter_cleanup = ip_rate_limiter.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300)); // Cleanup every 5 minutes
         loop {
             interval.tick().await;
-            rate_limiter_cleanup.cleanup().await;
+            ip_rate_limiter_cleanup.cleanup().await;
+        }
+    });
+
+    // Start background cleanup task for global rate limiter
+    let global_rate_limiter_cleanup = global_rate_limiter.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300)); // Cleanup every 5 minutes
+        loop {
+            interval.tick().await;
+            global_rate_limiter_cleanup.cleanup().await;
         }
     });
 
     info!(
-        "🚦 [RATE_LIMIT] Rate limiter initialized: {} requests per {} seconds",
-        RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+        "🚦 [RATE_LIMIT] Rate limiter initialized: {} requests/IP and {} requests total per {} seconds",
+        RATE_LIMIT_MAX_REQUESTS_PER_IP,
+        RATE_LIMIT_MAX_GLOBAL_REQUESTS,
+        RATE_LIMIT_WINDOW_SECONDS
     );
 
     let json_body_user_registration = limited_json_body::<UserRegistrationRequest>();
     let register_user = warp::path("register_user")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(json_body_user_registration)
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
@@ -98,7 +120,10 @@ pub async fn start_http_server(
 
     let user_mpc_deposit = warp::path("user_mpc_deposit")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(limited_json_body::<UserMpcDepositRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -146,7 +171,10 @@ pub async fn start_http_server(
 
     let claim_reward = warp::path("claim_reward")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(limited_json_body::<ClaimRewardRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -156,7 +184,10 @@ pub async fn start_http_server(
 
     let add_liquidity = warp::path("solver_add_liquidity")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(limited_json_body::<AddLiquidityRequest>())
         .and(with_message_tx(message_tx.clone()))
         .and(with_auth())
@@ -164,7 +195,10 @@ pub async fn start_http_server(
 
     let withdraw_liquidity = warp::path("withdraw_liquidity")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(limited_json_body::<WithdrawLiquidityRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -216,7 +250,10 @@ pub async fn start_http_server(
 
     let log_partial_pubkeys = warp::path("log_partial_pubkeys")
         .and(warp::post())
-        .and(with_rate_limit(rate_limiter.clone()))
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
         .and(limited_json_body::<
             crate::types::rpc_server::LogPartialPubkeysRequest,
         >())
@@ -481,20 +518,31 @@ fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
 }
 
 fn with_rate_limit(
-    rate_limiter: Arc<RateLimiter>,
+    ip_rate_limiter: Arc<RateLimiter>,
+    global_rate_limiter: Arc<RateLimiter>,
 ) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
     warp::addr::remote()
         .and_then(move |addr: Option<std::net::SocketAddr>| {
-            let rate_limiter = rate_limiter.clone();
+            let ip_rate_limiter = ip_rate_limiter.clone();
+            let global_rate_limiter = global_rate_limiter.clone();
             async move {
                 let ip = addr
                     .map(|a| a.ip().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
-                if !rate_limiter.check(&ip).await {
+                // Per-IP limit
+                if !ip_rate_limiter.check(&ip).await {
                     return Err(warp::reject::custom(RpcError::RateLimitExceeded(format!(
                         "Rate limit exceeded for IP: {}. Maximum {} requests per {} seconds allowed.",
-                        ip, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+                        ip, RATE_LIMIT_MAX_REQUESTS_PER_IP, RATE_LIMIT_WINDOW_SECONDS
+                    ))));
+                }
+
+                // Global limit (all IPs combined)
+                if !global_rate_limiter.check("GLOBAL").await {
+                    return Err(warp::reject::custom(RpcError::RateLimitExceeded(format!(
+                        "Global rate limit exceeded. Maximum {} requests per {} seconds allowed.",
+                        RATE_LIMIT_MAX_GLOBAL_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
                     ))));
                 }
 
