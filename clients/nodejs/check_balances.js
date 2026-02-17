@@ -80,6 +80,7 @@ async function main() {
     `${'TOTAL'.padEnd(42)} | ${parseFloat(ethers.utils.formatEther(totalBalance)).toFixed(2).padStart(14)} | ${String(totalOutTxs).padStart(15)}`,
     'bright'
   );
+  log(`\nTotal Addresses: ${addresses.length}`, 'cyan');
   log('═══════════════════════════════════════════════════════════════════════════════', 'cyan');
 }
 

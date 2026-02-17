@@ -19,9 +19,10 @@ import path from 'path';
 
 // Configuration
 const RPC_NODES = [
-  'http://127.0.0.1:8082',
+  // 'http://127.0.0.1:8082',
   // 'http://127.0.0.1:8083',
   // 'http://127.0.0.1:8084',
+  'http://124.243.185.174:8082',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -536,10 +537,10 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
 
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,  // ETH address
-      // source_address: userInfo.data.derived_btc_address,  // ETH address
+      // source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
-      target_address: "0x95385e34d72d376f9e021fe02f91a35dbae261d4",
+      target_address: "0xffd7d36cd36c285623b522c6373025cd9aebfb4d",
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
       target_chain: 'qubetics',
@@ -864,8 +865,8 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "5000000000000000000";  // 12 TICS
-    // const amount = "700";  // btc
+    // const amount = "5000000000000000000";  // 12 TICS
+    const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });

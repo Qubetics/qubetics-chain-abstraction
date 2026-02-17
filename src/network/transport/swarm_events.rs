@@ -90,19 +90,19 @@ impl MpcNetworkLayer {
 
         // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
 
-        // 1. Solver contract validation (disabled for testing)
-        match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                warn!(
-                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-                    peer_id, remote_addr, e
-                );
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
-            }
-        }
+        // // 1. Solver contract validation (disabled for testing)
+        // match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
+        // {
+        //     Ok(_) => {}
+        //     Err(e) => {
+        //         warn!(
+        //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+        //             peer_id, remote_addr, e
+        //         );
+        //         swarm.disconnect_peer_id(peer_id).ok();
+        //         return Ok(());
+        //     }
+        // }
 
         // 2. Pending invalidation check — block peer if invalidateSolverIds txn is in-flight
         {

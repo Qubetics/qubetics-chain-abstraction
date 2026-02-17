@@ -251,6 +251,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
     },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same pattern as WithdrawTxIdBroadcast).
     /// - TICS: txid starts with "0x" (EVM); store tx_id on TICS requests and mark done; mark BTC requests in batch done only. Single: solver_address Some, requests empty. Batch: requests non-empty.
@@ -664,5 +666,8 @@ pub enum GossipsubMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
 }

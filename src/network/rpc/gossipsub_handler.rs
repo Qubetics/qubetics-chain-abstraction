@@ -3917,15 +3917,24 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
+                nonce_tuple_id,
             } => {
                 info!(
-                    "📦 [PEER_INVALIDATION] Received peer invalidation batch from node {} (round {}, timestamp {}, {} solver IDs)",
-                    node_id, round, timestamp, solver_ids.len()
+                    "📦 [PEER_INVALIDATION] Received peer invalidation batch from node {} (round {}, timestamp {}, {} solver IDs, nonce: {:?})",
+                    node_id, round, timestamp, solver_ids.len(), nonce_tuple_id
                 );
 
                 if solver_ids.is_empty() {
                     warn!("⚠️ [PEER_INVALIDATION] Empty solver_ids list in batch");
                     return Ok(());
+                }
+
+                // Remove coordinator-assigned nonce from local available pool
+                if let Some(ref nonce_id) = nonce_tuple_id {
+                    if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
+                    }
                 }
 
                 // Store round -> solver_ids so we can broadcast PeerInvalidationTxConfirmed after tx receipt
@@ -4053,7 +4062,7 @@ impl MpcNetworkLayer {
                                 None,
                                 None,
                                 None,
-                                None,
+                                nonce_tuple_id.clone(),
                             )
                             .await?;
 
