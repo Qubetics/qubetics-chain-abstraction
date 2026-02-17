@@ -224,7 +224,16 @@ impl MpcNetworkLayer {
                 .request_response
                 .send_request(&peer_id, RPCRequest::GetPeerList);
 
-            // Also request VRF round sync when connecting
+            // Request full state sync when joining (users without shares, intents, pending tx, rounds)
+            if self.needs_state_sync && !self.state_sync_state.in_progress {
+                self.needs_state_sync = false;
+                if let Err(e) = self.sync_state_sync_from_peer(swarm, peer_id).await {
+                    warn!("❌ [STATE_SYNC] Failed to start state sync: {:?}", e);
+                    self.needs_state_sync = true;
+                }
+            }
+
+            // Also request VRF round sync when connecting (after state sync completes if that ran)
             if !self.vrf_round_requested && !self.needs_database_sync {
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,

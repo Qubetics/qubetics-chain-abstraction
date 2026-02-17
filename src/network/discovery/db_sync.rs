@@ -1,6 +1,6 @@
 use anyhow::Result;
 use libp2p::PeerId;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
@@ -163,5 +163,197 @@ impl MpcNetworkLayer {
         }
 
         Ok(())
+    }
+
+    /// Start state sync from a peer (users without shares, intents, pending tx, rounds).
+    pub async fn sync_state_sync_from_peer(
+        &self,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
+        peer_id: PeerId,
+    ) -> Result<()> {
+        info!("📦 [STATE_SYNC] Starting state sync from peer {}", peer_id);
+
+        let request = RPCRequest::RequestStateSync {
+            requester_id: SerializablePeerId(self.local_peer_id),
+        };
+
+        swarm
+            .behaviour_mut()
+            .request_response
+            .send_request(&peer_id, request);
+
+        info!("📦 [STATE_SYNC] Sent state sync metadata request");
+        Ok(())
+    }
+
+    /// Handle state sync metadata and request first batch for first non-empty prefix.
+    pub async fn handle_state_sync_metadata(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
+        peer_id: PeerId,
+        prefix_counts: Vec<(String, usize)>,
+        withdraw_rounds: Vec<u64>,
+        claim_reward_rounds: Vec<u64>,
+        peer_invalidation_pending: Vec<(String, Vec<String>)>,
+    ) -> Result<()> {
+        let batch_size = 100;
+        let non_empty: Vec<(String, usize)> = prefix_counts
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .collect();
+
+        if non_empty.is_empty()
+            && withdraw_rounds.is_empty()
+            && claim_reward_rounds.is_empty()
+            && peer_invalidation_pending.is_empty()
+        {
+            info!("📦 [STATE_SYNC] Peer has no state to sync");
+            return Ok(());
+        }
+
+        self.state_sync_state.start_sync(
+            peer_id,
+            non_empty.clone(),
+            batch_size,
+            withdraw_rounds,
+            claim_reward_rounds,
+            peer_invalidation_pending,
+        );
+
+        info!(
+            "📦 [STATE_SYNC] Starting sync: {} prefix(s) from peer {}",
+            non_empty.len(),
+            peer_id
+        );
+
+        if let Some((prefix, _)) = self.state_sync_state.current_prefix() {
+            let request = RPCRequest::RequestStateSyncBatch {
+                prefix: prefix.clone(),
+                batch_index: 0,
+                batch_size,
+            };
+            swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, request);
+            info!("📦 [STATE_SYNC] Requested batch 0 for prefix {}", prefix);
+        } else {
+            self.apply_synced_pending_rounds().await;
+            self.state_sync_state.finish_sync();
+            info!("🎉 [STATE_SYNC] No prefixes to sync; applied pending rounds only");
+        }
+
+        Ok(())
+    }
+
+    /// Handle a state sync batch: import, then request next batch or next prefix or finish.
+    pub async fn handle_state_sync_batch(
+        &mut self,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
+        peer_id: PeerId,
+        prefix: String,
+        batch_index: usize,
+        entries: Vec<crate::types::rpc::DatabaseEntry>,
+        is_last_batch: bool,
+    ) -> Result<()> {
+        let count = entries.len();
+        let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
+            entries.into_iter().map(|e| (e.key, e.value)).collect();
+
+        if !db_entries.is_empty() {
+            self.db.import_batch_async(db_entries).await?;
+        }
+
+        self.state_sync_state.complete_batch(count);
+
+        info!(
+            "✅ [STATE_SYNC] Imported batch {} for prefix {} ({} entries)",
+            batch_index, prefix, count
+        );
+
+        if !is_last_batch {
+            let request = RPCRequest::RequestStateSyncBatch {
+                prefix: prefix.clone(),
+                batch_index: batch_index + 1,
+                batch_size: self.state_sync_state.batch_size,
+            };
+            swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, request);
+            return Ok(());
+        }
+
+        self.state_sync_state.next_prefix();
+
+        if let Some((next_prefix, _)) = self.state_sync_state.current_prefix() {
+            let request = RPCRequest::RequestStateSyncBatch {
+                prefix: next_prefix.clone(),
+                batch_index: 0,
+                batch_size: self.state_sync_state.batch_size,
+            };
+            swarm
+                .behaviour_mut()
+                .request_response
+                .send_request(&peer_id, request);
+            info!("📦 [STATE_SYNC] Requested batch 0 for next prefix {}", next_prefix);
+            return Ok(());
+        }
+
+        self.apply_synced_pending_rounds().await;
+        self.state_sync_state.finish_sync();
+        info!(
+            "🎉 [STATE_SYNC] State sync completed! Total entries synced: {}",
+            self.state_sync_state.entries_synced
+        );
+
+        if !self.vrf_round_requested {
+            let current_round = self
+                .get_local_vrf_round_for_domain(VrfDomain::Signing, None)
+                .await;
+            swarm.behaviour_mut().request_response.send_request(
+                &peer_id,
+                RPCRequest::VrfRoundSync(VrfRoundSyncRequest {
+                    from: SerializablePeerId(self.local_peer_id),
+                    current_round,
+                    context: String::new(),
+                }),
+            );
+            self.vrf_round_requested = true;
+        }
+
+        Ok(())
+    }
+
+    /// Apply synced withdraw_rounds, claim_reward_rounds, and peer_invalidation_pending.
+    async fn apply_synced_pending_rounds(&mut self) {
+        let (wr, cr) = (
+            self.state_sync_state.withdraw_rounds.clone(),
+            self.state_sync_state.claim_reward_rounds.clone(),
+        );
+        let peer_inv = self.state_sync_state.peer_invalidation_pending.clone();
+
+        if let Some(arc) = &self.signing_node {
+            let node = arc.lock().await;
+            node.apply_synced_pending_rounds(&wr, &cr).await;
+            info!(
+                "✅ [STATE_SYNC] Applied {} withdraw_rounds and {} claim_reward_rounds to PendingStore",
+                wr.len(),
+                cr.len()
+            );
+        } else if !wr.is_empty() || !cr.is_empty() {
+            warn!("⚠️ [STATE_SYNC] No signing_node; skipped applying pending rounds");
+        }
+
+        if !peer_inv.is_empty() {
+            let mut pending = self.peer_invalidation_pending.lock().await;
+            for (round, solver_ids) in peer_inv {
+                pending.insert(round, solver_ids);
+            }
+            info!(
+                "✅ [STATE_SYNC] Applied {} peer_invalidation_pending entries",
+                self.state_sync_state.peer_invalidation_pending.len()
+            );
+        }
     }
 }
