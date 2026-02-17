@@ -62,3 +62,14 @@ pub const NONCE_POOL_METRICS: &str = "nonce_pool_metrics";
 pub const NONCE_AVAILABLE_IDS: &str = "nonce_available_ids";
 /// Pending peer disconnections for batch invalidation
 pub const PENDING_DISCONNECTION: &str = "pending_disconnection:";
+
+// ============================================================
+// Contract-call / solver request state (safe to sync)
+// ============================================================
+
+/// Pending solver add_liquidity requests (batchTransfer contract call)
+pub const SOLVER_ADD_LIQUIDITY: &str = "solver_add_liquidity:";
+/// Pending withdraw liquidity requests (removeLiquidity contract call)
+pub const PENDING_WITHDRAW_LIQUIDITY: &str = "pending_withdraw_liquidity:";
+/// Pending claim reward requests (contract call)
+pub const PENDING_CLAIM_REWARD: &str = "pending_claim_reward:";

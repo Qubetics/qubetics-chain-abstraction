@@ -127,6 +127,18 @@ pub enum RPCRequest {
     /// Request available (unconsumed) nonce tuples from a DKG peer.
     /// Used by late-joining observer nodes that missed the NonceTupleBroadcast.
     RequestNoncePoolSync,
+
+    /// Request full state sync when a new node joins (users without shares, intents, pending tx, rounds).
+    RequestStateSync {
+        requester_id: SerializablePeerId,
+    },
+
+    /// Request a batch of state sync entries for a given prefix.
+    RequestStateSyncBatch {
+        prefix: String,
+        batch_index: usize,
+        batch_size: usize,
+    },
 }
 
 /// RPC response variants.
@@ -226,6 +238,27 @@ pub enum RPCResponse {
     /// Sent by DKG nodes to late-joining observer nodes.
     NoncePoolSync {
         tuples: Vec<crate::types::nonce::NonceTuple>,
+    },
+
+    /// State sync metadata: per-prefix counts and pending rounds (no private data).
+    StateSyncMetadata {
+        /// (prefix, count) for each safe prefix to sync
+        prefix_counts: Vec<(String, usize)>,
+        /// Withdraw rounds from peer's PendingStore (in-memory)
+        withdraw_rounds: Vec<u64>,
+        /// Claim-reward rounds from peer's PendingStore (in-memory)
+        claim_reward_rounds: Vec<u64>,
+        /// Peer invalidation pending: (round_string, solver_ids). Used when TransactionBroadcast(peer_invalidation:round) is received.
+        #[serde(default)]
+        peer_invalidation_pending: Vec<(String, Vec<String>)>,
+    },
+
+    /// A batch of state sync entries for one prefix.
+    StateSyncBatch {
+        prefix: String,
+        batch_index: usize,
+        entries: Vec<DatabaseEntry>,
+        is_last_batch: bool,
     },
 }
 

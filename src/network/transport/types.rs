@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use crate::commands::CommandProcessor;
 use crate::consensus::ConsensusNode;
 use crate::database::Database;
-use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState};
+use crate::network::discovery::types::{DatabaseSyncState, PeerDiscoveryState, StateSyncState};
 use crate::network::rpc::retry_manager::RetryManager;
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
@@ -215,6 +215,8 @@ pub struct MpcNetworkLayer {
     pub(crate) db: Database,
     pub(crate) db_sync_state: DatabaseSyncState,
     pub(crate) needs_database_sync: bool,
+    pub(crate) state_sync_state: StateSyncState,
+    pub(crate) needs_state_sync: bool,
     pub(crate) bootstrap_addresses: Vec<Multiaddr>,
     pub(crate) bootstrap_peer_ids: Vec<PeerId>,
     pub(crate) discovery_seeds: Vec<Multiaddr>,
