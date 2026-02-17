@@ -932,6 +932,7 @@ impl NonceManager {
     ///
     /// Generates batch_size nonces in a single commit-reveal cycle
     pub async fn start_generation(&self, round: u64) -> Result<String> {
+
         // Observer nodes must NOT initiate commit-reveal — they receive nonces
         // via NonceTupleBroadcast instead.
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
