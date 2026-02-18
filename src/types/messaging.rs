@@ -71,6 +71,9 @@ pub enum ChannelMessage {
         user_eth_address: String,
         transaction_type: TransactionType,
         amount: u128,
+        /// Pre-computed target amount (converted from source amount via price feed).
+        /// Computed at RPC level so the channel handler doesn't need to re-derive it.
+        target_amount: u128,
         /// Signature over the serialized intent (required for gossip verification)
         signature: Option<String>,
     },

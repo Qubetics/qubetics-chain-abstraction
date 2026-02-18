@@ -50,22 +50,15 @@ pub(crate) async fn handle_deposit_intent(
     transaction_type: TransactionType,
     _dkg_storage: Arc<DkgStorage>,
     signature: Option<String>,
+    target_amount: u128,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request");
     if let Some(addr) = &user_eth_address {
         info!("📝 HTTP: User eth address provided for signing: {}", addr);
     }
 
-    // Validate intent: source/target chain must match token and address type (TICS vs BTC)
-    if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent)
-    {
-        return Err(warp::reject::custom(RpcError::InvalidRequest(format!(
-            "Invalid intent: {}",
-            e
-        ))));
-    }
-
     // Parse string amount into u128 for internal processing
+    // (validation already done at RPC level in handle_user_mpc_deposit)
     let parsed_amount = intent.amount.parse::<u128>().map_err(|_| {
         warp::reject::custom(RpcError::InvalidRequest(format!(
             "Invalid deposit amount: {}",
@@ -85,6 +78,7 @@ pub(crate) async fn handle_deposit_intent(
             .unwrap_or_else(|| "unknown".to_string()),
         transaction_type: transaction_type.clone(),
         amount: required_amount_u128,
+        target_amount,
         signature,
     };
 
@@ -798,11 +792,11 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     );
 
-    let user_registration = match user_intent_manager
+    let (user_registration, computed_target_amount) = match user_intent_manager
         .get_user_by_intent_hash(&intent_hash_hex)
         .await
     {
-        Some(existing_user) => existing_user,
+        Some(existing_user) => (existing_user, 0u128), // existing intent won't be re-processed
         None => {
             {
                 info!("No existing user found for intent hash, using signer registration.");
@@ -826,6 +820,17 @@ pub(crate) async fn handle_user_mpc_deposit(
                         }));
                     }
                 };
+
+                // Reject zero-amount intents immediately
+                if source_amount == 0 {
+                    warn!("⚠️ [HTTP] Rejecting intent {} - amount is zero", intent_hash_hex);
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some("Amount must be greater than zero".to_string()),
+                        signer_eth_address: None,
+                    }));
+                }
 
                 // Determine blockchain for balance check
                 let source_blockchain = if req.msg.source_chain.eq_ignore_ascii_case("btc")
@@ -882,39 +887,59 @@ pub(crate) async fn handle_user_mpc_deposit(
                     }
                 }
 
-                // CRITICAL: For BTC->TICS, check network (treasury vault) has sufficient TICS before storing.
-                // This aligns RPC-node behavior with peers: peers only store when treasury balance >= target_amount.
-                let is_btc_to_tics = (req.msg.source_chain.eq_ignore_ascii_case("btc")
-                    || req.msg.source_chain.eq_ignore_ascii_case("bitcoin"))
-                    && (req.msg.target_chain.eq_ignore_ascii_case("tics")
-                        || req.msg.target_chain.eq_ignore_ascii_case("qubetics"));
-                if is_btc_to_tics {
-                    let parsed_amount = source_amount;
-                    let target_amount = match crate::rpc_server::utils::fetch_crypto_prices().await {
-                        Ok(prices) => {
-                            match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
-                                parsed_amount,
-                                &req.msg.source_chain,
-                                &req.msg.target_chain,
-                                &prices,
-                            ) {
-                                Ok(amt) => amt,
-                                Err(e) => {
-                                    warn!(
-                                        "❌ [HTTP] Failed to convert target amount for BTC->TICS intent {}: {:?}",
-                                        intent_hash_hex, e
-                                    );
-                                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                        status: "error".to_string(),
-                                        intent_hash: intent_hash_hex.clone(),
-                                        error_message: Some(format!("Failed to compute target amount: {:?}", e)),
-                                        signer_eth_address: None,
-                                    }));
-                                }
-                            }
-                        }
+                // Validate target address is reachable (balance fetch succeeds)
+                let target_blockchain = if req.msg.target_chain.eq_ignore_ascii_case("btc")
+                    || req.msg.target_chain.eq_ignore_ascii_case("bitcoin")
+                {
+                    "btc"
+                } else {
+                    "eth"
+                };
+                if let Err(e) = crate::rpc_server::utils::fetch_network_balance(
+                    &req.msg.target_address,
+                    target_blockchain,
+                )
+                .await
+                {
+                    warn!(
+                        "⚠️ [HTTP] Target address validation failed for intent {}: {}",
+                        intent_hash_hex, e
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(format!(
+                            "Invalid or unreachable target address {}: {}",
+                            req.msg.target_address, e
+                        )),
+                        signer_eth_address: None,
+                    }));
+                }
+
+                // Compute target amount for all directions (same-chain and cross-chain)
+                let src_is_tics = req.msg.source_chain.eq_ignore_ascii_case("tics")
+                    || req.msg.source_chain.eq_ignore_ascii_case("qubetics")
+                    || req.msg.source_chain.eq_ignore_ascii_case("ethereum")
+                    || req.msg.source_chain.eq_ignore_ascii_case("evm");
+                let dst_is_tics = req.msg.target_chain.eq_ignore_ascii_case("tics")
+                    || req.msg.target_chain.eq_ignore_ascii_case("qubetics")
+                    || req.msg.target_chain.eq_ignore_ascii_case("ethereum")
+                    || req.msg.target_chain.eq_ignore_ascii_case("evm");
+                let src_is_btc = req.msg.source_chain.eq_ignore_ascii_case("btc")
+                    || req.msg.source_chain.eq_ignore_ascii_case("bitcoin");
+                let dst_is_btc = req.msg.target_chain.eq_ignore_ascii_case("btc")
+                    || req.msg.target_chain.eq_ignore_ascii_case("bitcoin");
+                let is_same_chain = (src_is_tics && dst_is_tics) || (src_is_btc && dst_is_btc);
+                let is_btc_to_tics = src_is_btc && dst_is_tics;
+                let is_tics_to_btc = src_is_tics && dst_is_btc;
+
+                let target_amount = if is_same_chain {
+                    source_amount
+                } else {
+                    let prices = match crate::rpc_server::utils::fetch_crypto_prices().await {
+                        Ok(p) => p,
                         Err(e) => {
-                            warn!("❌ [HTTP] Failed to fetch prices for BTC->TICS intent {}: {}", intent_hash_hex, e);
+                            warn!("❌ [HTTP] Failed to fetch prices for intent {}: {}", intent_hash_hex, e);
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
@@ -923,32 +948,94 @@ pub(crate) async fn handle_user_mpc_deposit(
                             }));
                         }
                     };
-                    let treasury_address = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                        .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
-                    match crate::rpc_server::utils::fetch_network_balance(&treasury_address, "eth").await {
+                    match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                        source_amount,
+                        &req.msg.source_chain,
+                        &req.msg.target_chain,
+                        &prices,
+                    ) {
+                        Ok(amt) => amt,
+                        Err(e) => {
+                            warn!(
+                                "❌ [HTTP] Failed to convert target amount for intent {}: {:?}",
+                                intent_hash_hex, e
+                            );
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                intent_hash: intent_hash_hex.clone(),
+                                error_message: Some(format!("Failed to compute target amount: {:?}", e)),
+                                signer_eth_address: None,
+                            }));
+                        }
+                    }
+                };
+
+                // TICS->BTC minimum satoshi check
+                const MIN_BTC_INTENT_SATS: u128 = 550;
+                if is_tics_to_btc && target_amount < MIN_BTC_INTENT_SATS {
+                    warn!(
+                        "⚠️ [HTTP] TICS->BTC intent {} below minimum: {} satoshis (min {})",
+                        intent_hash_hex, target_amount, MIN_BTC_INTENT_SATS
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(format!(
+                            "TICS to BTC amount too small: converts to {} satoshis (minimum {} satoshis required)",
+                            target_amount, MIN_BTC_INTENT_SATS
+                        )),
+                        signer_eth_address: None,
+                    }));
+                }
+
+                // Network balance check for ALL directions:
+                // - BTC->TICS: Treasury vault balance >= target_amount
+                // - All others: DKG address balance on target chain >= target_amount
+                let network_address = if is_btc_to_tics {
+                    std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                        .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string())
+                } else {
+                    // Use DKG group key to derive the network address on the target chain
+                    match dkg_storage.get_final_public().await {
+                        Ok(Some(final_public)) => {
+                            if dst_is_btc {
+                                crate::utils::get_btc_address_from_group_key(final_public)
+                            } else {
+                                crate::utils::get_eth_address_from_group_key(final_public)
+                            }
+                        }
+                        _ => String::new(),
+                    }
+                };
+
+                if !network_address.is_empty() {
+                    let network_blockchain = if dst_is_btc { "btc" } else { "eth" };
+                    match crate::rpc_server::utils::fetch_network_balance(&network_address, network_blockchain).await {
                         Ok(network_balance) => {
                             if network_balance < target_amount {
+                                let liquidity_source = if is_btc_to_tics { "treasury vault" } else { "network" };
                                 warn!(
-                                    "⚠️ [HTTP] Insufficient network (treasury vault) balance for BTC->TICS intent {}: have {}, need {}",
-                                    intent_hash_hex, network_balance, target_amount
+                                    "⚠️ [HTTP] Insufficient {} balance for intent {}: have {}, need {}",
+                                    liquidity_source, intent_hash_hex, network_balance, target_amount
                                 );
                                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                     status: "error".to_string(),
                                     intent_hash: intent_hash_hex.clone(),
-                                    error_message: Some(
-                                        "Insufficient network liquidity: treasury vault does not have enough TICS to fulfill this intent. Try again later.".to_string(),
-                                    ),
+                                    error_message: Some(format!(
+                                        "Insufficient network liquidity: {} has {} but need {} (in smallest units). Try again later.",
+                                        liquidity_source, network_balance, target_amount
+                                    )),
                                     signer_eth_address: None,
                                 }));
                             }
                             info!(
-                                "✅ [HTTP] Treasury vault has sufficient TICS for BTC->TICS intent: {} >= {}",
+                                "✅ [HTTP] Network has sufficient balance for intent: {} >= {}",
                                 network_balance, target_amount
                             );
                         }
                         Err(e) => {
                             warn!(
-                                "⚠️ [HTTP] Failed to fetch treasury vault balance for BTC->TICS intent {}: {}",
+                                "⚠️ [HTTP] Failed to fetch network balance for intent {}: {}",
                                 intent_hash_hex, e
                             );
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
@@ -959,14 +1046,27 @@ pub(crate) async fn handle_user_mpc_deposit(
                             }));
                         }
                     }
+                } else {
+                    warn!(
+                        "⚠️ [HTTP] Could not determine network address for intent {} (DKG key not available)",
+                        intent_hash_hex
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(
+                            "Network not ready: DKG key not available to verify liquidity. Try again later.".to_string(),
+                        ),
+                        signer_eth_address: None,
+                    }));
                 }
 
                 // NOTE: Do NOT store the intent here at RPC level.
-                // Storage happens in the gossipsub handler after all validations pass.
+                // Storage happens in the channel handler (local node) and gossipsub handler (peers).
                 // Storing here would cause the channel handler's duplicate check to
                 // block the gossipsub broadcast, so peers would never receive the intent.
 
-                user_reg
+                (user_reg, target_amount)
             }
         }
     };
@@ -990,6 +1090,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         transaction_type,
         dkg_storage.clone(),
         req.signature.clone(),
+        computed_target_amount,
     )
     .await
     {
