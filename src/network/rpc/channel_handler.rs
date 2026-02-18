@@ -2161,6 +2161,17 @@ impl MpcNetworkLayer {
                     intent.timestamp
                 );
 
+                // Validate intent: source/target chain must match token and address type (TICS vs BTC)
+                if let Err(e) =
+                    crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent)
+                {
+                    warn!(
+                        "⚠️ [CHANNEL] Rejecting DepositIntent - chain/token/address validation failed: {}",
+                        e
+                    );
+                    return Ok(());
+                }
+
                 // Only broadcast UserToVault deposits via gossipsub
                 // Note: Gossiped DepositIntent is always processed as UserToVault
                 if !matches!(transaction_type, crate::types::TransactionType::UserToVault) {
@@ -2210,7 +2221,7 @@ impl MpcNetworkLayer {
                         || intent.target_chain.eq_ignore_ascii_case("bitcoin");
                     (src_tics && dst_tics) || (src_btc && dst_btc)
                 };
-                let (target_amount, has_sufficient_funds) = if is_same_chain {
+                let (_target_amount, has_sufficient_funds) = if is_same_chain {
                     let target_amount = intent.amount.parse::<u128>().unwrap();
 
                     // For same-chain flows, use the DKG address on the corresponding chain.

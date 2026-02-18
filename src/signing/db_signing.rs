@@ -260,7 +260,7 @@ impl DatabaseSigningNode {
         self.available_nodes.as_ref()
     }
 
-    /// Set VRF service
+    /// Set round/selection service
     pub fn set_vrf_service(&mut self, vrf_service: VrfService) {
         self.vrf_service = Some(vrf_service);
     }
@@ -301,11 +301,11 @@ impl DatabaseSigningNode {
         self.vrf_service = Some(vrf_service);
     }
 
-    /// Sync VRF round with network (simple approach)
+    /// Sync round with network (simple approach)
     pub async fn sync_vrf_round_with_network(&mut self, network_round: u64) {
         if let Some(vrf_service) = &mut self.vrf_service {
             vrf_service.set_current_round(network_round).await;
-            info!("🔄 [DB_SIGNING] Synced VRF round to: {}", network_round);
+            info!("🔄 [DB_SIGNING] Synced round to: {}", network_round);
         }
     }
 

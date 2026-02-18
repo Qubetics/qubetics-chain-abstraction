@@ -1,5 +1,5 @@
 /// Gossipsub message handler
-/// Handles all gossipsub message types: DKG, Signing, Command, Consensus, VRF, etc.
+/// Handles all gossipsub message types: DKG, Signing, Command, Consensus, selection/round sync, etc.
 ///
 /// NOTE: This module contains the gossipsub message handling logic from the original network/mod.rs
 /// The implementation should be ported from lines ~2038-3559 of the original file
@@ -208,8 +208,8 @@ impl MpcNetworkLayer {
                         .await?;
                 }
             }
-            GossipsubMessage::VrfSelection(vrf_msg) => {
-                // Handle VRF selection messages
+            GossipsubMessage::VrfSelection(_vrf_msg) => {
+                // Handle selection messages
                 if let Some(_vrf_manager) = self
                     .node_manager
                     .as_any()
@@ -218,7 +218,7 @@ impl MpcNetworkLayer {
                     // We need to handle this differently since we can't mutate through a trait object
                     // For now, we'll log the message
                 } else {
-                    debug!("Received VRF selection message but node manager is not VRF-based (ignored)");
+                    debug!("Received selection message but node manager is not selection-based (ignored)");
                 }
             }
             GossipsubMessage::VrfSelectedNodes(broadcast_msg) => {
@@ -232,13 +232,13 @@ impl MpcNetworkLayer {
                     }
                 };
                 debug!(
-                    "📥 [VRF] Received VRF selected nodes broadcast: round={}, from={}, received_by={}",
+                    "📥 [SELECTION] Received selected nodes broadcast: round={}, from={}, received_by={}",
                     round, selector_node_id, self.local_peer_id
                 );
 
                 // No ACK or retry for VrfSelectedNodes - used only for round sync / consensus trigger (final node is HRW)
 
-                // Store the received VRF selection in the signing node's VRF selector
+                // Store the received selection in the signing node's selector
                 if let Some(arc) = &self.signing_node {
                     let mut signing_node = arc.lock().await;
                     let selector_node_id = broadcast_msg.selector_node_id.clone();
@@ -249,7 +249,7 @@ impl MpcNetworkLayer {
                         sender_peer_id,
                     );
                     info!(
-                        "💾 [VRF] Stored VRF selected nodes from node {} for round {}",
+                        "💾 [SELECTION] Stored selected nodes from node {} for round {}",
                         selector_node_id.0, round
                     );
                 }
@@ -271,7 +271,7 @@ impl MpcNetworkLayer {
                     .await
                 {
                     info!(
-                        "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub request",
+                        "💾 [SYNC] Stored round {:?} for peer {} from gossipsub request",
                         sync_request.current_round, peer
                     );
                 }
@@ -296,13 +296,13 @@ impl MpcNetworkLayer {
                             .await
                         {
                             warn!(
-                                "⚠️ [VRF_SYNC] Failed to send round sync response to {}: {}",
+                                "⚠️ [SYNC] Failed to send round sync response to {}: {}",
                                 peer, e
                             );
                         }
                     }
                     Err(e) => warn!(
-                        "⚠️ [VRF_SYNC] Failed to serialize VRF round sync response: {}",
+                        "⚠️ [SYNC] Failed to serialize round sync response: {}",
                         e
                     ),
                 }
@@ -327,7 +327,7 @@ impl MpcNetworkLayer {
                     .await
                 {
                     info!(
-                        "💾 [VRF_SYNC] Stored round {:?} for peer {} from gossipsub response",
+                        "💾 [SYNC] Stored round {:?} for peer {} from gossipsub response",
                         sync_response.current_round, peer
                     );
                 }
@@ -649,6 +649,17 @@ impl MpcNetworkLayer {
                     }
                 };
                 info!("🔐 [GOSSIPSUB] Calculated intent hash: {}", intent_hash);
+
+                // Validate intent: source/target chain must match token and address type (TICS vs BTC)
+                if let Err(e) =
+                    crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent)
+                {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] Rejecting DepositIntent - chain/token/address validation failed: {} (intent hash: {})",
+                        e, intent_hash
+                    );
+                    return Ok(());
+                }
 
                 // CRITICAL: Reject duplicate intent hash immediately - do no further processing (no signature verify, no user lookup).
                 let user_intent_manager = match &self.user_intent_manager {
@@ -1834,7 +1845,7 @@ impl MpcNetworkLayer {
                             };
 
                             // Start MPC signing (both DKG and observer nodes call sign_contract_message;
-                            // observer nodes build + store the TX and advance VRF but skip actual ECDSA signing)
+                            // observer nodes build + store the TX and advance round but skip actual ECDSA signing)
                             if let Some(arc) = &self.signing_node {
                                 let mut signing_node = arc.lock().await;
                                 let available_nodes: Vec<PeerId> =
@@ -2009,7 +2020,7 @@ impl MpcNetworkLayer {
                         round
                     );
 
-                    // One VRF round; batch stored and signed per-slot; final node aggregates each slot and broadcasts one-by-one.
+                    // One round; batch stored and signed per-slot; final node aggregates each slot and broadcasts one-by-one.
                     // UserToVault on TICS: from user derived_eth -> to treasury vault (env); liquidity_operator_eth is fallback. No group key or BTC addr needed.
                     let liquidity_operator_eth_addr = user_intent_manager
                         .get_database()
@@ -3314,7 +3325,7 @@ impl MpcNetworkLayer {
                     };
 
                     // Both DKG and observer nodes call sign_contract_message;
-                    // observer nodes build + store the TX and advance VRF but skip ECDSA signing
+                    // observer nodes build + store the TX and advance round but skip ECDSA signing
                     let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
                     signing_node.set_vault_group_key(group_public_key);
 
@@ -3609,7 +3620,7 @@ impl MpcNetworkLayer {
                     );
 
                     // Both DKG and observer nodes call sign_contract_message;
-                    // observer nodes build + store the TX and advance VRF but skip ECDSA signing
+                    // observer nodes build + store the TX and advance round but skip ECDSA signing
                     let vault_tweaked_share = dkg_node.get_vault_tweaked_secret_share().await;
                     signing_node.set_vault_group_key(group_public_key);
 

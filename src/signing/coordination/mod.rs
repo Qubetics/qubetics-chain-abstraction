@@ -109,6 +109,14 @@ impl Coordination {
         self.consensus_node.as_mut()
     }
 
+    /// Replicate round into consensus so consensus stays aligned.
+    /// Call after sync_rounds_before_signing or get_next_round.
+    pub fn replicate_vrf_round_to_consensus(&mut self, round: u64) {
+        if let Some(cn) = self.consensus_node.as_mut() {
+            cn.set_current_round_if_higher(round);
+        }
+    }
+
     pub async fn get_available_nodes(&self) -> Vec<PeerId> {
         self.available_nodes.clone().unwrap_or_default()
     }
@@ -132,7 +140,7 @@ impl Coordination {
         network_round: Option<u64>,
     ) {
         if self.vrf_service.is_some() {
-            info!("🔄 [VRF] VRF service already initialized, synchronizing round only");
+            info!("🔄 [ROUND] Service already initialized, synchronizing round only");
             if let Some(vrf_service) = &mut self.vrf_service {
                 if let Some(round) = network_round {
                     vrf_service.set_current_round(round).await;
@@ -155,7 +163,7 @@ impl Coordination {
 
         if let Some(round) = network_round {
             info!(
-                "🔄 [VRF] Synchronizing VRF round from network state: {}",
+                "🔄 [ROUND] Synchronizing round from network state: {}",
                 round
             );
             vrf_service.set_current_round(round).await;

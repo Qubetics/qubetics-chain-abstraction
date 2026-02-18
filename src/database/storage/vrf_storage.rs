@@ -8,7 +8,7 @@ use crate::database::{key_utils, Database};
 #[derive(Clone)]
 pub struct VrfStorage {
     db: Database,
-    /// Optional prefix for storage keys to isolate different VRF contexts
+    /// Optional prefix for storage keys to isolate different round contexts
     /// (e.g., "vault_seq:", "main_seq:", "" for signing/default)
     prefix: String,
 }
@@ -65,7 +65,7 @@ impl VrfStorage {
         )
     }
 
-    /// Fetch the current VRF round from storage, initializing to 0 if absent.
+    /// Fetch the current round from storage, initializing to 0 if absent.
     pub fn get_current_round(&self) -> Result<u64> {
         self.get_current_round_for_context("")
     }
@@ -75,7 +75,7 @@ impl VrfStorage {
         match self.db.get_string::<u64>(&key)? {
             Some(round) => {
                 debug!(
-                    "🔍 [VRF_STORAGE:{}{}] Retrieved current round: {}",
+                    "🔍 [ROUND_STORAGE:{}{}] Retrieved current round: {}",
                     self.prefix, namespace, round
                 );
                 Ok(round)
@@ -84,7 +84,7 @@ impl VrfStorage {
                 // Initialize to 0 if missing to keep behavior deterministic.
                 self.set_current_round_for_context(namespace, 0)?;
                 warn!(
-                    "ℹ️ [VRF_STORAGE:{}{}] current round not found; defaulting to 0",
+                    "ℹ️ [ROUND_STORAGE:{}{}] current round not found; defaulting to 0",
                     self.prefix, namespace
                 );
                 Ok(0)
@@ -92,7 +92,7 @@ impl VrfStorage {
         }
     }
 
-    /// Persist the provided round as the current VRF round.
+    /// Persist the provided round as the current round.
     pub fn set_current_round(&self, round: u64) -> Result<()> {
         self.set_current_round_for_context("", round)
     }
@@ -107,7 +107,7 @@ impl VrfStorage {
         Ok(())
     }
 
-    /// Store a peer's VRF round in the database.
+    /// Store a peer's round in the database.
     pub fn set_peer_round(&self, peer_id: &str, round: u64) -> Result<()> {
         self.set_peer_round_for_context("", peer_id, round)
     }
@@ -127,7 +127,7 @@ impl VrfStorage {
         Ok(())
     }
 
-    /// Get a peer's VRF round from the database.
+    /// Get a peer's round from the database.
     pub fn get_peer_round(&self, peer_id: &str) -> Result<Option<u64>> {
         self.get_peer_round_for_context("", peer_id)
     }
@@ -174,7 +174,7 @@ impl VrfStorage {
         Ok(peer_rounds)
     }
 
-    /// Remove a peer's VRF round from the database (for cleanup).
+    /// Remove a peer's round from the database (for cleanup).
     pub fn remove_peer_round(&self, peer_id: &str) -> Result<()> {
         let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
         self.db.delete(&key)?;

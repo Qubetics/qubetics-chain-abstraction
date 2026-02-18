@@ -258,9 +258,9 @@ impl MpcNetworkLayer {
         // Periodic DKG status check (logging removed to reduce overhead)
     }
 
-    /// Handle global clock tick - performs VRF node selection every clock tick
+    /// Handle global clock tick - performs HRW node selection every clock tick
     /// This method has direct access to all network resources:
-    /// - self.db_signing_node: Arc<Mutex<DatabaseSigningNode>> (VRF service, signing)
+    /// - self.db_signing_node: Arc<Mutex<DatabaseSigningNode>> (round/selection service, signing)
     /// - self.signing_node: Option<SigningNode>
     /// - self.dkg_node: Option<DKGNode>
     /// - self.user_intent_manager: Option<UserIntentManager>
@@ -268,14 +268,14 @@ impl MpcNetworkLayer {
     /// - self.node_manager: Box<dyn NodeMembership> (for getting available nodes)
     /// - And all other MpcNetworkLayer fields
     async fn handle_global_clock_tick(&mut self) -> Result<()> {
-        info!("⏰ [CLOCK] Global clock tick triggered - performing VRF node selection");
+        info!("⏰ [CLOCK] Global clock tick triggered - performing node selection");
 
         // Get available nodes from node manager and convert to Vec
         let available_nodes: Vec<libp2p::PeerId> =
             self.node_manager.get_active_nodes().into_iter().collect();
 
         if available_nodes.is_empty() {
-            warn!("⏰ [CLOCK] No available nodes for VRF selection, skipping");
+            warn!("⏰ [CLOCK] No available nodes for selection, skipping");
             return Ok(());
         }
 
@@ -330,7 +330,7 @@ impl MpcNetworkLayer {
             available_nodes.len(),
         );
 
-        // Get VRF service - prefer signing_node, fall back to db_signing_node
+        // Get round/selection service - prefer signing_node, fall back to db_signing_node
         // This matches the pattern used in rpc_handlers.rs
         // Try signing_node first
         if let Some(arc) = &self.signing_node {
@@ -339,26 +339,32 @@ impl MpcNetworkLayer {
             // This is critical for async tasks (like parallel contract update) that read from signing_node state later
             signing_node.set_available_nodes(available_nodes.clone());
 
-            if let Some(vrf_service) = signing_node.vrf_service() {
-                // Sync rounds before getting next round (like bitcoin signing does)
-                if let Err(e) = vrf_service.sync_rounds_before_signing().await {
-                    warn!(
-                        "⏰ [CLOCK] Failed to sync rounds before VRF selection: {}",
-                        e
-                    );
-                }
-
-                // Get next round (increments the round) - this ensures each clock tick uses a new round
+            // Get round and sync result first so we can release vrf_service borrow before replicate_vrf_round_to_consensus (mut borrow)
+            let (sync_result, round) = if let Some(vrf_service) = signing_node.vrf_service() {
+                let sync_result = vrf_service.sync_rounds_before_signing().await;
                 let round = vrf_service.get_next_round().await;
+                (sync_result, round)
+            } else {
+                (Err(anyhow::anyhow!("no round service")), 0u64)
+            };
 
+            match &sync_result {
+                Ok(synced_round) => signing_node.replicate_vrf_round_to_consensus(*synced_round),
+                Err(e) => warn!(
+                    "⏰ [CLOCK] Failed to sync rounds before selection: {}",
+                    e
+                ),
+            }
+            signing_node.replicate_vrf_round_to_consensus(round);
+
+            if let Some(vrf_service) = signing_node.vrf_service() {
                 info!(
-                    "⏰ [CLOCK] Performing VRF selection for round {} with {} available nodes (using signing_node)",
+                    "⏰ [CLOCK] Performing selection for round {} with {} available nodes (using signing_node)",
                     round,
                     available_nodes.len()
                 );
 
-                // Perform VRF node selection (selects 1 node) - ONLY ONCE
-                // Operation type "global_clock" = external trigger for epoch-based flows
+                // Perform HRW node selection (selects 1 node) - ONLY ONCE
                 match vrf_service
                     .perform_node_selection(
                         &available_nodes,
@@ -370,7 +376,7 @@ impl MpcNetworkLayer {
                 {
                     Ok(selection_result) => {
                         info!(
-                            "🎯 [CLOCK] VRF selection completed successfully for round {} (selected_nodes={}, total_nodes={})",
+                            "🎯 [CLOCK] Selection completed successfully for round {} (selected_nodes={}, total_nodes={})",
                             round,
                             selection_result.selected_nodes.len(),
                             selection_result.total_nodes,
@@ -378,7 +384,7 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                     Err(e) => {
-                        error!("❌ [CLOCK] VRF selection failed for round {}: {}", round, e);
+                        error!("❌ [CLOCK] Selection failed for round {}: {}", round, e);
                         return Err(e);
                     }
                 }

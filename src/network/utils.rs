@@ -117,7 +117,7 @@ impl MpcNetworkLayer {
                                 .unwrap_or_else(|_| {
                                     secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap()
                                 });
-                            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                            let _pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
 
                             debug!(
                                 "✅ [NETWORK] Found user's tweaked share for: {}",

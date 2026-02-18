@@ -10,6 +10,8 @@ use super::types::{
     NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
 };
 
+/// Node selector: production selection uses HRW (set_hrw_selection_result).
+/// VRF-based code (select_mpc_nodes, ensure_local_submission) remains for legacy/tests only.
 #[derive(Debug, Clone)]
 pub struct VrfNodeSelector {
     vrf_secret_key: VrfSk,
@@ -19,7 +21,7 @@ pub struct VrfNodeSelector {
     submissions: HashMap<u64, HashMap<PeerId, VrfOutput>>,
     results: HashMap<u64, NodeSelectionResult>,
     received_selections: HashMap<u64, HashMap<SerializablePeerId, VrfSelectedNodesBroadcast>>,
-    /// Operation type that triggered VRF for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    /// Operation type for each round (e.g., "global_clock", "bitcoin", "ethereum")
     operation_types_by_round: HashMap<u64, String>,
 }
 
@@ -45,6 +47,24 @@ impl VrfNodeSelector {
     /// Store the operation type for this round
     pub fn set_operation_type(&mut self, round: u64, operation_type: String) {
         self.operation_types_by_round.insert(round, operation_type);
+    }
+
+    /// Store HRW selection result for a round (no VRF). Used when final node is chosen by HRW.
+    pub fn set_hrw_selection_result(
+        &mut self,
+        round: u64,
+        selected_nodes: Vec<SerializablePeerId>,
+        total_nodes: usize,
+    ) {
+        let result = NodeSelectionResult {
+            selected_nodes: selected_nodes.clone(),
+            vrf_outputs: HashMap::new(),
+            threshold: 1,
+            total_nodes,
+            selection_round: round,
+        };
+        self.results.insert(round, result);
+        self.selection_round = round;
     }
 
     /// Get the operation type for this round
@@ -145,7 +165,7 @@ impl VrfNodeSelector {
         {
             Ok(p) => p,
             Err(_) => {
-                debug!("Failed to deserialize VRF proof");
+                debug!("Failed to deserialize selection proof");
                 return false;
             }
         };
@@ -168,15 +188,15 @@ impl VrfNodeSelector {
         allow_synthetic: bool,
     ) -> Result<NodeSelectionResult> {
         if available_nodes.is_empty() {
-            bail!("VRF selection requested without available nodes");
+            bail!("Selection requested without available nodes");
         }
 
         if threshold == 0 {
-            bail!("VRF selection threshold must be greater than zero");
+            bail!("Selection threshold must be greater than zero");
         }
 
         info!(
-            "Starting VRF-based MPC node selection for round {} ({} candidates, threshold {})",
+            "Starting MPC node selection for round {} ({} candidates, threshold {})",
             round,
             available_nodes.len(),
             threshold
@@ -197,7 +217,7 @@ impl VrfNodeSelector {
 
         if working_set.is_empty() {
             bail!(
-                "no VRF submissions available for round {} ({} candidates)",
+                "no submissions available for round {} ({} candidates)",
                 round,
                 allowed.len()
             );
@@ -211,7 +231,7 @@ impl VrfNodeSelector {
 
         if node_vrf_pairs.len() < threshold {
             bail!(
-                "only {} VRF submissions available for round {}, need {}",
+                "only {} submissions available for round {}, need {}",
                 node_vrf_pairs.len(),
                 round,
                 threshold
@@ -303,14 +323,14 @@ impl VrfNodeSelector {
         round: u64,
     ) -> Result<()> {
         debug!(
-            "Received VRF submission from node {} for round {}",
+            "Received selection submission from node {} for round {}",
             node_id, round
         );
 
         let input = Self::selection_input(round, &node_id);
         if public_key.is_empty() {
             return Err(anyhow!(
-                "node {} submitted VRF output without public key for round {}",
+                "node {} submitted selection output without public key for round {}",
                 node_id,
                 round
             ));
@@ -318,7 +338,7 @@ impl VrfNodeSelector {
 
         if !self.verify_vrf_proof(&public_key, &input, &vrf_output) {
             return Err(anyhow!(
-                "invalid VRF submission from node {} for round {}",
+                "invalid selection submission from node {} for round {}",
                 node_id,
                 round
             ));
@@ -382,7 +402,7 @@ impl VrfNodeSelector {
         total_nodes: usize,
     ) {
         info!(
-            "📥 [VRF] Received VRF selected nodes broadcast from node {} (claimed selector: {}) for round {}: {} nodes selected",
+            "📥 [SELECTION] Received selected nodes broadcast from node {} (claimed selector: {}) for round {}: {} nodes selected",
             sender_peer_id,
             broadcast.selector_node_id.0,
             broadcast.round,
@@ -399,14 +419,14 @@ impl VrfNodeSelector {
             .insert(authenticated_sender, broadcast);
 
         info!(
-            "🔄 [VRF] Updating aggregated selections for round {}...",
+            "🔄 [SELECTION] Updating aggregated selections for round {}...",
             round
         );
 
         let min_selections = total_nodes;
         if self.can_start_consensus(round, min_selections) {
             info!(
-                "🎯 [VRF] Enough selections collected for round {}, consensus can be started",
+                "🎯 [SELECTION] Enough selections collected for round {}, consensus can be started",
                 round
             );
         }
@@ -476,7 +496,7 @@ impl VrfNodeSelector {
         };
 
         info!(
-            "🔍 [VRF] Consensus readiness check for round {}: own={}, received={}, total={}, min_required={}",
+            "🔍 [SELECTION] Consensus readiness check for round {}: own={}, received={}, total={}, min_required={}",
             round, own_selection, received_count, total_selections, min_selections
         );
 
@@ -514,7 +534,7 @@ mod tests {
         let public_key = selector.get_public_key();
 
         let is_valid = selector.verify_vrf_proof(&public_key, input, &output);
-        assert!(is_valid, "VRF proof verification failed");
+        assert!(is_valid, "Selection proof verification failed");
     }
 
     #[test]

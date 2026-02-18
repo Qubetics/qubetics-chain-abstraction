@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use libp2p::PeerId;
 use tokio::{
     sync::{mpsc, Mutex, RwLock},
@@ -11,6 +11,7 @@ use tracing::{info, warn};
 
 use crate::{
     database::VrfStorage,
+    hrw,
     types::{p2p::SerializablePeerId, vrf::VrfRoundSyncRequest, ChannelMessage, GossipsubMessage},
 };
 
@@ -37,7 +38,7 @@ impl Default for VrfServiceConfig {
     }
 }
 
-/// Independent VRF Service for chain-agnostic node selection
+/// Round and HRW selection service for chain-agnostic node selection
 #[derive(Clone)]
 pub struct VrfService {
     selector: Arc<RwLock<VrfNodeSelector>>,
@@ -73,7 +74,7 @@ impl VrfRoundSyncKind {
 }
 
 impl VrfService {
-    /// Create a new VRF service
+    /// Create a new round/selection service
     pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         Self::with_config_and_storage(node_id, message_tx, VrfServiceConfig::default(), None, "")
     }
@@ -170,40 +171,56 @@ impl VrfService {
         self.vrf_storage.clone()
     }
 
-    /// Perform VRF node selection for any chain operation
+    /// Perform node selection for any chain operation using HRW (Highest Random Weight).
+    /// Final node is chosen deterministically by HRW over available nodes; same as consensus path.
     pub async fn perform_node_selection(
         &self,
         available_nodes: &[PeerId],
-        threshold: usize,
+        _threshold: usize,
         round: u64,
         operation_type: &str,
     ) -> Result<NodeSelectionResult> {
         info!(
-            "🎯 [VRF] Starting {} operation node selection for round {} with {} available nodes",
+            "🎯 [HRW] Starting {} operation node selection for round {} with {} available nodes",
             operation_type,
             round,
             available_nodes.len()
         );
 
+        // Canonical order for HRW (same as hrw::candidates)
+        let mut sorted: Vec<PeerId> = available_nodes.to_vec();
+        sorted.sort_by(|a, b| a.to_bytes().as_slice().cmp(b.to_bytes().as_slice()));
+
+        let winner = match hrw::select_final(round, &sorted, hrw::HRW_DOMAIN_FINAL_NODE) {
+            Some(w) => w,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "HRW selected no node for round {} (no candidates)",
+                    round
+                ));
+            }
+        };
+
+        let selected_nodes = vec![SerializablePeerId(winner)];
+        let total_nodes = available_nodes.len();
+        let selection_result = NodeSelectionResult {
+            selected_nodes: selected_nodes.clone(),
+            vrf_outputs: std::collections::HashMap::new(),
+            threshold: 1,
+            total_nodes,
+            selection_round: round,
+        };
+
         let mut selector = self.selector.write().await;
-        selector.ensure_local_submission(round);
-
-        // Store the operation type in the selector so it can be retrieved later
         selector.set_operation_type(round, operation_type.to_string());
-
-        let selection_result = selector.select_mpc_nodes(
-            available_nodes,
-            threshold,
-            round,
-            self.config.allow_synthetic_submissions,
-        )?;
+        selector.set_hrw_selection_result(round, selected_nodes, total_nodes);
 
         info!("⏳ Waiting 2 seconds before broadcasting selection...");
+        drop(selector);
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
+        let selector = self.selector.read().await;
         if let Some(mut broadcast_msg) = selector.create_selected_nodes_broadcast(round) {
-            // The operation_type should now be set from the selector
-            // But to be extra safe, ensure it's set
             if broadcast_msg.operation_type.is_none() {
                 broadcast_msg.operation_type = Some(operation_type.to_string());
             }
@@ -211,6 +228,7 @@ impl VrfService {
             let broadcast_data =
                 serde_json::to_vec(&GossipsubMessage::VrfSelectedNodes(broadcast_msg))?;
 
+            drop(selector);
             self.message_tx
                 .send(ChannelMessage::Broadcast {
                     topic: "vrf-selection".to_string(),
@@ -219,7 +237,7 @@ impl VrfService {
                 .await?;
 
             info!(
-                "📤 [VRF] Node {} broadcasted VRF-selected nodes for {} operation round {}",
+                "📤 [HRW] Node {} broadcasted selected node for {} operation round {}",
                 self.node_id, operation_type, round
             );
         }
@@ -232,29 +250,47 @@ impl VrfService {
         selector.get_all_selected_nodes_for_round(round)
     }
 
-    /// Perform VRF node selection without broadcasting (for custom broadcast handling)
+    /// Perform HRW node selection without broadcasting (for custom broadcast handling)
     pub async fn perform_node_selection_without_broadcast(
         &self,
         available_nodes: &[PeerId],
-        threshold: usize,
+        _threshold: usize,
         round: u64,
         operation_type: &str,
     ) -> Result<NodeSelectionResult> {
         info!(
-            "🎯 [VRF] Starting {} operation node selection for round {} with {} available nodes (no auto-broadcast)",
+            "🎯 [HRW] Starting {} operation node selection for round {} with {} available nodes (no auto-broadcast)",
             operation_type,
             round,
             available_nodes.len()
         );
 
+        let mut sorted: Vec<PeerId> = available_nodes.to_vec();
+        sorted.sort_by(|a, b| a.to_bytes().as_slice().cmp(b.to_bytes().as_slice()));
+
+        let winner = match hrw::select_final(round, &sorted, hrw::HRW_DOMAIN_FINAL_NODE) {
+            Some(w) => w,
+            None => {
+                return Err(anyhow!(
+                    "HRW selected no node for round {} (no candidates)",
+                    round
+                ));
+            }
+        };
+
+        let selected_nodes = vec![SerializablePeerId(winner)];
+        let total_nodes = available_nodes.len();
+        let selection_result = NodeSelectionResult {
+            selected_nodes: selected_nodes.clone(),
+            vrf_outputs: std::collections::HashMap::new(),
+            threshold: 1,
+            total_nodes,
+            selection_round: round,
+        };
+
         let mut selector = self.selector.write().await;
-        selector.ensure_local_submission(round);
-        let selection_result = selector.select_mpc_nodes(
-            available_nodes,
-            threshold,
-            round,
-            self.config.allow_synthetic_submissions,
-        )?;
+        selector.set_operation_type(round, operation_type.to_string());
+        selector.set_hrw_selection_result(round, selected_nodes, total_nodes);
 
         Ok(selection_result)
     }
@@ -275,10 +311,9 @@ impl VrfService {
         total_nodes: usize,
     ) -> Result<()> {
         // SECURITY FIX 1: Verify that selector_node_id matches the actual sender
-        // This prevents spoofing where an attacker claims to be a different node
         if broadcast.selector_node_id.0 != sender_peer_id {
             warn!(
-                "🚫 [SECURITY] Rejecting VRF broadcast: selector_node_id ({}) does not match sender ({})",
+                "🚫 [SECURITY] Rejecting selection broadcast: selector_node_id ({}) does not match sender ({})",
                 broadcast.selector_node_id.0, sender_peer_id
             );
             return Err(anyhow::anyhow!(
@@ -289,7 +324,7 @@ impl VrfService {
         }
 
         info!(
-            "✅ [SECURITY] VRF broadcast authenticated: sender {} matches selector_node_id",
+            "✅ [SECURITY] Selection broadcast authenticated: sender {} matches selector_node_id",
             sender_peer_id
         );
 
@@ -304,7 +339,7 @@ impl VrfService {
         // If we don't have our own selection, trigger one for this specific round
         if !has_own_selection {
             warn!(
-                "⚠️ [VRF] Node {} doesn't have selection for round {}, triggering selection...",
+                "⚠️ [SELECTION] Node {} doesn't have selection for round {}, triggering selection...",
                 self.node_id, round
             );
 
@@ -343,23 +378,22 @@ impl VrfService {
                 );
 
                 info!(
-                    "🔄 [VRF] Auto-triggering selection for round {} with {} available nodes (threshold: {})",
+                    "🔄 [SELECTION] Auto-triggering selection for round {} with {} available nodes (threshold: {})",
                     round, available_nodes.len(), threshold
                 );
 
-                // Trigger selection for this specific round
                 if let Err(e) = self
                     .trigger_selection_for_round(&available_nodes, threshold, round)
                     .await
                 {
                     warn!(
-                        "⚠️ [VRF] Failed to trigger selection for round {}: {}",
+                        "⚠️ [SELECTION] Failed to trigger selection for round {}: {}",
                         round, e
                     );
                 }
             } else {
                 warn!(
-                    "⚠️ [VRF] Cannot trigger selection for round {}: insufficient nodes (have {}, need at least 2)",
+                    "⚠️ [SELECTION] Cannot trigger selection for round {}: insufficient nodes (have {}, need at least 2)",
                     round, available_nodes.len()
                 );
             }
@@ -371,7 +405,7 @@ impl VrfService {
         let min_selections = total_nodes;
         if selector.can_start_consensus(round, min_selections) {
             info!(
-                "🎯 [VRF] Enough selections collected for round {}, consensus can be triggered",
+                "🎯 [SELECTION] Enough selections collected for round {}, consensus can be triggered",
                 round
             );
         }
@@ -379,37 +413,43 @@ impl VrfService {
         Ok(())
     }
 
-    /// Trigger VRF selection for a specific round
+    /// Trigger HRW selection for a specific round
     async fn trigger_selection_for_round(
         &self,
         available_nodes: &[PeerId],
-        threshold: usize,
+        _threshold: usize,
         round: u64,
     ) -> Result<()> {
+        let mut sorted: Vec<PeerId> = available_nodes.to_vec();
+        sorted.sort_by(|a, b| a.to_bytes().as_slice().cmp(b.to_bytes().as_slice()));
+
+        let winner = match hrw::select_final(round, &sorted, hrw::HRW_DOMAIN_FINAL_NODE) {
+            Some(w) => w,
+            None => {
+                return Err(anyhow!(
+                    "HRW selected no node for round {} (no candidates)",
+                    round
+                ));
+            }
+        };
+
+        let selected_nodes = vec![SerializablePeerId(winner)];
+        let total_nodes = available_nodes.len();
+
         let mut selector = self.selector.write().await;
-
-        // Ensure local submission for this round
-        selector.ensure_local_submission(round);
-
-        // Perform selection for this specific round
-        let selection_result = selector.select_mpc_nodes(
-            available_nodes,
-            threshold,
-            round,
-            self.config.allow_synthetic_submissions,
-        )?;
+        selector.set_hrw_selection_result(round, selected_nodes.clone(), total_nodes);
 
         info!(
-            "✅ [VRF] Successfully created selection for round {}: {} nodes selected",
+            "✅ [HRW] Successfully created selection for round {}: {} node(s) selected",
             round,
-            selection_result.selected_nodes.len()
+            selected_nodes.len()
         );
 
-        // Create and broadcast the selection
         if let Some(broadcast_msg) = selector.create_selected_nodes_broadcast(round) {
             let broadcast_data =
                 serde_json::to_vec(&GossipsubMessage::VrfSelectedNodes(broadcast_msg))?;
 
+            drop(selector);
             self.message_tx
                 .send(ChannelMessage::Broadcast {
                     topic: "vrf-selection".to_string(),
@@ -418,7 +458,7 @@ impl VrfService {
                 .await?;
 
             info!(
-                "📤 [VRF] Broadcasted selection for round {} after auto-trigger",
+                "📤 [HRW] Broadcasted selection for round {} after auto-trigger",
                 round
             );
         }
@@ -441,7 +481,7 @@ impl VrfService {
         self.persist_current_round(*current).await;
 
         info!(
-            "[VRF][{}] advanced round to {} (next {})",
+            "[ROUND][{}] advanced round to {} (next {})",
             self.context, round, *current
         );
         round
@@ -450,7 +490,7 @@ impl VrfService {
     pub async fn get_current_round(&self) -> u64 {
         let current = self.current_round.read().await;
         let round = *current;
-        info!("[VRF][{}] current round: {}", self.context, round);
+        info!("[ROUND][{}] current round: {}", self.context, round);
         round
     }
 
@@ -468,7 +508,7 @@ impl VrfService {
                     let elapsed = timestamp.elapsed().as_millis() as u64;
                     if elapsed < SYNC_CACHE_DURATION_MS {
                         info!(
-                            "🚀 [VRF_SYNC][{}] Using cached sync result: round {} (age: {}ms) - PARALLEL OPTIMIZATION",
+                            "🚀 [SYNC][{}] Using cached sync result: round {} (age: {}ms) - PARALLEL OPTIMIZATION",
                             self.context, round, elapsed
                         );
                         return Ok(round);
@@ -483,7 +523,7 @@ impl VrfService {
                 drop(sync_guard); // Release lock before waiting
 
                 info!(
-                    "⏳ [VRF_SYNC][{}] Another sync in progress, waiting - PARALLEL OPTIMIZATION",
+                    "⏳ [SYNC][{}] Another sync in progress, waiting - PARALLEL OPTIMIZATION",
                     self.context
                 );
                 notify_clone.notified().await;
@@ -491,7 +531,7 @@ impl VrfService {
                 // After waiting, return the fresh result
                 let cached = self.last_sync_result.read().await;
                 if let Some((round, _)) = *cached {
-                    info!("✅ [VRF_SYNC][{}] Using result from shared sync: round {} - PARALLEL OPTIMIZATION", self.context, round);
+                    info!("✅ [SYNC][{}] Using result from shared sync: round {} - PARALLEL OPTIMIZATION", self.context, round);
                     return Ok(round);
                 }
 
@@ -502,7 +542,7 @@ impl VrfService {
                 let notify = Arc::new(tokio::sync::Notify::new());
                 *sync_guard = Some(notify.clone());
                 info!(
-                    "🔒 [VRF_SYNC][{}] Acquired sync lock, starting sync - PARALLEL OPTIMIZATION",
+                    "🔒 [SYNC][{}] Acquired sync lock, starting sync - PARALLEL OPTIMIZATION",
                     self.context
                 );
                 Some(notify)
@@ -516,7 +556,7 @@ impl VrfService {
         if let Ok(round) = result {
             let mut cached = self.last_sync_result.write().await;
             *cached = Some((round, std::time::Instant::now()));
-            info!("💾 [VRF_SYNC] Cached sync result: round {} - will be shared with parallel transactions", round);
+            info!("💾 [SYNC] Cached sync result: round {} - will be shared with parallel transactions", round);
         }
 
         // Clear sync-in-progress flag and notify all waiters
@@ -527,7 +567,7 @@ impl VrfService {
 
         if let Some(notify) = notify {
             notify.notify_waiters(); // Wake up all waiting transactions
-            info!("📢 [VRF_SYNC] Notified waiting parallel transactions");
+            info!("📢 [SYNC] Notified waiting parallel transactions");
         }
 
         result
@@ -542,13 +582,13 @@ impl VrfService {
             *current
         };
 
-        // Gather candidate peers to query for their VRF round.
+        // Gather candidate peers to query for their round.
         let peer_candidates = {
             let selector = self.selector.read().await;
             selector.get_all_selected_nodes_for_round(local_round)
         };
 
-        // Send round sync requests to peers through the VRF/consensus channel.
+        // Send round sync requests to peers through the consensus channel.
         let sync_request = VrfRoundSyncRequest {
             from: SerializablePeerId(self.node_id),
             current_round: Some(local_round),
@@ -565,7 +605,7 @@ impl VrfService {
                 .await?;
 
             info!(
-                "📡 [VRF_SYNC] Sent round sync request for round {} to {} peers",
+                "📡 [SYNC] Sent round sync request for round {} to {} peers",
                 local_round,
                 peer_candidates.len()
             );
@@ -580,7 +620,7 @@ impl VrfService {
                 Ok(peer_rounds_map) => {
                     let rounds: Vec<u64> = peer_rounds_map.values().copied().collect();
                     info!(
-                        "📥 [VRF_SYNC] Retrieved {} peer rounds from database: {:?}",
+                        "📥 [SYNC] Retrieved {} peer rounds from database: {:?}",
                         rounds.len(),
                         rounds
                     );
@@ -588,14 +628,14 @@ impl VrfService {
                 }
                 Err(e) => {
                     warn!(
-                        "⚠️ [VRF_SYNC] Failed to read peer rounds from database: {}",
+                        "⚠️ [SYNC] Failed to read peer rounds from database: {}",
                         e
                     );
                     Vec::new()
                 }
             }
         } else {
-            warn!("⚠️ [VRF_SYNC] No VRF storage available, cannot read peer rounds");
+            warn!("⚠️ [SYNC] No round storage available, cannot read peer rounds");
             Vec::new()
         };
 
@@ -606,7 +646,7 @@ impl VrfService {
         Ok(synchronized_round)
     }
 
-    /// Synchronize the VRF round with peers before producing a signing round.
+    /// Synchronize the round with peers before producing a signing round.
     pub async fn sync_rounds_before_signing(&self) -> Result<u64> {
         self.sync_rounds(VrfRoundSyncKind::Signing).await
     }
@@ -636,7 +676,7 @@ impl VrfService {
             *current = synchronized_round;
             self.persist_current_round(synchronized_round).await;
             info!(
-                "🔄 [VRF_SYNC] Updated local round to synchronized round {}",
+                "🔄 [SYNC] Updated local round to synchronized round {}",
                 synchronized_round
             );
         }
@@ -654,7 +694,7 @@ impl VrfService {
         *current = round;
         self.persist_current_round(round).await;
         info!(
-            "🔄 [VRF][{}] Node {} set current round to: {}",
+            "🔄 [ROUND][{}] Node {} set current round to: {}",
             self.context, self.node_id, round
         );
     }
@@ -663,7 +703,7 @@ impl VrfService {
         if let Some(storage) = &self.vrf_storage {
             if let Err(error) = storage.set_current_round_for_context(&self.context, round) {
                 tracing::warn!(
-                    "⚠️ [VRF][{}] Failed to persist current round {} to storage: {:?}",
+                    "⚠️ [ROUND][{}] Failed to persist current round {} to storage: {:?}",
                     self.context,
                     round,
                     error

@@ -257,7 +257,7 @@ impl MpcNetworkLayer {
 
         match domain {
             VrfDomain::Signing => {
-                // Prefer in-memory signing node VRF service if context matches
+                // Prefer in-memory signing node round service if context matches
                 if let Some(arc) = &self.signing_node {
                     let signing_node = arc.lock().await;
                     if let Some(vrf_service) = signing_node.vrf_service() {
@@ -267,7 +267,7 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Fall back to db_signing_node VRF service
+                // Fall back to db_signing_node round service
                 if let Some(db_signing_node) = &self.db_signing_node {
                     if let Ok(node) = db_signing_node.try_lock() {
                         if let Some(vrf_service) = &node.vrf_service {
@@ -303,7 +303,7 @@ impl MpcNetworkLayer {
         let normalized_context = self.resolve_context(domain, Some(context));
         let Some(round) = reported_round else {
             warn!(
-                "⚠️ [VRF_SYNC] Received VRF round sync without round value from {}",
+                "⚠️ [SYNC] Received round sync without round value from {}",
                 peer
             );
             return false;
@@ -338,7 +338,7 @@ impl MpcNetworkLayer {
             true
         } else {
             warn!(
-                "⚠️ [VRF_SYNC] Ignoring VRF round {} from {} (reference: {:?}, skew limit: {})",
+                "⚠️ [SYNC] Ignoring round {} from {} (reference: {:?}, skew limit: {})",
                 round, peer, reference_round, MAX_VRF_ROUND_SKEW
             );
             false
@@ -902,7 +902,7 @@ impl MpcNetworkLayer {
     ) -> RPCResponse {
         if request.from.0 != peer {
             warn!(
-                "⚠️ [VRF_SYNC] Peer mismatch in VRF round sync request: declared={}, actual={}",
+                "⚠️ [SYNC] Peer mismatch in round sync request: declared={}, actual={}",
                 request.from.0, peer
             );
         }
@@ -1760,7 +1760,7 @@ impl MpcNetworkLayer {
     /// Handle CurrentVrfRoundResponse
     async fn handle_current_vrf_round_response(&mut self, current_round: Option<u64>) {
         if let Some(network_round) = current_round {
-            // Simple VRF round sync for both signing nodes
+            // Simple round sync for both signing nodes
             if let Some(arc) = &self.signing_node {
                 let mut signing_node = arc.lock().await;
                 signing_node
@@ -1781,7 +1781,7 @@ impl MpcNetworkLayer {
     ) {
         if response.from.0 != peer {
             warn!(
-                "⚠️ [VRF_SYNC] Peer mismatch in VRF round sync response: declared={}, actual={}",
+                "⚠️ [SYNC] Peer mismatch in round sync response: declared={}, actual={}",
                 response.from.0, peer
             );
         }
@@ -1799,7 +1799,7 @@ impl MpcNetworkLayer {
             )
             .await
         {
-            // VRF round sync applied
+            // Round sync applied
         }
     }
 }

@@ -592,28 +592,32 @@ impl SigningNode {
             digests.push(digest);
         }
 
-        // ===== Select round via VRF =====
+        // ===== Select round (HRW) =====
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
         let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.sync_rounds_before_signing().await?;
-            let round = vrf_service.get_next_round().await;
-            let _ = vrf_service
-                .perform_node_selection(
-                    &available_nodes,
-                    crate::vrf::VRF_NODE_SELECTION_COUNT,
-                    round,
-                    "bitcoin",
-                )
-                .await;
-            info!(
-                "🎲 [SIGNING] Node {} using VRF round {} for Bitcoin transaction signing",
-                self.id, round
-            );
-            round
+            vrf_service.get_next_round().await
         } else {
-            warn!("⚠️ [SIGNING] No VRF service available, using round 0 as fallback");
+            warn!("⚠️ [SIGNING] No round/selection service available, using round 0 as fallback");
             0
         };
+        self.coordination.replicate_vrf_round_to_consensus(current_round);
+        if current_round != 0 {
+            if let Some(vrf_service) = self.coordination.vrf_service() {
+                let _ = vrf_service
+                    .perform_node_selection(
+                        &available_nodes,
+                        crate::vrf::VRF_NODE_SELECTION_COUNT,
+                        current_round,
+                        "bitcoin",
+                    )
+                    .await;
+                info!(
+                    "🎲 [SIGNING] Node {} using round {} for Bitcoin transaction signing",
+                    self.id, current_round
+                );
+            }
+        }
 
         // Check if this node has a DKG share (needed for signing, not for TX building/storage)
         let has_dkg = self.has_dkg_share().await;

@@ -10,6 +10,7 @@ pub mod bigint;
 pub mod bitcoin_batch;
 pub mod contract;
 pub mod hmac_helper;
+pub mod intent_validation;
 pub mod transaction;
 
 use anyhow::{anyhow, Result};

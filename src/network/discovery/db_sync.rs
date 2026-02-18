@@ -140,10 +140,10 @@ impl MpcNetworkLayer {
                 self.db_sync_state.entries_synced, peer_id
             );
 
-            // Request VRF round sync after database sync completes
+            // Request round sync after database sync completes
             if !self.vrf_round_requested {
                 info!(
-                    "🔄 [VRF_SYNC] Requesting current VRF round from peer {}",
+                    "🔄 [SYNC] Requesting current round from peer {}",
                     peer_id
                 );
                 let current_round = self
@@ -158,7 +158,7 @@ impl MpcNetworkLayer {
                     }),
                 );
                 self.vrf_round_requested = true;
-                info!("✅ [VRF_SYNC] VRF round request sent to peer {}", peer_id);
+                info!("✅ [SYNC] Round request sent to peer {}", peer_id);
             }
         }
 

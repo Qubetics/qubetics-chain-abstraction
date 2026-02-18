@@ -14,7 +14,7 @@ pub struct ConsensusNode {
     consensus_results: HashMap<u64, ConsensusResult>,
     /// Consensus results that arrived before we had selected_nodes for that round
     pending_results: HashMap<u64, ConsensusResult>,
-    /// Operation type that triggered VRF for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    /// Operation type for each round (e.g., "global_clock", "bitcoin", "ethereum")
     operation_types_by_round: HashMap<u64, String>,
 }
 
@@ -95,6 +95,15 @@ impl ConsensusNode {
     /// Get the current round
     pub fn get_current_round(&self) -> u64 {
         self.current_round
+    }
+
+    /// Set current round to at least the given round (consensus = VRF, no discrepancy).
+    /// Called when round is synced or advanced so consensus stays aligned.
+    pub fn set_current_round_if_higher(&mut self, round: u64) {
+        if round > self.current_round {
+            self.current_round = round;
+            debug!("🔄 [CONSENSUS] Synced consensus round to {} (VRF)", round);
+        }
     }
 
     /// Advance to the next round
@@ -384,7 +393,7 @@ impl ConsensusNode {
         self.selected_nodes_by_round.get(&round)
     }
 
-    /// Store the operation type that triggered VRF for this round
+    /// Store the operation type for this round
     pub fn set_operation_type_for_round(&mut self, round: u64, operation_type: String) {
         self.operation_types_by_round.insert(round, operation_type);
         // Keep this at debug level to avoid noisy per-round logs at info.
@@ -395,7 +404,7 @@ impl ConsensusNode {
         );
     }
 
-    /// Get the operation type that triggered VRF for this round
+    /// Get the operation type for this round
     pub fn get_operation_type_for_round(&self, round: u64) -> Option<&String> {
         self.operation_types_by_round.get(&round)
     }

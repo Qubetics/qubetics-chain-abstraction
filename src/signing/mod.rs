@@ -145,6 +145,12 @@ impl SigningNode {
         self.coordination.vrf_service_mut()
     }
 
+    /// Replicate round into consensus so consensus stays aligned.
+    /// Call after sync_rounds_before_signing or get_next_round.
+    pub fn replicate_vrf_round_to_consensus(&mut self, round: u64) {
+        self.coordination.replicate_vrf_round_to_consensus(round);
+    }
+
     pub fn new(id: String, threshold: usize, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
         let peer_id =
             PeerId::from_str(&id).unwrap_or_else(|_| coordination::derive_peer_id_from_string(&id));
@@ -1439,7 +1445,7 @@ impl SigningNode {
         self.coordination.set_database(database);
 
         info!(
-            "🗄️ [SIGNING] Node {} database set with VRF storage and HRW DKG candidates",
+            "🗄️ [SIGNING] Node {} database set with round storage and HRW DKG candidates",
             self.id
         );
     }
@@ -1738,11 +1744,11 @@ impl SigningNode {
             .await;
     }
 
-    /// Sync VRF round with network (simple approach)
+    /// Sync round with network (simple approach)
     pub async fn sync_vrf_round_with_network(&mut self, network_round: u64) {
         if let Some(vrf_service) = self.coordination.vrf_service_mut() {
             vrf_service.set_current_round(network_round).await;
-            info!("🔄 [SIGNING] Synced VRF round to: {}", network_round);
+            info!("🔄 [SIGNING] Synced round to: {}", network_round);
         }
     }
 
@@ -1753,7 +1759,7 @@ impl SigningNode {
         self.coordination.get_available_nodes_from_manager().await
     }
 
-    /// Handle VRF selected nodes broadcast from another node
+    /// Handle selected nodes broadcast from another node
     pub fn handle_vrf_selected_nodes_broadcast(
         &mut self,
         total_nodes: usize,
@@ -1764,17 +1770,17 @@ impl SigningNode {
             let round = broadcast.round;
             let min_selections = total_nodes;
 
-            // Use async task to handle VRF broadcast
+            // Use async task to handle selection broadcast
             let vrf_service_clone = vrf_service.clone();
             let mut signing_node_clone = self.clone();
 
             tokio::spawn(async move {
-                // Handle VRF broadcast via service
+                // Handle selection broadcast via service
                 if let Err(e) = vrf_service_clone
                     .handle_vrf_broadcast(broadcast, sender_peer_id, total_nodes)
                     .await
                 {
-                    error!("❌ [SIGNING] Failed to handle VRF broadcast: {}", e);
+                    error!("❌ [SIGNING] Failed to handle selection broadcast: {}", e);
                     return;
                 }
 
@@ -1784,7 +1790,7 @@ impl SigningNode {
                     .await
                 {
                     info!(
-                    "🎯 [VRF] Enough selections collected for round {}, triggering consensus check",
+                    "🎯 [SELECTION] Enough selections collected for round {}, triggering consensus check",
                     round
                 );
 
@@ -1827,7 +1833,7 @@ impl SigningNode {
     ) -> Result<Option<ConsensusResult>> {
         let own_node_id = SerializablePeerId(PeerId::from_str(&self.id)?);
 
-        // Extract operation_type from VRF broadcast for this round (if available) for epoch mapping
+        // Extract operation_type from selection broadcast for this round (if available) for epoch mapping
         let operation_type = if let Some(vrf) = self.coordination.vrf_service() {
             vrf.create_broadcast_for_round(round)
                 .await
@@ -1841,7 +1847,7 @@ impl SigningNode {
             .consensus_node_mut()
             .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
 
-        // HRW path: canonical final node from DKG candidate set (no VRF selection for final node)
+        // HRW path: canonical final node from DKG candidate set
         let all_selected_nodes: Vec<SerializablePeerId> = if let Some(ref dkg) = self.dkg_storage {
             let candidates = match hrw::candidates::get_hrw_candidates(dkg) {
                 Ok(c) if !c.is_empty() => c,
@@ -1889,7 +1895,7 @@ impl SigningNode {
         consensus_node.add_selected_nodes(round, all_selected_nodes);
 
         // Store internal operation type for this round.
-        // External VRF triggers use high-level types like "global_clock" or "btc_intent_manager_update".
+        // External triggers use high-level types like "global_clock" or "btc_intent_manager_update".
         // For consensus / signing flows we normalize:
         // - "global_clock" + cycle_number % 3 => "epoch_1" / "epoch_2" / "epoch_3"
         //   (internal epochs for TICS batch, BTC batch, and withdraw settlement)
@@ -1979,8 +1985,8 @@ impl SigningNode {
                 // - "epoch_2" => BTC batch + BTC contract tx-id update + BTC withdraw
                 // - "epoch_3" => withdraw settlement / cleanup (no new tx)
                 if operation_type.as_deref() == Some("epoch_2") {
-                    info!("🔄 [CLOCK] epoch_2 detected (all nodes), triggering parallel BTC contract update VRF round...");
-                    let signing_node_clone = self.clone();
+                    info!("🔄 [CLOCK] epoch_2 detected (all nodes), triggering parallel BTC contract update round...");
+                    let mut signing_node_clone = self.clone();
                     tokio::spawn(async move {
                         if let Err(e) = signing_node_clone
                             .trigger_btc_contract_update_round_parallel()
@@ -2812,18 +2818,13 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Trigger BTC contract update VRF round in parallel to BTC batch transfer round
-    /// This ONLY triggers VRF selection - the final node will:
+    /// Trigger BTC contract update round in parallel to BTC batch transfer round
+    /// This ONLY triggers selection - the final node will:
     /// 1. Get intents with network_to_target_tx_id but not Solved
     /// 2. Create batch and broadcast via btc-intent-manager-tx-update
     /// 3. All nodes will process the batch and participate in MPC signing
-    async fn trigger_btc_contract_update_round_parallel(&self) -> Result<()> {
-        info!("🔄 [BTC_CONTRACT_UPDATE] Starting parallel contract update VRF round trigger");
-
-        // Get VRF service
-        let vrf_service = self.coordination
-            .vrf_service()
-            .ok_or_else(|| anyhow!("VRF service not available"))?;
+    async fn trigger_btc_contract_update_round_parallel(&mut self) -> Result<()> {
+        info!("🔄 [BTC_CONTRACT_UPDATE] Starting parallel contract update round trigger");
 
         // Get available nodes
         let available_nodes: Vec<libp2p::PeerId> = self
@@ -2832,25 +2833,31 @@ impl SigningNode {
             .await;
 
         if available_nodes.is_empty() {
-            warn!("⚠️ [BTC_CONTRACT_UPDATE] No available nodes for VRF selection");
+            warn!("⚠️ [BTC_CONTRACT_UPDATE] No available nodes for selection");
             return Ok(());
         }
 
-        // Sync rounds before getting next round
-        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
-            warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to sync rounds: {}", e);
-        }
-
-        // Get next round for contract update (separate from batch transfer round)
-        let contract_update_round = vrf_service.get_next_round().await;
+        // Get next round in a block so we can release vrf_service borrow before replicate_vrf_round_to_consensus
+        let contract_update_round = {
+            let vrf_service = self.coordination
+                .vrf_service()
+                .ok_or_else(|| anyhow!("Round/selection service not available"))?;
+            if let Err(e) = vrf_service.sync_rounds_before_signing().await {
+                warn!("⚠️ [BTC_CONTRACT_UPDATE] Failed to sync rounds: {}", e);
+            }
+            vrf_service.get_next_round().await
+        };
+        self.replicate_vrf_round_to_consensus(contract_update_round);
 
         info!(
-            "🎯 [BTC_CONTRACT_UPDATE] Performing VRF selection for contract update round {} (parallel to BTC batch round)",
+            "🎯 [BTC_CONTRACT_UPDATE] Performing selection for contract update round {} (parallel to BTC batch round)",
             contract_update_round
         );
 
-        // Perform VRF node selection for BTC intent manager update round
-        // The final node (selected by consensus) will get eligible intents and broadcast the batch
+        // Perform node selection for BTC intent manager update round
+        let vrf_service = self.coordination
+            .vrf_service()
+            .ok_or_else(|| anyhow!("Round/selection service not available"))?;
         match vrf_service
             .perform_node_selection(
                 &available_nodes,
@@ -2862,17 +2869,17 @@ impl SigningNode {
         {
             Ok(_selection_result) => {
                 info!(
-                    "✅ [BTC_CONTRACT_UPDATE] VRF selection completed for round {}. Final node will select eligible intents and broadcast batch.",
+                    "✅ [BTC_CONTRACT_UPDATE] Selection completed for round {}. Final node will select eligible intents and broadcast batch.",
                     contract_update_round
                 );
             }
             Err(e) => {
-                error!("❌ [BTC_CONTRACT_UPDATE] VRF selection failed: {}", e);
+                error!("❌ [BTC_CONTRACT_UPDATE] Selection failed: {}", e);
                 return Err(e);
             }
         }
 
-        // The VRF round will proceed to consensus, and the final node will:
+        // The round will proceed to consensus, and the final node will:
         // 1. Get eligible intents (network_to_target_tx_id, NOT Solved, BTC target chain)
         // 2. Create BtcIntentManagerTxUpdate message
         // 3. Broadcast to all nodes via gossipsub
@@ -3001,7 +3008,7 @@ impl SigningNode {
     }
 
     /// Process pending solver_add_liquidity requests in batch
-    /// Called by the final node selected via global_clock VRF round.
+    /// Called by the final node selected via global_clock round.
     /// The final node will:
     /// 1. Query RocksDB for pending add_liquidity requests (status="Pending", age >= 10s)
     /// 2. Sort by timestamp (oldest first), limit to MAX_ADD_LIQUIDITY_BATCH
@@ -3505,7 +3512,7 @@ impl SigningNode {
     }
 
     /// Process BTC intent manager update batch after BTC batch is finalized
-    /// This runs another VRF round to select a final node that will:
+    /// This runs another round to select a final node that will:
     /// 1. Get intents with network_to_target_tx_id but not Solved
     /// 2. Create batch and broadcast via btc-intent-manager-tx-update
     /// 3. Make contract call to processBatchIntents to update tx-id on contract
@@ -3515,7 +3522,7 @@ impl SigningNode {
         btc_txid: &str,
         message_tx: mpsc::Sender<ChannelMessage>,
         user_intent_manager: Option<Arc<UserIntentManager>>,
-        coordination: Coordination,
+        coordination: &mut Coordination,
         node_id: String,
     ) -> Result<()> {
         info!(
@@ -3571,35 +3578,37 @@ impl SigningNode {
             eligible_intents.len()
         );
 
-        // Run another VRF round to select final node
-        let vrf_service = coordination
-            .vrf_service()
-            .ok_or_else(|| anyhow!("VRF service not available"))?;
-
         // Get available nodes
         let available_nodes: Vec<libp2p::PeerId> = coordination
             .get_available_nodes()
             .await;
 
         if available_nodes.is_empty() {
-            warn!("⚠️ [BTC_INTENT_MANAGER] No available nodes for VRF selection");
+            warn!("⚠️ [BTC_INTENT_MANAGER] No available nodes for selection");
             return Ok(());
         }
 
-        // Sync rounds before getting next round
-        if let Err(e) = vrf_service.sync_rounds_before_signing().await {
-            warn!("⚠️ [BTC_INTENT_MANAGER] Failed to sync rounds: {}", e);
-        }
-
-        // Get next round
-        let update_round = vrf_service.get_next_round().await;
+        // Get next round in a block so we can release vrf_service borrow before replicate_vrf_round_to_consensus
+        let update_round = {
+            let vrf_service = coordination
+                .vrf_service()
+                .ok_or_else(|| anyhow!("Round/selection service not available"))?;
+            if let Err(e) = vrf_service.sync_rounds_before_signing().await {
+                warn!("⚠️ [BTC_INTENT_MANAGER] Failed to sync rounds: {}", e);
+            }
+            vrf_service.get_next_round().await
+        };
+        coordination.replicate_vrf_round_to_consensus(update_round);
 
         info!(
-            "🎯 [BTC_INTENT_MANAGER] Performing VRF selection for contract update batch (round {})",
+            "🎯 [BTC_INTENT_MANAGER] Performing selection for contract update batch (round {})",
             update_round
         );
 
-        // Perform VRF node selection
+        // Perform node selection
+        let vrf_service = coordination
+            .vrf_service()
+            .ok_or_else(|| anyhow!("Round/selection service not available"))?;
         match vrf_service
             .perform_node_selection(
                 &available_nodes,
@@ -3611,12 +3620,12 @@ impl SigningNode {
         {
             Ok(_selection_result) => {
                 info!(
-                    "✅ [BTC_INTENT_MANAGER] VRF selection completed for round {}",
+                    "✅ [BTC_INTENT_MANAGER] Selection completed for round {}",
                     update_round
                 );
             }
             Err(e) => {
-                error!("❌ [BTC_INTENT_MANAGER] VRF selection failed: {}", e);
+                error!("❌ [BTC_INTENT_MANAGER] Selection failed: {}", e);
                 return Err(e);
             }
         }

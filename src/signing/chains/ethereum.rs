@@ -442,7 +442,7 @@ impl SigningNode {
         let tx_hash = hasher.finalize();
         debug!("[SIGNING] Transaction hash: 0x{}", hex::encode(&tx_hash));
 
-        // Get available nodes and perform VRF selection
+        // Get available nodes and perform HRW selection
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
 
         // Use VrfService for node selection (chain-agnostic)
@@ -458,7 +458,7 @@ impl SigningNode {
                 .await?;
 
             info!(
-                "🎯 [VRF] Node {} completed VRF selection for {} signing round {}",
+                "🎯 [SIGNING] Node {} completed selection for {} signing round {}",
                 self.id,
                 self.chain_handler.chain_type(),
                 round
@@ -533,10 +533,12 @@ impl SigningNode {
             user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
         };
 
-        // Synchronize VRF rounds before advancing and acquiring the signing round
+        // Synchronize rounds before advancing and acquiring the signing round
         let round = if let Some(vrf_service) = self.coordination.vrf_service() {
             vrf_service.sync_rounds_before_signing().await?;
-            vrf_service.get_next_round().await
+            let r = vrf_service.get_next_round().await;
+            self.coordination.replicate_vrf_round_to_consensus(r);
+            r
         } else {
             0
         };
@@ -690,7 +692,7 @@ impl SigningNode {
             sha3::Keccak256::new();
         hasher.update(&tx_bytes);
         let tx_hash = hasher.finalize();
-        // Get available nodes and perform VRF selection
+        // Get available nodes and perform HRW selection
         let available_nodes = self.get_available_nodes_from_manager().await;
 
         // Use VrfService for node selection (chain-agnostic)
@@ -706,7 +708,7 @@ impl SigningNode {
                 .await?;
 
             info!(
-                "🎯 [VRF] Node {} completed VRF selection for ethereum signing round {}",
+                "🎯 [SIGNING] Node {} completed selection for ethereum signing round {}",
                 self.id, round
             );
         }
@@ -800,10 +802,12 @@ impl SigningNode {
                 user_eth_address: user_eth_address.clone(),
             };
 
-            // Synchronize VRF rounds before advancing and acquiring the signing round
+            // Synchronize rounds before advancing and acquiring the signing round
             let round = if let Some(vrf_service) = self.coordination.vrf_service() {
                 vrf_service.sync_rounds_before_signing().await?;
-                vrf_service.get_next_round().await
+                let r = vrf_service.get_next_round().await;
+                self.coordination.replicate_vrf_round_to_consensus(r);
+                r
             } else {
                 0
             };
@@ -824,12 +828,14 @@ impl SigningNode {
                 request_id, original_request,
             ).await
         } else {
-            // Non-DKG node: skip signing, just advance VRF and store TX
+            // Non-DKG node: skip signing, just advance round and store TX
 
-            // Synchronize VRF rounds and advance to keep in sync with DKG nodes
+            // Synchronize rounds and advance to keep in sync with DKG nodes
             let round = if let Some(vrf_service) = self.coordination.vrf_service() {
                 vrf_service.sync_rounds_before_signing().await?;
-                vrf_service.get_next_round().await
+                let r = vrf_service.get_next_round().await;
+                self.coordination.replicate_vrf_round_to_consensus(r);
+                r
             } else {
                 0
             };

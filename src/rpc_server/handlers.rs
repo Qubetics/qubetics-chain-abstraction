@@ -55,6 +55,16 @@ pub(crate) async fn handle_deposit_intent(
     if let Some(addr) = &user_eth_address {
         info!("📝 HTTP: User eth address provided for signing: {}", addr);
     }
+
+    // Validate intent: source/target chain must match token and address type (TICS vs BTC)
+    if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent)
+    {
+        return Err(warp::reject::custom(RpcError::InvalidRequest(format!(
+            "Invalid intent: {}",
+            e
+        ))));
+    }
+
     // Parse string amount into u128 for internal processing
     let parsed_amount = intent.amount.parse::<u128>().map_err(|_| {
         warp::reject::custom(RpcError::InvalidRequest(format!(
@@ -642,6 +652,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                 status: "error".to_string(),
                 intent_hash: "".to_string(),
                 error_message: Some("Invalid deposit intent payload".to_string()),
+                signer_eth_address: None,
             }));
         }
     };
@@ -674,6 +685,7 @@ pub(crate) async fn handle_user_mpc_deposit(
             error_message: Some(
                 "Intent hash already exists - this deposit has already been processed".to_string(),
             ),
+            signer_eth_address: None,
         }));
     }
 
@@ -690,12 +702,86 @@ pub(crate) async fn handle_user_mpc_deposit(
                 status: "error".to_string(),
                 intent_hash: intent_hash_hex.clone(),
                 error_message: Some("Signature is required for UserToVault deposits".to_string()),
+                signer_eth_address: None,
+            }));
+        }
+    };
+
+    // Recover signer and reject immediately if user is not registered (no further processing).
+    let (compact, v) = match normalize_eth_signature(signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Failed to normalize signature: {}", e);
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                intent_hash: intent_hash_hex.clone(),
+                error_message: Some(format!("Invalid signature format: {e}")),
+                signer_eth_address: None,
+            }));
+        }
+    };
+    let (signer, _used_personal) = match recover_eth_address_secp(intent_bytes, &compact, v, true) {
+        Ok(addr) => (addr, true),
+        Err(e1) => {
+            warn!("⚠️ personal_sign recovery failed: {}", e1);
+            match recover_eth_address_secp(intent_bytes, &compact, v, false) {
+                Ok(addr) => (addr, false),
+                Err(e2) => {
+                    error!(
+                        "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
+                        e1, e2
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(format!(
+                            "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                        )),
+                        signer_eth_address: None,
+                    }));
+                }
+            }
+        }
+    };
+    let signer_user = match user_intent_manager.get_user_by_address(&signer).await {
+        Some(u) => u,
+        None => {
+            warn!(
+                request_id = %request_context.request_id,
+                intent_hash = %intent_hash_hex,
+                signer = %signer,
+                "⚠️ HTTP: Rejecting deposit - signer not registered"
+            );
+            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                status: "error".to_string(),
+                intent_hash: intent_hash_hex.clone(),
+                error_message: Some(
+                    "User not registered. Please register first (register_user) before submitting a deposit.".to_string(),
+                ),
+                signer_eth_address: Some(signer.clone()),
             }));
         }
     };
 
     // Only support UserToVault transaction type
     let transaction_type = TransactionType::UserToVault;
+
+    // CRITICAL: Validate intent BEFORE storing intent_hash to prevent orphaned hashes
+    if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&req.msg)
+    {
+        warn!(
+            request_id = %request_context.request_id,
+            intent_hash = %intent_hash_hex,
+            "⚠️ HTTP: Rejecting deposit - chain/token/address validation failed: {}",
+            e
+        );
+        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+            status: "error".to_string(),
+            intent_hash: intent_hash_hex.clone(),
+            error_message: Some(format!("Invalid intent: {}", e)),
+            signer_eth_address: None,
+        }));
+    }
 
     info!(
         "🔐 Processing MPC deposit - Intent hash: {:?}, Amount: {}",
@@ -718,59 +804,9 @@ pub(crate) async fn handle_user_mpc_deposit(
     {
         Some(existing_user) => existing_user,
         None => {
-            // Signature is already validated above, so we can safely unwrap
             {
-                info!("No existing user found for intent hash, but signature is present in the request.");
-                let (compact, v) = match normalize_eth_signature(signature) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warn!("❌ Failed to normalize signature: {}", e);
-                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                            status: "error".to_string(),
-                            intent_hash: intent_hash_hex.clone(),
-                            error_message: Some(format!("Invalid signature format: {e}")),
-                        }));
-                    }
-                };
-                let (signer, _used_personal) = match recover_eth_address_secp(
-                    intent_bytes,
-                    &compact,
-                    v,
-                    true,
-                ) {
-                    Ok(addr) => (addr, true),
-                    Err(e1) => {
-                        warn!("⚠️ personal_sign recovery failed: {}", e1);
-                        match recover_eth_address_secp(intent_bytes, &compact, v, false) {
-                            Ok(addr) => (addr, false),
-                            Err(e2) => {
-                                error!(
-                                            "❌ Both signature recovery methods failed: personal_sign={}, raw={}",
-                                            e1, e2
-                                        );
-                                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                                    status: "error".to_string(),
-                                    intent_hash: intent_hash_hex.clone(),
-                                    error_message: Some(format!(
-                                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
-                                    )),
-                                }));
-                            }
-                        }
-                    }
-                };
-                let user_reg = match user_intent_manager.get_user_by_address(&signer).await {
-                    Some(user_reg) => user_reg,
-                    None => {
-                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                            status: "error".to_string(),
-                            intent_hash: intent_hash_hex.clone(),
-                            error_message: Some(
-                                "No user registration found for signer address.".to_string(),
-                            ),
-                        }));
-                    }
-                };
+                info!("No existing user found for intent hash, using signer registration.");
+                let user_reg = signer_user;
 
                 // CRITICAL: Check if user has sufficient balance on source chain BEFORE storing intent
                 info!(
@@ -786,6 +822,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                             status: "error".to_string(),
                             intent_hash: intent_hash_hex.clone(),
                             error_message: Some(format!("Invalid amount format: {}", e)),
+                            signer_eth_address: None,
                         }));
                     }
                 };
@@ -819,6 +856,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                                     "Insufficient balance: you have {} but need {} (in smallest units)",
                                     user_balance, source_amount
                                 )),
+                                signer_eth_address: None,
                             }));
                         } else {
                             info!(
@@ -839,7 +877,87 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 "Failed to verify source address balance: {}",
                                 e
                             )),
+                            signer_eth_address: None,
                         }));
+                    }
+                }
+
+                // CRITICAL: For BTC->TICS, check network (treasury vault) has sufficient TICS before storing.
+                // This aligns RPC-node behavior with peers: peers only store when treasury balance >= target_amount.
+                let is_btc_to_tics = (req.msg.source_chain.eq_ignore_ascii_case("btc")
+                    || req.msg.source_chain.eq_ignore_ascii_case("bitcoin"))
+                    && (req.msg.target_chain.eq_ignore_ascii_case("tics")
+                        || req.msg.target_chain.eq_ignore_ascii_case("qubetics"));
+                if is_btc_to_tics {
+                    let parsed_amount = source_amount;
+                    let target_amount = match crate::rpc_server::utils::fetch_crypto_prices().await {
+                        Ok(prices) => {
+                            match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                                parsed_amount,
+                                &req.msg.source_chain,
+                                &req.msg.target_chain,
+                                &prices,
+                            ) {
+                                Ok(amt) => amt,
+                                Err(e) => {
+                                    warn!(
+                                        "❌ [HTTP] Failed to convert target amount for BTC->TICS intent {}: {:?}",
+                                        intent_hash_hex, e
+                                    );
+                                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                        status: "error".to_string(),
+                                        intent_hash: intent_hash_hex.clone(),
+                                        error_message: Some(format!("Failed to compute target amount: {:?}", e)),
+                                        signer_eth_address: None,
+                                    }));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("❌ [HTTP] Failed to fetch prices for BTC->TICS intent {}: {}", intent_hash_hex, e);
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                intent_hash: intent_hash_hex.clone(),
+                                error_message: Some(format!("Failed to fetch prices: {}", e)),
+                                signer_eth_address: None,
+                            }));
+                        }
+                    };
+                    let treasury_address = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                        .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
+                    match crate::rpc_server::utils::fetch_network_balance(&treasury_address, "eth").await {
+                        Ok(network_balance) => {
+                            if network_balance < target_amount {
+                                warn!(
+                                    "⚠️ [HTTP] Insufficient network (treasury vault) balance for BTC->TICS intent {}: have {}, need {}",
+                                    intent_hash_hex, network_balance, target_amount
+                                );
+                                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                    status: "error".to_string(),
+                                    intent_hash: intent_hash_hex.clone(),
+                                    error_message: Some(
+                                        "Insufficient network liquidity: treasury vault does not have enough TICS to fulfill this intent. Try again later.".to_string(),
+                                    ),
+                                    signer_eth_address: None,
+                                }));
+                            }
+                            info!(
+                                "✅ [HTTP] Treasury vault has sufficient TICS for BTC->TICS intent: {} >= {}",
+                                network_balance, target_amount
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [HTTP] Failed to fetch treasury vault balance for BTC->TICS intent {}: {}",
+                                intent_hash_hex, e
+                            );
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                intent_hash: intent_hash_hex.clone(),
+                                error_message: Some(format!("Failed to verify network liquidity: {}", e)),
+                                signer_eth_address: None,
+                            }));
+                        }
                     }
                 }
 
@@ -854,10 +972,11 @@ pub(crate) async fn handle_user_mpc_deposit(
                         "❌ Failed to store intent hash in user intent manager: {}",
                         e
                     );
-                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                        status: "error".to_string(),
-                        intent_hash: intent_hash_hex.clone(),
-                        error_message: Some(format!("Failed to process deposit intent: {e}")),
+                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                            status: "error".to_string(),
+                            intent_hash: intent_hash_hex.clone(),
+                            error_message: Some(format!("Failed to process deposit intent: {e}")),
+                            signer_eth_address: None,
                     }));
                 }
 
@@ -906,6 +1025,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                 status: "error".to_string(),
                 intent_hash: intent_hash_hex.clone(),
                 error_message: Some(error_message),
+                signer_eth_address: None,
             }));
         }
     }
@@ -919,6 +1039,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         status: "success".to_string(),
         intent_hash: intent_hash_hex,
         error_message: None,
+        signer_eth_address: None,
     }))
 }
 

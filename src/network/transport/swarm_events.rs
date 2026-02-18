@@ -233,7 +233,7 @@ impl MpcNetworkLayer {
                 }
             }
 
-            // Also request VRF round sync when connecting (after state sync completes if that ran)
+            // Also request round sync when connecting (after state sync completes if that ran)
             if !self.vrf_round_requested && !self.needs_database_sync {
                 swarm.behaviour_mut().request_response.send_request(
                     &peer_id,

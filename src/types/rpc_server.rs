@@ -81,6 +81,9 @@ pub struct UserMpcDepositVerifyResponse {
     /// Intent hash (hex); use this to fetch intent details later. Empty on error before hash is computed.
     pub intent_hash: String,
     pub error_message: Option<String>,
+    /// When present (e.g. on "User not registered"), the Ethereum address that signed the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer_eth_address: Option<String>,
 }
 
 /// Response for GET intent_details by intent hash. Error message from database is intentionally omitted (stripped).

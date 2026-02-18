@@ -150,6 +150,7 @@ pub async fn start_http_server(
                             error_message: Some(
                                 "Request timed out before processing could complete".to_string(),
                             ),
+                            signer_eth_address: None,
                         }),
                         warp::http::StatusCode::REQUEST_TIMEOUT,
                     );
