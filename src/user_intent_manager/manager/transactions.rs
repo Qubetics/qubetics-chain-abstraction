@@ -283,6 +283,12 @@ impl UserIntentManager {
         let pending = self.get_pending_transaction_intents().await;
         let source_lower = source_chain.to_lowercase();
         let mut out = Vec::with_capacity(limit.min(pending.len()));
+        // Track source addresses already included in this batch to ensure at most
+        // one intent per user per batch. Multiple intents from the same source_address
+        // cannot be safely processed in a single UserToVault batch because the on-chain
+        // nonce/balance would change after the first transfer.
+        let mut seen_source_addresses: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (intent_hash, intent, tx_ids) in pending {
             if out.len() >= limit {
                 break;
@@ -311,6 +317,12 @@ impl UserIntentManager {
             } else if intent.source_chain.to_lowercase() != source_lower {
                 continue;
             }
+            // Skip if we already have an intent from this source address in the batch.
+            // The second intent will be picked up in a subsequent batch cycle.
+            let source_addr_lower = intent.source_address.to_lowercase();
+            if seen_source_addresses.contains(&source_addr_lower) {
+                continue;
+            }
             if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
                 let status = user.intent_hashes.get(&intent_hash);
                 match batched_only {
@@ -327,6 +339,7 @@ impl UserIntentManager {
                         }
                     }
                 }
+                seen_source_addresses.insert(source_addr_lower);
                 out.push((intent_hash, intent, user.ethereum_address));
             }
         }
