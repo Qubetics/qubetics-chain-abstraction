@@ -286,6 +286,12 @@ impl MpcNetworkLayer {
     fn is_vrf_round_within_range(reference_round: Option<u64>, candidate_round: u64) -> bool {
         reference_round
             .map(|reference| {
+                // A node at round 0 has just started and has no established state.
+                // Accept any peer round so it can catch up to the network's current round
+                // via sync_rounds → update_round_from_peer_rounds (takes max).
+                if reference == 0 {
+                    return true;
+                }
                 candidate_round >= reference.saturating_sub(MAX_VRF_ROUND_SKEW)
                     && candidate_round <= reference.saturating_add(MAX_VRF_ROUND_SKEW)
             })

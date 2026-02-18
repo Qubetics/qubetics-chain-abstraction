@@ -532,7 +532,7 @@ impl MpcNetworkLayer {
                                                 crate::database::keys::PENDING_DISCONNECTION,
                                                 solver_id
                                             );
-                                            let _ = self.db.delete(&pending_key);
+                                            let _ = self.db.delete_string(&pending_key);
                                         }
                                         info!(
                                             "🧹 [PEER_INVALIDATION] Cleared PENDING_DISCONNECTION for {} solver(s) after tx confirmed (peerinv:{}), peers can now rejoin",

@@ -177,7 +177,7 @@ impl VrfStorage {
     /// Remove a peer's round from the database (for cleanup).
     pub fn remove_peer_round(&self, peer_id: &str) -> Result<()> {
         let key = format!("{}{}", self.prefix, key_utils::vrf_peer_round_key(peer_id));
-        self.db.delete(&key)?;
+        self.db.delete_string(&key)?;
         debug!(
             "🗑️ [VRF_STORAGE:{}] Removed peer {} round",
             self.prefix, peer_id

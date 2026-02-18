@@ -83,7 +83,7 @@ impl VersionStorage {
     /// Clear snapshot ID after successful upgrade
     pub async fn clear_snapshot_id(&self) -> Result<()> {
         let key = "upgrade:current_snapshot";
-        self.db.delete(&key)?;
+        self.db.delete_string(key)?;
         Ok(())
     }
 }
