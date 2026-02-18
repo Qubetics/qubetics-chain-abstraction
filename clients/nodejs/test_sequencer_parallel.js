@@ -536,17 +536,17 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address,  // BTC address
-      // source_address: userInfo.data.derived_btc_address,  // BTC address
+      // source_address: userInfo.data.derived_eth_address,  // BTC address
+      source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
-      target_address: "0xffd7d36cd36c285623b522c6373025cd9aebfb4d",
-      // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
-      source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
+      target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
+      source_chain: 'bitcoin',
+      target_chain: 'bitcoin',
       amount: amount,
-      source_token: 'TICS',
-      target_token: 'TICS',
+      source_token: 'BTC',
+      target_token: 'BTC',
       timestamp: intentTimestamp,
     };
 
@@ -866,7 +866,7 @@ async function step2_SubmitTransactions() {
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
     // const amount = "5000000000000000000";  // 12 TICS
-    const amount = "800000000000000000000";  // btc
+    const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });
