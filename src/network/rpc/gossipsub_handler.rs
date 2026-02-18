@@ -3925,6 +3925,38 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // Check on-chain if the solver is already invalidated (solverIdValidated == false).
+                // If already invalidated, skip creating PENDING_DISCONNECTION to avoid poisoning
+                // future batches — invalidateSolverIds reverts if any solver in the batch is
+                // already invalidated, which blocks invalidation of other solvers in the same batch.
+                if let Ok(Some(config)) = crate::contract::get_solver_contract_config() {
+                    let client = crate::contract::ContractClient::new(config.clone());
+                    if let Ok(client) = client {
+                        let contract = crate::contract::SolverManagerContract::new(&config, client.provider());
+                        if let Ok(contract) = contract {
+                            match contract.is_solver_id_validated(&solver_id).await {
+                                Ok(false) => {
+                                    info!(
+                                        "ℹ️ [PEER_DISCONNECT] Solver {} is already invalidated on-chain (solverIdValidated=false), skipping PENDING_DISCONNECTION",
+                                        solver_id
+                                    );
+                                    return Ok(());
+                                }
+                                Ok(true) => {
+                                    // Solver is still validated on-chain, proceed to create PENDING_DISCONNECTION
+                                }
+                                Err(e) => {
+                                    // Contract call failed — proceed anyway to avoid missing a real disconnection
+                                    warn!(
+                                        "⚠️ [PEER_DISCONNECT] Failed to check on-chain validation for solver {}: {} — proceeding with PENDING_DISCONNECTION",
+                                        solver_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Store the disconnection record for batch processing in epoch-2
                 let disconnection_record = serde_json::json!({
                     "peer_id": peer_id,

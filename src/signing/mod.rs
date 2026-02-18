@@ -7774,17 +7774,61 @@ impl SigningNode {
             return Ok(());
         }
 
-        let mut solver_ids: Vec<String> = Vec::new();
+        let mut all_solver_ids: Vec<String> = Vec::new();
         for key in &keys {
             if let Some(solver_id) = key.strip_prefix(prefix) {
                 if !solver_id.is_empty() {
-                    solver_ids.push(solver_id.to_string());
+                    all_solver_ids.push(solver_id.to_string());
                 }
             }
         }
 
-        if solver_ids.is_empty() {
+        if all_solver_ids.is_empty() {
             info!("✅ [PEER_INVALIDATION] No valid solver IDs to invalidate");
+            return Ok(());
+        }
+
+        // Filter out solvers that are already invalidated on-chain to avoid
+        // batch reverts (invalidateSolverIds reverts if any solver is already invalidated).
+        // Also clean up their PENDING_DISCONNECTION entries since they don't need processing.
+        let mut solver_ids: Vec<String> = Vec::new();
+        if let Ok(Some(config)) = crate::contract::get_solver_contract_config() {
+            if let Ok(client) = crate::contract::ContractClient::new(config.clone()) {
+                if let Ok(contract) = crate::contract::SolverManagerContract::new(&config, client.provider()) {
+                    for sid in &all_solver_ids {
+                        match contract.is_solver_id_validated(sid).await {
+                            Ok(true) => {
+                                solver_ids.push(sid.clone());
+                            }
+                            Ok(false) => {
+                                info!(
+                                    "ℹ️ [PEER_INVALIDATION] Solver {} is already invalidated on-chain, removing from batch and clearing PENDING_DISCONNECTION",
+                                    sid
+                                );
+                                let pending_key = format!("{}{}", prefix, sid);
+                                let _ = database.delete_string(&pending_key);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [PEER_INVALIDATION] Failed to check on-chain validation for {}: {} — including in batch",
+                                    sid, e
+                                );
+                                solver_ids.push(sid.clone());
+                            }
+                        }
+                    }
+                } else {
+                    solver_ids = all_solver_ids;
+                }
+            } else {
+                solver_ids = all_solver_ids;
+            }
+        } else {
+            solver_ids = all_solver_ids;
+        }
+
+        if solver_ids.is_empty() {
+            info!("✅ [PEER_INVALIDATION] All pending solvers are already invalidated on-chain, nothing to do");
             return Ok(());
         }
 

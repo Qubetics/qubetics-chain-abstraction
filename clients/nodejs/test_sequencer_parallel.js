@@ -536,17 +536,17 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      // source_address: userInfo.data.derived_eth_address,  // BTC address
-      source_address: userInfo.data.derived_btc_address,  // BTC address
+      source_address: userInfo.data.derived_eth_address,  // BTC address
+      // source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
-      // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
-      target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
-      source_chain: 'bitcoin',
-      target_chain: 'bitcoin',
+      target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
+      // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
+      source_chain: 'qubetics',
+      target_chain: 'qubetics',
       amount: amount,
-      source_token: 'BTC',
-      target_token: 'BTC',
+      source_token: 'TT',
+      target_token: 'TT',
       timestamp: intentTimestamp,
     };
 

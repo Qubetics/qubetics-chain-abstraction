@@ -20,6 +20,7 @@ abigen!(
         function getMinimumLiquidityTICS() view returns (uint256)
         function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
         function isSolverActive(string solverId) view returns (bool)
+        function isSolverIdValidated(string solverId) view returns (bool)
         function invalidateSolverIds(string[] solverIds)
     ]"#
 );
@@ -216,6 +217,17 @@ impl SolverManagerContract {
             .await
             .map_err(|e| anyhow!("isSolverActive call failed: {}", e))?;
         Ok(is_active)
+    }
+
+    /// Check if a solver ID is validated on-chain by solver ID string.
+    pub async fn is_solver_id_validated(&self, solver_id: &str) -> Result<bool> {
+        let validated = self
+            .inner
+            .is_solver_id_validated(solver_id.to_string())
+            .call()
+            .await
+            .map_err(|e| anyhow!("isSolverIdValidated call failed: {}", e))?;
+        Ok(validated)
     }
 
     /// Invalidate multiple solver IDs (marks them as inactive)
