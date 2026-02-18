@@ -7764,6 +7764,8 @@ impl SigningNode {
         let database = self.database.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Database not available"))?;
         
+        // Collect solver IDs from PENDING_DISCONNECTION entries
+        // Key format: "pending_disconnection:{solver_id}" — one entry per solver
         let prefix = crate::database::keys::PENDING_DISCONNECTION;
         let keys = database.get_keys_with_prefix_async(prefix).await.unwrap_or_default();
 
@@ -7772,18 +7774,11 @@ impl SigningNode {
             return Ok(());
         }
 
-        let mut solver_ids_seen = std::collections::HashSet::new();
         let mut solver_ids: Vec<String> = Vec::new();
-
-        for key in keys {
-            if let Ok(Some(record_str)) = database.get_string_async::<String>(&key).await {
-                if let Ok(record) = serde_json::from_str::<serde_json::Value>(&record_str) {
-                    if let Some(solver_id) = record.get("solver_id").and_then(|v| v.as_str()) {
-                        let id = solver_id.to_string();
-                        if solver_ids_seen.insert(id.clone()) {
-                            solver_ids.push(id);
-                        }
-                    }
+        for key in &keys {
+            if let Some(solver_id) = key.strip_prefix(prefix) {
+                if !solver_id.is_empty() {
+                    solver_ids.push(solver_id.to_string());
                 }
             }
         }

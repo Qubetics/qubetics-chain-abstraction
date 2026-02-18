@@ -60,7 +60,10 @@ pub const NONCE_R_POINT: &str = "nonce_r_point:";
 pub const NONCE_POOL_METRICS: &str = "nonce_pool_metrics";
 /// List of available (unconsumed) nonce tuple IDs for quick lookup
 pub const NONCE_AVAILABLE_IDS: &str = "nonce_available_ids";
-/// Pending peer disconnections for batch invalidation
+/// Pending peer disconnections for batch invalidation.
+/// Key format: "pending_disconnection:{solver_id}" — exactly one entry per solver.
+/// Created on disconnect, deleted after successful on-chain invalidateSolverIds tx.
+/// While this entry exists, the peer is blocked from rejoining the network.
 pub const PENDING_DISCONNECTION: &str = "pending_disconnection:";
 
 // ============================================================

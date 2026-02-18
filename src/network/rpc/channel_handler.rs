@@ -2221,7 +2221,7 @@ impl MpcNetworkLayer {
                         || intent.target_chain.eq_ignore_ascii_case("bitcoin");
                     (src_tics && dst_tics) || (src_btc && dst_btc)
                 };
-                let (_target_amount, has_sufficient_funds) = if is_same_chain {
+                let (target_amount, has_sufficient_funds) = if is_same_chain {
                     let target_amount = intent.amount.parse::<u128>().unwrap();
 
                     // For same-chain flows, use the DKG address on the corresponding chain.
@@ -2367,7 +2367,42 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Only once we know the network has sufficient funds do we broadcast the intent.
+                // Store the intent locally BEFORE broadcasting to gossipsub.
+                // The originating node does NOT receive its own gossipsub message (libp2p default),
+                // so we must store here. Peers will store via their gossipsub handler.
+                if let Some(ref uim) = self.user_intent_manager {
+                    // Store target_amount first (invariant: if intent stored, target_amount must exist)
+                    if let Err(e) = uim.store_intent_target_amount(&intent_hash, target_amount).await {
+                        warn!(
+                            "❌ [CHANNEL] Failed to store target amount for {}: {}. Rejecting intent.",
+                            intent_hash, e
+                        );
+                        return Ok(());
+                    }
+
+                    // Store the intent itself
+                    if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
+                        if let Err(e) = uim
+                            .store_intent_hash(intent_hash_bytes, &user_eth_address, &intent)
+                            .await
+                        {
+                            warn!(
+                                "❌ [CHANNEL] Failed to store intent hash {}: {}",
+                                intent_hash, e
+                            );
+                            return Ok(());
+                        }
+                    } else {
+                        warn!("❌ [CHANNEL] Invalid intent hash format: {}", intent_hash);
+                        return Ok(());
+                    }
+                    info!(
+                        "💾 [CHANNEL] Stored target amount {} and intent {} locally (originating node)",
+                        target_amount, intent_hash
+                    );
+                }
+
+                // Broadcast to all peers via gossipsub so they validate and store independently.
                 info!("🌐 [NETWORK] Broadcasting UserToVault deposit to P2P network");
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
                     intent: intent.clone(),
@@ -2585,6 +2620,14 @@ impl MpcNetworkLayer {
                         .unwrap_or_else(|_| libp2p::PeerId::random());
 
                     for intent_hash in intent_hashes.iter() {
+                        // Peer invalidation: already handled via gossipsub local processing (peerinv: prefix clears PENDING_DISCONNECTION)
+                        if intent_hash.starts_with("peerinv:") {
+                            info!(
+                                "ℹ️ [PEER_INVALIDATION] Skipping duplicate local processing for {} (already handled via gossipsub path)",
+                                intent_hash
+                            );
+                            continue;
+                        }
                         // Check if this is an add_liquidity request_id (starts with "addliq:")
                         if intent_hash.starts_with("addliq:") {
                             // This is an add_liquidity request, mark as Completed

@@ -25,7 +25,7 @@ if (!CONTRACT_ADDRESS || !CONTRACT_ADDRESS.startsWith('0x')) {
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
 // Three payer keys: each pays gas for its own solver (1,2,3).
-const SOLVER_PAYER_KEYS = ['SOLVER1_PK', 'SOLVER2_PK', 'SOLVER3_PK'];
+const SOLVER_PAYER_KEYS = ['SOLVER4_PK' ];
 const payerWallets = SOLVER_PAYER_KEYS.map((key) => {
   const pk = process.env[key];
   if (!pk) {
@@ -106,6 +106,34 @@ async function checkSolverStatus(solverId) {
   } catch (e) {
     console.error("❌ Error checking solver:", e.message);
     return { isOnboarded: false, isActive: false };
+  }
+}
+
+/**
+ * Check if a solver is validated
+ */
+async function checkSolverValidation(solverId) {
+  console.log(`\n✅ Checking validation for solver: ${solverId}\n`);
+
+  try {
+    const isOnboarded = await solverManager.isSolverOnboarded(solverId);
+    if (!isOnboarded) {
+      console.log("❌ Solver is not onboarded");
+      return false;
+    }
+
+    const solverInfo = await solverManager.getSolver(solverId);
+    const isValidated = solverInfo[5]; // index 5 = validated flag
+
+    console.log(`  Solver ID:   ${solverInfo[0]}`);
+    console.log(`  Solver Name: ${solverInfo[1]}`);
+    console.log(`  Validated:   ${isValidated ? '✅ Yes' : '❌ No'}`);
+    console.log(`  Active:      ${solverInfo[4] ? '✅ Yes' : '❌ No'}`);
+
+    return isValidated;
+  } catch (e) {
+    console.error("❌ Error checking validation:", e.message);
+    return false;
   }
 }
 
@@ -416,30 +444,31 @@ function assertUniqueWhitelistedAddresses(solverConfigs) {
     ethAddresses.push(eth);
     btcAddresses.push(btc);
   }
+  const count = solverConfigs.length;
   const ethSet = new Set(ethAddresses);
   const btcSet = new Set(btcAddresses);
-  if (ethSet.size !== 3) {
+  if (ethSet.size !== count) {
     const dup = ethAddresses.filter((e, i) => ethAddresses.indexOf(e) !== i);
     throw new Error(
-      `All 3 ETH whitelisted addresses must be unique. Duplicates or missing: ${dup.join(", ") || "check ethAddress per solver"}`
+      `All ${count} ETH whitelisted addresses must be unique. Duplicates: ${dup.join(", ") || "check ethAddress per solver"}`
     );
   }
-  if (btcSet.size !== 3) {
+  if (btcSet.size !== count) {
     const dup = btcAddresses.filter((e, i) => btcAddresses.indexOf(e) !== i);
     throw new Error(
-      `All 3 BTC whitelisted addresses must be unique. Duplicates or missing: ${dup.join(", ") || "check btcAddress per solver"}`
+      `All ${count} BTC whitelisted addresses must be unique. Duplicates: ${dup.join(", ") || "check btcAddress per solver"}`
     );
   }
   // Cross-check: no ETH address equals a BTC address (by value)
   const allNormalized = [...ethAddresses, ...btcAddresses];
-  if (new Set(allNormalized).size !== 6) {
+  if (new Set(allNormalized).size !== count * 2) {
     throw new Error("ETH and BTC whitelisted addresses must not repeat across solvers.");
   }
-  console.log("✓ All 6 whitelisted addresses (3 ETH + 3 BTC) are unique.\n");
+  console.log(`✓ All ${count * 2} whitelisted addresses (${count} ETH + ${count} BTC) are unique.\n`);
 }
 
 async function main() {
-  console.log("🚀 SolverManager — 3 Solvers: Onboard, Validate, Add Liquidity\n");
+  console.log("🚀 SolverManager — Onboard, Validate, Add Liquidity\n");
 
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
@@ -453,41 +482,41 @@ async function main() {
   // Signers: SOLVER1_PK, SOLVER2_PK, SOLVER3_PK in .env = the 3 private keys from addr_gen.js.
   // Whitelisted addresses (do not fund): 3 ETH + 3 BTC below, one pair per solver; all unique.
   const SOLVER_ETH_ADDRESSES = [
-    "0x7B1a2c3D4E5f60718293a4b5C6d7E8F901234567",
-    "0xA1b2C3d4E5F60718293A4b5c6D7e8F901234568",
-    "0x1234567890aBCdEf1234567890abCDef12345678"
+    "0x36D35b85b8664a48A41B93dA2fE48AD7fB25b76F",
+    // "0x1dF8C867c71B270Da6b60CA0cf9328ace3757593",
+    // "0x04023269c934B3D249ACFBCdAF37C289C23F72e8"
   ];
   const SOLVER_BTC_ADDRESSES = [
-    "bc1q9y2u8v7d6s5r4t3p2n1m0l9k8j7h6g5f4d3c2b",
-    "bc1q2w3e4r5t6y7u8i9o0pplkjhgfdsazxcvbnm123",
-    "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+    "tb1qhtnzsm4kgpj4q6prztnp535a48yeulaj0zd7nw",
+    // "tb1qahuwhrh27rud5sd03dfd85fjl52d8l288v04sf",
+    // "tb1qdz0arcvm9psgd3839dsnzlasm7nmydrxjcelpq"
   ];
 
   const solverConfigs = [
     {
-      solverId: "12D3KooWJUCBJ99wWnd2bF222XHeqRzzNeFQT9ZTD5vfwPc9sHRV",
-      solverName: "Solver_Alphaaaa",
+      solverId: "12D3KooWQ3Bc6aWR9NccXSSB4XPFAXz3VNKUkoEGojmEoATpyd3K",
+      solverName: "Solver_RRR",
       ethAddress: process.env.SOLVER1_ETH || SOLVER_ETH_ADDRESSES[0],
       btcAddress: process.env.SOLVER1_BTC || SOLVER_BTC_ADDRESSES[0],
       signer: eip712Signer,
       txSender: payerWallets[0]
     },
-    {
-      solverId: "12D3KooWQLmPhQvkcG2ysWWQGBT7fuWEEwEVShbRWtLe1y3bN8oC",
-      solverName: "Solver_Betaaaa",
-      ethAddress: process.env.SOLVER2_ETH || SOLVER_ETH_ADDRESSES[1],
-      btcAddress: process.env.SOLVER2_BTC || SOLVER_BTC_ADDRESSES[1],
-      signer: eip712Signer,
-      txSender: payerWallets[1]
-    },
-    {
-      solverId: "12D3KooWBQD5KA83cpZLXi2d82XeR6YmMfJJn7iooJixkFCNnFD2",
-      solverName: "Solver_Gammaaaa",
-      ethAddress: process.env.SOLVER3_ETH || SOLVER_ETH_ADDRESSES[2],
-      btcAddress: process.env.SOLVER3_BTC || SOLVER_BTC_ADDRESSES[2],
-      signer: eip712Signer,
-      txSender: payerWallets[2]
-    }
+    // {
+    //   solverId: "12D3KooWK5VH7gjsxffXbEfqayEMys65KSvqXMFaoeg1YsALioVW",
+    //   solverName: "Solver_xyz",
+    //   ethAddress: process.env.SOLVER2_ETH || SOLVER_ETH_ADDRESSES[1],
+    //   btcAddress: process.env.SOLVER2_BTC || SOLVER_BTC_ADDRESSES[1],
+    //   signer: eip712Signer,
+    //   txSender: payerWallets[1]
+    // },
+    // {
+    //   solverId: "12D3KooWSo86jwURwuKmacuNRh1AaTPX3d6PgYVkc1fmUcC8vv35",
+    //   solverName: "Solver_pqr",
+    //   ethAddress: process.env.SOLVER3_ETH || SOLVER_ETH_ADDRESSES[2],
+    //   btcAddress: process.env.SOLVER3_BTC || SOLVER_BTC_ADDRESSES[2],
+    //   signer: eip712Signer,
+    //   txSender: payerWallets[2]
+    // }
   ].map((c) => ({
     ...c,
     // Order must match CHAIN_IDS [0, 9029]: index 0 = BTC, index 1 = ETH
@@ -503,33 +532,33 @@ async function main() {
   const liquidityAmountBTC = ethers.BigNumber.from(liquidityAmountBTCStr);
 
   // --- 1. Onboard each solver ---
-  // console.log("\n" + "=".repeat(80));
-  // console.log("STEP 1: ONBOARD (3 solvers)");
-  // console.log("=".repeat(80));
+  console.log("\n" + "=".repeat(80));
+  console.log(`STEP 1: ONBOARD (${solverConfigs.length} solver(s))`);
+  console.log("=".repeat(80));
 
-  // for (const cfg of solverConfigs) {
-  //   await onboardSolver(
-  //     cfg.solverId,
-  //     cfg.solverName,
-  //     CHAIN_IDS,
-  //     cfg.solverAddresses,
-  //     cfg.signer,
-  //     cfg.txSender
-  //   );
-  // }
+  for (const cfg of solverConfigs) {
+    await onboardSolver(
+      cfg.solverId,
+      cfg.solverName,
+      CHAIN_IDS,
+      cfg.solverAddresses,
+      cfg.signer,
+      cfg.txSender
+    );
+  }
 
   // --- 2. Validate each solver ---
-  // console.log("\n" + "=".repeat(80));
-  // console.log("STEP 2: VALIDATE (3 solvers)");
-  // console.log("=".repeat(80));
+  console.log("\n" + "=".repeat(80));
+  console.log(`STEP 2: VALIDATE (${solverConfigs.length} solver(s))`);
+  console.log("=".repeat(80));
 
-  // for (const cfg of solverConfigs) {
-  //   await validateSolver(cfg.solverId, cfg.signer, cfg.txSender);
-  // }
+  for (const cfg of solverConfigs) {
+    await validateSolver(cfg.solverId, cfg.signer, cfg.txSender);
+  }
 
   // --- 3. Add liquidity (one batch: all 3 solvers) ---
   console.log("\n" + "=".repeat(80));
-  console.log("STEP 3: ADD LIQUIDITY BATCH (3 solvers)");
+  console.log(`STEP 3: ADD LIQUIDITY BATCH (${solverConfigs.length} solver(s))`);
   console.log("=".repeat(80));
 
   const deposits = [];
@@ -569,7 +598,7 @@ async function main() {
   console.log(`\n  Total: ${active.length} active, ${inactive.length} inactive`);
 
   console.log("\n" + "=".repeat(80));
-  console.log("✅ DONE — 3 solvers onboarded, validated, liquidity added, status checked.");
+  console.log(`✅ DONE — ${solverConfigs.length} solver(s) onboarded, validated, liquidity added, status checked.`);
   console.log("=".repeat(80));
 }
 

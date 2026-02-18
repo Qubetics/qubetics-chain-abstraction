@@ -22,6 +22,7 @@ impl MpcNetworkLayer {
             "withdraw_liquidity" | "withdrawLiquidity" => Ok(TransactionType::WithdrawLiquidity),
             "claim_reward" => Ok(TransactionType::ClaimReward),
             "intent_status_update" => Ok(TransactionType::IntentStatusUpdate),
+            "peer_invalidation" => Ok(TransactionType::PeerInvalidation),
             _ => Err(anyhow::anyhow!("Unknown transaction type: {}", tx_type_str)),
         }
     }
@@ -98,6 +99,16 @@ impl MpcNetworkLayer {
                 // before calling this function, but we handle it gracefully here
                 info!(
                     "ℹ️ [ADD_LIQUIDITY] Transaction ID {} for request {} (handled separately in RocksDB)",
+                    transaction_id, intent_hash
+                );
+                Ok(())
+            }
+            "peer_invalidation" => {
+                // peer_invalidation is handled separately via peerinv: prefix in TransactionIdBroadcast handler
+                // (clears PENDING_DISCONNECTION entries). This path should not typically be reached
+                // since peerinv: intent_hashes are intercepted before calling this function.
+                info!(
+                    "ℹ️ [PEER_INVALIDATION] Transaction ID {} for intent {} (handled separately via peerinv: prefix)",
                     transaction_id, intent_hash
                 );
                 Ok(())

@@ -1611,19 +1611,16 @@ impl MpcNetworkLayer {
         // pending, abort early — do not restore DKG state or sync nonces.
         {
             let self_solver_id = self.local_peer_id.to_string();
-            let prefix = format!(
+            let pending_key = format!(
                 "{}{}",
                 crate::database::keys::PENDING_DISCONNECTION,
                 self_solver_id
             );
-            if let Ok(pending_keys) = self.db.get_keys_with_prefix_async(&prefix).await {
-                if !pending_keys.is_empty() {
-                    warn!(
-                        "🚫 [SELF_CHECK] This node has {} pending_disconnection record(s) — skipping node joining check until invalidation completes",
-                        pending_keys.len()
-                    );
-                    return Ok(());
-                }
+            if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
+                warn!(
+                    "🚫 [SELF_CHECK] This node has a pending invalidation — skipping node joining check until invalidation completes"
+                );
+                return Ok(());
             }
         }
 

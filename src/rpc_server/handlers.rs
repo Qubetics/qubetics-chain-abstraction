@@ -961,26 +961,10 @@ pub(crate) async fn handle_user_mpc_deposit(
                     }
                 }
 
-                let intent_hash_bytes = intent_hash.to_vec();
-                // Store intent hash directly in the local user intent manager instead of
-                // broadcasting it via ChannelMessage::IntentHash / gossipsub.
-                if let Err(e) = user_intent_manager
-                    .store_intent_hash(intent_hash_bytes.clone(), &signer, &req.msg)
-                    .await
-                {
-                    error!(
-                        "❌ Failed to store intent hash in user intent manager: {}",
-                        e
-                    );
-                        return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
-                            status: "error".to_string(),
-                            intent_hash: intent_hash_hex.clone(),
-                            error_message: Some(format!("Failed to process deposit intent: {e}")),
-                            signer_eth_address: None,
-                    }));
-                }
-
-                info!("✅ Stored intent hash for user: {}", signer);
+                // NOTE: Do NOT store the intent here at RPC level.
+                // Storage happens in the gossipsub handler after all validations pass.
+                // Storing here would cause the channel handler's duplicate check to
+                // block the gossipsub broadcast, so peers would never receive the intent.
 
                 user_reg
             }

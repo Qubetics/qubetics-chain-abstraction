@@ -492,29 +492,52 @@ impl MpcNetworkLayer {
                         if intent_hash.starts_with("peerinv:") {
                             if let Some(round_str) = intent_hash.strip_prefix("peerinv:") {
                                 if let Ok(_round_u64) = round_str.parse::<u64>() {
-                                    let solver_ids = {
+                                    // Get solver IDs from in-memory map (populated when PeerInvalidationBatch was received)
+                                    let solver_ids_from_map = {
                                         let mut pending =
                                             self.peer_invalidation_pending.lock().await;
                                         pending.remove(round_str)
                                     };
-                                    if let Some(ids) = solver_ids {
-                                        for solver_id in &ids {
-                                            let prefix = format!(
+
+                                    // Use in-memory map if available; otherwise fall back to scanning
+                                    // all PENDING_DISCONNECTION keys from DB (covers restarts / timing gaps)
+                                    let solver_ids_to_clear: Vec<String> = if let Some(ids) = solver_ids_from_map {
+                                        ids
+                                    } else {
+                                        let prefix = crate::database::keys::PENDING_DISCONNECTION;
+                                        let mut fallback_ids = Vec::new();
+                                        if let Ok(all_keys) = self.db.get_keys_with_prefix_async(prefix).await {
+                                            for key in &all_keys {
+                                                // Key format: "pending_disconnection:{solver_id}"
+                                                if let Some(solver_id) = key.strip_prefix(prefix) {
+                                                    fallback_ids.push(solver_id.to_string());
+                                                }
+                                            }
+                                        }
+                                        if !fallback_ids.is_empty() {
+                                            info!(
+                                                "🔄 [PEER_INVALIDATION] In-memory map empty for round {}; found {} solver(s) from DB fallback scan",
+                                                round_str, fallback_ids.len()
+                                            );
+                                        }
+                                        fallback_ids
+                                    };
+
+                                    // Delete the PENDING_DISCONNECTION entry for each solver
+                                    // so the solver is no longer blocked from rejoining and won't be picked up again
+                                    if !solver_ids_to_clear.is_empty() {
+                                        for solver_id in &solver_ids_to_clear {
+                                            let pending_key = format!(
                                                 "{}{}",
                                                 crate::database::keys::PENDING_DISCONNECTION,
                                                 solver_id
                                             );
-                                            if let Ok(keys) =
-                                                self.db.get_keys_with_prefix_async(&prefix).await
-                                            {
-                                                for key in keys {
-                                                    let _ = self.db.delete(&key);
-                                                }
-                                            }
+                                            let _ = self.db.delete(&pending_key);
                                         }
                                         info!(
-                                            "🧹 [PEER_INVALIDATION] Cleared PENDING_DISCONNECTION for {} solver(s) after tx confirmed (TransactionIdBroadcast peerinv:)",
-                                            ids.len()
+                                            "🧹 [PEER_INVALIDATION] Cleared PENDING_DISCONNECTION for {} solver(s) after tx confirmed (peerinv:{}), peers can now rejoin",
+                                            solver_ids_to_clear.len(),
+                                            round_str
                                         );
                                     }
                                 }
@@ -3888,24 +3911,21 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Store the disconnection record for batch processing in epoch-2
-                // Use solver_id and timestamp for uniqueness and deduplication
-                let key = format!(
-                    "{}{}:{}",
+                // One PENDING_DISCONNECTION entry per solver — check if already exists
+                let pending_key = format!(
+                    "{}{}",
                     crate::database::keys::PENDING_DISCONNECTION,
-                    solver_id,
-                    timestamp
+                    solver_id
                 );
-
-                // Check if this exact disconnection already exists (idempotency)
-                if let Ok(Some(_)) = self.db.get_string::<String>(&key) {
+                if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
                     info!(
-                        "ℹ️  [PEER_DISCONNECT] Disconnection record already exists for solver {} at timestamp {}, skipping",
-                        solver_id, timestamp
+                        "ℹ️ [PEER_DISCONNECT] PENDING_DISCONNECTION already exists for solver {}, skipping duplicate",
+                        solver_id
                     );
                     return Ok(());
                 }
 
+                // Store the disconnection record for batch processing in epoch-2
                 let disconnection_record = serde_json::json!({
                     "peer_id": peer_id,
                     "solver_id": solver_id,
@@ -3914,15 +3934,15 @@ impl MpcNetworkLayer {
                 });
 
                 if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
-                    if let Err(e) = self.db.put_string(&key, &record_str) {
+                    if let Err(e) = self.db.put_string(&pending_key, &record_str) {
                         error!(
                             "❌ [PEER_DISCONNECT] Failed to store disconnection record: {}",
                             e
                         );
                     } else {
                         info!(
-                            "💾 [PEER_DISCONNECT] Stored disconnection record for solver: {} (key: {})",
-                            solver_id, key
+                            "💾 [PEER_DISCONNECT] Stored disconnection record for solver: {}",
+                            solver_id
                         );
                     }
                 }

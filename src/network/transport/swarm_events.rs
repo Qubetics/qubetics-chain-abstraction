@@ -104,19 +104,17 @@ impl MpcNetworkLayer {
         //     }
         // }
 
-        // 2. Pending invalidation check — block peer if invalidateSolverIds txn is in-flight
+        // 2. Pending invalidation check — block peer if invalidateSolverIds txn is pending or in-flight
         {
             let solver_id = peer_id.to_string();
-            let prefix = format!("{}{}", keys::PENDING_DISCONNECTION, solver_id);
-            if let Ok(pending_keys) = self.db.get_keys_with_prefix_async(&prefix).await {
-                if !pending_keys.is_empty() {
-                    warn!(
-                        "🚫 [REJOIN_BLOCKED] Peer {} has {} pending_disconnection record(s) — rejecting connection until invalidation transaction completes",
-                        peer_id, pending_keys.len()
-                    );
-                    swarm.disconnect_peer_id(peer_id).ok();
-                    return Ok(());
-                }
+            let pending_key = format!("{}{}", keys::PENDING_DISCONNECTION, solver_id);
+            if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
+                warn!(
+                    "🚫 [REJOIN_BLOCKED] Peer {} has a pending invalidation — rejecting connection until invalidation transaction completes",
+                    peer_id
+                );
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
             }
         }
 
@@ -640,6 +638,23 @@ impl MpcNetworkLayer {
 
                 // STEP 1.5: Broadcast peer disconnection for contract invalidation
                 let solver_id = peer_id.to_string(); // peer_id IS the solver_id
+
+                // One PENDING_DISCONNECTION entry per solver — check if already exists
+                let pending_key = format!(
+                    "{}{}",
+                    keys::PENDING_DISCONNECTION,
+                    solver_id
+                );
+                if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
+                    info!(
+                        "ℹ️ [DISCONNECT] PENDING_DISCONNECTION already exists for solver {}, skipping duplicate broadcast",
+                        solver_id
+                    );
+                    // Still process the internal disconnect (remove from active nodes etc.)
+                    self.handle_node_disconnect_internal(peer_id).await;
+                    return;
+                }
+
                 let disconnection_msg = GossipsubMessage::PeerDisconnection {
                     peer_id: peer_id.to_string(),
                     solver_id: solver_id.clone(),
@@ -668,12 +683,7 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Store locally for batch processing
-                let key = format!(
-                    "{}{}",
-                    crate::database::keys::PENDING_DISCONNECTION,
-                    peer_id
-                );
+                // Store locally for batch processing — one entry per solver (no timestamp suffix)
                 let disconnection_record = serde_json::json!({
                     "peer_id": peer_id.to_string(),
                     "solver_id": solver_id,
@@ -682,7 +692,7 @@ impl MpcNetworkLayer {
                 });
 
                 if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
-                    if let Err(e) = self.db.put_string(&key, &record_str) {
+                    if let Err(e) = self.db.put_string(&pending_key, &record_str) {
                         error!(
                             "❌ [DISCONNECT] Failed to store disconnection record: {}",
                             e
