@@ -318,17 +318,26 @@ impl UserIntentManager {
                 continue;
             }
             // For BTC-source intents, skip if amount is below Bitcoin dust limit (546 sats).
-            // These can never produce a valid on-chain transaction, so exclude them from the batch
-            // to avoid wasting gossipsub bandwidth and nonce reservations.
+            // These can never produce a valid on-chain transaction, so mark them Rejected
+            // immediately so they are never re-picked in future batch cycles.
             let is_btc_source = intent.source_chain.eq_ignore_ascii_case("bitcoin")
                 || intent.source_chain.eq_ignore_ascii_case("btc");
             if is_btc_source {
                 let parsed_amount: u64 = intent.amount.parse().unwrap_or(0);
                 if parsed_amount < crate::utils::transaction::DUST_LIMIT_SATS {
                     warn!(
-                        "⚠️ [BATCH_PICK] Skipping intent {} — BTC amount {} sats below dust limit {}",
+                        "⚠️ [BATCH_PICK] Rejecting intent {} — BTC amount {} sats below dust limit {}",
                         intent_hash, parsed_amount, crate::utils::transaction::DUST_LIMIT_SATS
                     );
+                    if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
+                        let _ = self
+                            .update_intent_status(
+                                &user.tics_address,
+                                &intent_hash,
+                                IntentStatus::Rejected,
+                            )
+                            .await;
+                    }
                     continue;
                 }
             }
