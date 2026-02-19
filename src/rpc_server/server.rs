@@ -17,9 +17,9 @@ use crate::{
 use super::{
     errors::RpcError,
     handlers::{
-        handle_add_liquidity, handle_claim_reward, handle_get_dkg_status,
-        handle_get_intent_details, handle_get_intents_solved_count, handle_get_network_addresses,
-        handle_get_node_id, handle_get_pending_intents_count,
+        handle_add_liquidity, handle_check_peer_connection, handle_claim_reward,
+        handle_get_dkg_status, handle_get_intent_details, handle_get_intents_solved_count,
+        handle_get_network_addresses, handle_get_node_id, handle_get_pending_intents_count,
         handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
         handle_get_status, handle_get_uptime, handle_get_user_count, handle_get_user_info,
         handle_heartbeat, handle_log_partial_pubkeys, handle_register_user, handle_rejoin_status,
@@ -288,6 +288,12 @@ pub async fn start_http_server(
         .and(with_database(database.clone()))
         .and_then(handle_rejoin_status);
 
+    let check_peer_connection = warp::path("check-peer-connection")
+        .and(warp::path::param::<String>())
+        .and(warp::get())
+        .and(with_message_tx(message_tx.clone()))
+        .and_then(handle_check_peer_connection);
+
     // Upgrade endpoints
     let validate_upgrade = warp::path("validate-upgrade")
         .and(warp::post())
@@ -351,6 +357,7 @@ pub async fn start_http_server(
         .or(get_pending_intents_count)
         .or(get_user_count)
         .or(rejoin_status)
+        .or(check_peer_connection)
         .or(validate_upgrade)
         .or(upgrade)
         .or(upgrade_status)

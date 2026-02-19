@@ -362,6 +362,11 @@ pub enum ChannelMessage {
     NodeMultiaddrRequest {
         responder: oneshot::Sender<Option<String>>,
     },
+    /// Check if this node is connected to a specific peer.
+    PeerConnectionCheck {
+        peer_id: String,
+        responder: oneshot::Sender<bool>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

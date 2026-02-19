@@ -137,6 +137,26 @@ impl SigningNode {
         }
     }
 
+    /// Clear stale pending rounds and apply fresh state from peer.
+    /// Used during state sync on rejoin to avoid mixing stale and fresh data.
+    pub async fn clear_and_apply_synced_pending_rounds(
+        &self,
+        withdraw_rounds: &[u64],
+        claim_reward_rounds: &[u64],
+    ) {
+        let mut wr = self.pending.withdraw_rounds.write().await;
+        wr.clear();
+        for r in withdraw_rounds {
+            wr.insert(*r);
+        }
+
+        let mut cr = self.pending.claim_reward_rounds.write().await;
+        cr.clear();
+        for r in claim_reward_rounds {
+            cr.insert(*r);
+        }
+    }
+
     pub fn vrf_service(&self) -> Option<&VrfService> {
         self.coordination.vrf_service()
     }

@@ -563,6 +563,22 @@ impl Database {
             .await
             .map_err(|e| anyhow!("Join error during import_batch_async: {}", e))?
     }
+
+    /// Delete all keys matching a prefix and return the number deleted.
+    pub async fn delete_keys_with_prefix_async(&self, prefix: &str) -> Result<usize> {
+        let db = self.clone();
+        let prefix = prefix.to_owned();
+        task::spawn_blocking(move || {
+            let keys = db.get_keys_with_prefix(&prefix)?;
+            let count = keys.len();
+            for key in &keys {
+                db.delete_string(key)?;
+            }
+            Ok(count)
+        })
+        .await
+        .map_err(|e| anyhow!("Join error during delete_keys_with_prefix_async: {}", e))?
+    }
 }
 
 /// Implement KeyStore trait for Database

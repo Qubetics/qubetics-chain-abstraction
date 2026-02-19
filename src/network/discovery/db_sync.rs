@@ -226,6 +226,29 @@ impl MpcNetworkLayer {
             peer_id
         );
 
+        // Purge stale pending entries before importing fresh state from peer.
+        // Only transient/pending prefixes are purged — static data (users, intents, DKG) is additive.
+        use crate::database::primitives::keys;
+        let pending_prefixes = [
+            keys::PENDING_TRANSACTION,
+            keys::PENDING_DISCONNECTION,
+            keys::DISCONNECTION_STAGING,
+            keys::PENDING_WITHDRAW_LIQUIDITY,
+            keys::PENDING_CLAIM_REWARD,
+            keys::SOLVER_ADD_LIQUIDITY,
+        ];
+        for prefix in &pending_prefixes {
+            match self.db.delete_keys_with_prefix_async(prefix).await {
+                Ok(count) if count > 0 => {
+                    info!("🗑️ [STATE_SYNC] Purged {} stale entries for prefix {}", count, prefix);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("⚠️ [STATE_SYNC] Failed to purge prefix {}: {}", prefix, e);
+                }
+            }
+        }
+
         if let Some((prefix, _)) = self.state_sync_state.current_prefix() {
             let request = RPCRequest::RequestStateSyncBatch {
                 prefix: prefix.clone(),
@@ -325,7 +348,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Apply synced withdraw_rounds, claim_reward_rounds, and peer_invalidation_pending.
+    /// Clear stale in-memory pending state and apply fresh state from peer.
     async fn apply_synced_pending_rounds(&mut self) {
         let (wr, cr) = (
             self.state_sync_state.withdraw_rounds.clone(),
@@ -335,9 +358,10 @@ impl MpcNetworkLayer {
 
         if let Some(arc) = &self.signing_node {
             let node = arc.lock().await;
-            node.apply_synced_pending_rounds(&wr, &cr).await;
+            // Clear stale rounds first, then apply fresh state from peer
+            node.clear_and_apply_synced_pending_rounds(&wr, &cr).await;
             info!(
-                "✅ [STATE_SYNC] Applied {} withdraw_rounds and {} claim_reward_rounds to PendingStore",
+                "✅ [STATE_SYNC] Cleared and applied {} withdraw_rounds and {} claim_reward_rounds to PendingStore",
                 wr.len(),
                 cr.len()
             );
@@ -345,15 +369,17 @@ impl MpcNetworkLayer {
             warn!("⚠️ [STATE_SYNC] No signing_node; skipped applying pending rounds");
         }
 
-        if !peer_inv.is_empty() {
+        // Clear stale peer_invalidation_pending, then apply fresh state from peer
+        {
             let mut pending = self.peer_invalidation_pending.lock().await;
+            pending.clear();
             for (round, solver_ids) in peer_inv {
                 pending.insert(round, solver_ids);
             }
-            info!(
-                "✅ [STATE_SYNC] Applied {} peer_invalidation_pending entries",
-                self.state_sync_state.peer_invalidation_pending.len()
-            );
         }
+        info!(
+            "✅ [STATE_SYNC] Cleared and applied {} peer_invalidation_pending entries",
+            self.state_sync_state.peer_invalidation_pending.len()
+        );
     }
 }

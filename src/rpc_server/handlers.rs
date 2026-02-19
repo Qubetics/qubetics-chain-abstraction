@@ -20,12 +20,12 @@ use crate::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
             GetSolverRewardsResponse, HeartbeatResponse, IntentDetailsResponse,
-            IntentsSolvedCountResponse, NodeIdResponse, PendingClaimRewardRequest,
-            PendingIntentsCountResponse, PendingWithdrawRequest, RejoinStatusResponse,
-            RequestContext, SolverLiquidityRequest, SolverLiquidityResponse,
-            UnclaimedRewardEntry, UptimeResponse, UserCountResponse, UserInfoResponse,
-            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
-            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            IntentsSolvedCountResponse, NodeIdResponse, PeerConnectionResponse,
+            PendingClaimRewardRequest, PendingIntentsCountResponse, PendingWithdrawRequest,
+            RejoinStatusResponse, RequestContext, SolverLiquidityRequest,
+            SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse, UserCountResponse,
+            UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
+            UserRegistrationRequest, WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
         IntentStatus,
     },
@@ -3114,5 +3114,45 @@ pub(crate) async fn handle_rejoin_status(
         blocked,
         pending_records,
         message,
+    }))
+}
+
+pub(crate) async fn handle_check_peer_connection(
+    peer_id: String,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let (responder, receiver) = tokio::sync::oneshot::channel();
+    {
+        let tx = message_tx.lock().await;
+        tx.send(ChannelMessage::PeerConnectionCheck {
+            peer_id: peer_id.clone(),
+            responder,
+        })
+        .await
+        .map_err(|e| {
+            warp::reject::custom(super::errors::RpcError::InternalError(format!(
+                "Failed to send peer connection check: {e}"
+            )))
+        })?;
+    }
+
+    let connected = tokio::time::timeout(Duration::from_secs(5), receiver)
+        .await
+        .map_err(|_| {
+            warp::reject::custom(super::errors::RpcError::Timeout(
+                "Timed out checking peer connection".to_string(),
+            ))
+        })
+        .and_then(|res| {
+            res.map_err(|e| {
+                warp::reject::custom(super::errors::RpcError::InternalError(format!(
+                    "Failed to receive peer connection status: {e}"
+                )))
+            })
+        })?;
+
+    Ok(warp::reply::json(&PeerConnectionResponse {
+        peer_id,
+        connected,
     }))
 }

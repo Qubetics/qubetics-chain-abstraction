@@ -377,3 +377,9 @@ pub struct RejoinStatusResponse {
     pub pending_records: usize,
     pub message: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerConnectionResponse {
+    pub peer_id: String,
+    pub connected: bool,
+}
