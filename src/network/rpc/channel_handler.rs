@@ -2790,10 +2790,46 @@ impl MpcNetworkLayer {
                     continue;
                 }
             };
-            let target_amount = user_intent_manager
+            // Use stored target_amount (pre-computed at intent submission).
+            // For cross-chain intents source and target use different units
+            // (e.g. wei vs sats), so falling back to source_amount is wrong.
+            let target_amount = match user_intent_manager
                 .get_intent_target_amount(intent_hash)
                 .await
-                .unwrap_or(source_amount);
+            {
+                Some(amt) => amt,
+                None => {
+                    if intent.source_chain.eq_ignore_ascii_case(&intent.target_chain) {
+                        source_amount
+                    } else {
+                        // Cross-chain: re-compute via price feed
+                        warn!(
+                            "⚠️ [BTC_INTENT_MANAGER] No stored target_amount for cross-chain intent {}; computing fallback",
+                            intent_hash
+                        );
+                        match crate::rpc_server::utils::fetch_crypto_prices().await {
+                            Ok(prices) => {
+                                match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                                    source_amount,
+                                    &intent.source_chain,
+                                    &intent.target_chain,
+                                    &prices,
+                                ) {
+                                    Ok(amt) => amt,
+                                    Err(e) => {
+                                        error!("❌ [BTC_INTENT_MANAGER] Fallback conversion failed for intent {}: {:?}", intent_hash, e);
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [BTC_INTENT_MANAGER] Failed to fetch prices for fallback on intent {}: {}", intent_hash, e);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            };
 
             // Get transaction IDs
             let tx_ids = user_intent_manager

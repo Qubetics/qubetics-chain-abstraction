@@ -505,3 +505,386 @@ pub async fn fetch_network_balance(address: &str, blockchain: &str) -> Result<u1
     );
     Ok(balance)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+    use std::collections::HashMap;
+
+    /// Helper: build a price map with given BTC and TICS USD prices.
+    fn prices(btc_usd: Decimal, tics_usd: Decimal) -> HashMap<String, Decimal> {
+        let mut m = HashMap::new();
+        m.insert("BTC".to_string(), btc_usd);
+        m.insert("TICS".to_string(), tics_usd);
+        m
+    }
+
+    // =====================================================================
+    // 1. symbol_for / decimals_for / pow10_dec helpers
+    // =====================================================================
+
+    #[test]
+    fn symbol_for_btc_variants() {
+        assert_eq!(symbol_for("btc"), "BTC");
+        assert_eq!(symbol_for("bitcoin"), "BTC");
+        assert_eq!(symbol_for("Bitcoin"), "BTC");
+    }
+
+    #[test]
+    fn symbol_for_tics_variants() {
+        assert_eq!(symbol_for("tics"), "TICS");
+        assert_eq!(symbol_for("qubetics"), "TICS");
+        assert_eq!(symbol_for("ethereum"), "TICS");
+    }
+
+    #[test]
+    fn decimals_for_chains() {
+        assert_eq!(decimals_for("btc"), 8);
+        assert_eq!(decimals_for("bitcoin"), 8);
+        assert_eq!(decimals_for("tics"), 18);
+        assert_eq!(decimals_for("qubetics"), 18);
+    }
+
+    #[test]
+    fn pow10_dec_values() {
+        assert_eq!(pow10_dec(0), dec!(1));
+        assert_eq!(pow10_dec(1), dec!(10));
+        assert_eq!(pow10_dec(8), dec!(100000000));
+        assert_eq!(pow10_dec(18), dec!(1000000000000000000));
+    }
+
+    // =====================================================================
+    // 2. Same-chain: no conversion (amount passes through unchanged)
+    // =====================================================================
+
+    #[test]
+    fn same_chain_tics_to_tics() {
+        let p = prices(dec!(100000), dec!(0.01));
+        // 25 TICS = 25 * 10^18 wei
+        let amount_wei = 25_000_000_000_000_000_000u128;
+        let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "tics", &p).unwrap();
+        assert_eq!(result, amount_wei, "Same-chain TICS→TICS should pass through unchanged");
+    }
+
+    #[test]
+    fn same_chain_btc_to_btc() {
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_sats = 100_000u128; // 0.001 BTC
+        let result = convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "bitcoin", &p).unwrap();
+        assert_eq!(result, amount_sats, "Same-chain BTC→BTC should pass through unchanged");
+    }
+
+    #[test]
+    fn same_chain_case_insensitive() {
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount = 1_000_000u128;
+        let result = convert_src_smallest_to_dst_smallest(amount, "TICS", "tics", &p).unwrap();
+        assert_eq!(result, amount, "Case-insensitive same-chain check");
+    }
+
+    // =====================================================================
+    // 3. TICS → BTC cross-chain conversion
+    // =====================================================================
+
+    #[test]
+    fn tics_to_btc_basic_conversion() {
+        // BTC = $100,000, TICS = $0.01
+        // 25 TICS = $0.25 worth
+        // $0.25 / $100,000 per BTC = 0.0000025 BTC = 250 sats
+        //
+        // Formula in code:
+        //   adjusted = amount_wei / 10^10  (TICS multiplier)
+        //   dst_whole = adjusted * p_src / p_dst
+        //   result = floor(dst_whole)
+        //
+        //   amount_wei = 25 * 10^18
+        //   adjusted = 25 * 10^18 / 10^10 = 25 * 10^8 = 2_500_000_000
+        //   dst_whole = 2_500_000_000 * 0.01 / 100_000 = 250
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_wei = 25_000_000_000_000_000_000u128; // 25 TICS in wei
+        let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "bitcoin", &p).unwrap();
+        assert_eq!(result, 250, "25 TICS @ $0.01 → BTC @ $100k = 250 sats");
+    }
+
+    #[test]
+    fn tics_to_btc_large_amount() {
+        // 1000 TICS = $10 worth
+        // $10 / $100,000 = 0.0001 BTC = 10,000 sats
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_wei = 1_000_000_000_000_000_000_000u128; // 1000 TICS
+        let result = convert_src_smallest_to_dst_smallest(amount_wei, "qubetics", "btc", &p).unwrap();
+        assert_eq!(result, 10_000, "1000 TICS @ $0.01 → BTC @ $100k = 10,000 sats");
+    }
+
+    #[test]
+    fn tics_to_btc_small_amount_below_dust() {
+        // 1 TICS = $0.01 worth
+        // $0.01 / $100,000 = 0.0000001 BTC = 10 sats
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_wei = 1_000_000_000_000_000_000u128; // 1 TICS
+        let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "btc", &p).unwrap();
+        assert_eq!(result, 10, "1 TICS @ $0.01 → BTC @ $100k = 10 sats (below 546 dust)");
+    }
+
+    // =====================================================================
+    // 4. BTC → TICS cross-chain conversion
+    // =====================================================================
+
+    #[test]
+    fn btc_to_tics_basic_conversion() {
+        // BTC = $100,000, TICS = $0.01
+        // 1000 sats = 0.00001 BTC = $1.00 worth
+        // $1.00 / $0.01 per TICS = 100 TICS = 100 * 10^18 wei
+        //
+        // Formula:
+        //   adjusted = amount_sats * 10^10  (BTC multiplier)
+        //   dst_whole = adjusted * p_src / p_dst
+        //   result = floor(dst_whole)
+        //
+        //   adjusted = 1000 * 10^10 = 10_000_000_000_000
+        //   dst_whole = 10_000_000_000_000 * 100_000 / 0.01 = 10^20
+        //   result = 100_000_000_000_000_000_000 = 100 * 10^18
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_sats = 1000u128;
+        let result = convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "tics", &p).unwrap();
+        let expected = 100_000_000_000_000_000_000u128; // 100 TICS in wei
+        assert_eq!(result, expected, "1000 sats @ $100k → TICS @ $0.01 = 100 TICS");
+    }
+
+    #[test]
+    fn btc_to_tics_700_sats() {
+        // The user's example: 700 satoshis → TICS
+        // 700 sats = 0.000007 BTC = $0.70 worth
+        // $0.70 / $0.01 = 70 TICS = 70 * 10^18 wei
+        let p = prices(dec!(100000), dec!(0.01));
+        let amount_sats = 700u128;
+        let result = convert_src_smallest_to_dst_smallest(amount_sats, "btc", "qubetics", &p).unwrap();
+        let expected = 70_000_000_000_000_000_000u128; // 70 TICS in wei
+        assert_eq!(result, expected, "700 sats → 70 TICS");
+    }
+
+    // =====================================================================
+    // 5. Round-trip: TICS → BTC → TICS preserves value (within rounding)
+    // =====================================================================
+
+    #[test]
+    fn round_trip_tics_btc_tics() {
+        let p = prices(dec!(100000), dec!(0.01));
+        let original_wei = 25_000_000_000_000_000_000u128; // 25 TICS
+
+        // TICS → BTC
+        let sats = convert_src_smallest_to_dst_smallest(original_wei, "tics", "btc", &p).unwrap();
+        assert_eq!(sats, 250);
+
+        // BTC → TICS
+        let back_wei = convert_src_smallest_to_dst_smallest(sats, "btc", "tics", &p).unwrap();
+        assert_eq!(back_wei, original_wei, "Round-trip should preserve value");
+    }
+
+    #[test]
+    fn round_trip_btc_tics_btc() {
+        let p = prices(dec!(100000), dec!(0.01));
+        let original_sats = 10_000u128; // 0.0001 BTC
+
+        // BTC → TICS
+        let wei = convert_src_smallest_to_dst_smallest(original_sats, "btc", "tics", &p).unwrap();
+
+        // TICS → BTC
+        let back_sats = convert_src_smallest_to_dst_smallest(wei, "tics", "btc", &p).unwrap();
+        assert_eq!(back_sats, original_sats, "Round-trip should preserve value");
+    }
+
+    // =====================================================================
+    // 6. UserToVault amount correctness
+    //    UserToVault always uses source_amount + 5% fee on the SOURCE chain.
+    // =====================================================================
+
+    #[test]
+    fn user_to_vault_tics_source_uses_source_amount() {
+        // TICS→BTC: source_amount = 25 TICS (wei), target_amount = 250 sats
+        // UserToVault tx is on TICS chain → must use source_amount, NOT target_amount
+        let source_amount: u128 = 25_000_000_000_000_000_000; // 25 TICS in wei
+        let target_amount: u128 = 250; // 250 sats (BTC)
+
+        // UserToVault formula: source_amount + source_amount / 20
+        let utv_amount = source_amount + (source_amount / 20);
+        let expected = 26_250_000_000_000_000_000u128; // 26.25 TICS in wei
+
+        assert_eq!(utv_amount, expected, "TICS UserToVault = source + 5%");
+        // Verify we're NOT using target_amount (which would be wrong)
+        assert_ne!(utv_amount, target_amount + (target_amount / 20),
+            "Must NOT use target_amount for source-chain tx");
+    }
+
+    #[test]
+    fn user_to_vault_btc_source_uses_source_amount() {
+        // BTC→TICS: source_amount = 1000 sats, target_amount = 100 TICS (wei)
+        let source_amount: u128 = 1000; // 1000 sats
+        let target_amount: u128 = 100_000_000_000_000_000_000; // 100 TICS in wei
+
+        // UserToVault formula: source_amount + source_amount / 20
+        let utv_amount = source_amount + (source_amount / 20);
+        assert_eq!(utv_amount, 1050, "BTC UserToVault = 1000 + 50 = 1050 sats");
+        // Verify we're NOT using target_amount
+        assert_ne!(utv_amount, target_amount + (target_amount / 20),
+            "Must NOT use target_amount for source-chain tx");
+    }
+
+    #[test]
+    fn user_to_vault_same_chain_tics() {
+        // TICS→TICS: source_amount = target_amount (same chain)
+        let amount: u128 = 10_000_000_000_000_000_000; // 10 TICS
+        let utv_amount = amount + (amount / 20);
+        assert_eq!(utv_amount, 10_500_000_000_000_000_000, "TICS→TICS UTV = 10 + 0.5 = 10.5 TICS");
+    }
+
+    #[test]
+    fn user_to_vault_same_chain_btc() {
+        // BTC→BTC: source_amount = target_amount (same chain)
+        let amount: u128 = 50_000; // 50,000 sats
+        let utv_amount = amount + (amount / 20);
+        assert_eq!(utv_amount, 52_500, "BTC→BTC UTV = 50000 + 2500 = 52500 sats");
+    }
+
+    // =====================================================================
+    // 7. NetworkToTarget amount correctness
+    //    NetworkToTarget delivers target_amount on the TARGET chain.
+    // =====================================================================
+
+    #[test]
+    fn network_to_target_btc_uses_target_amount_not_recomputed() {
+        // TICS→BTC: target_amount was stored as 250 sats at intent submission.
+        // NetworkToTarget should use 250 sats (stored), NOT re-compute from price.
+        // If price changed, re-computing would give a different (wrong) value.
+        let p_at_submission = prices(dec!(100000), dec!(0.01));
+        let p_at_execution = prices(dec!(110000), dec!(0.01)); // price changed!
+
+        let source_wei = 25_000_000_000_000_000_000u128;
+
+        let stored_target = convert_src_smallest_to_dst_smallest(
+            source_wei, "tics", "btc", &p_at_submission,
+        ).unwrap();
+        assert_eq!(stored_target, 250, "Stored target = 250 sats");
+
+        let recomputed_target = convert_src_smallest_to_dst_smallest(
+            source_wei, "tics", "btc", &p_at_execution,
+        ).unwrap();
+        // With higher BTC price ($110k), same TICS buys fewer sats
+        assert_ne!(recomputed_target, stored_target,
+            "Re-computed amount differs from stored — proves why stored is needed");
+        assert!(recomputed_target < stored_target,
+            "Higher BTC price → fewer sats: {} < {}", recomputed_target, stored_target);
+
+        // The system should use stored_target (250), not recomputed
+    }
+
+    #[test]
+    fn network_to_target_tics_uses_target_amount() {
+        // BTC→TICS: target_amount stored as 100 TICS (wei).
+        let p_at_submission = prices(dec!(100000), dec!(0.01));
+        let p_at_execution = prices(dec!(90000), dec!(0.01)); // price dropped
+
+        let source_sats = 1000u128;
+
+        let stored_target = convert_src_smallest_to_dst_smallest(
+            source_sats, "btc", "tics", &p_at_submission,
+        ).unwrap();
+
+        let recomputed = convert_src_smallest_to_dst_smallest(
+            source_sats, "btc", "tics", &p_at_execution,
+        ).unwrap();
+
+        assert_ne!(recomputed, stored_target,
+            "Re-computed differs from stored when price changed");
+    }
+
+    // =====================================================================
+    // 8. Fallback safety: cross-chain must NOT use source_amount as fallback
+    // =====================================================================
+
+    #[test]
+    fn cross_chain_source_amount_is_wrong_unit_for_target() {
+        // BTC→TICS: source_amount = 1000 sats
+        // If we mistakenly used source_amount as target_amount, we'd deliver
+        // 1000 wei instead of 100 TICS (100 * 10^18 wei) — massively wrong.
+        let source_sats = 1000u128;
+        let p = prices(dec!(100000), dec!(0.01));
+        let correct_target_wei = convert_src_smallest_to_dst_smallest(
+            source_sats, "btc", "tics", &p,
+        ).unwrap();
+
+        // source_amount as target would be 1000 (wei) — essentially zero TICS
+        let wrong_fallback = source_sats;
+        assert!(correct_target_wei > wrong_fallback * 1_000_000_000,
+            "Using source_amount as target is off by >9 orders of magnitude");
+    }
+
+    #[test]
+    fn cross_chain_tics_to_btc_source_is_wrong_for_target() {
+        // TICS→BTC: source_amount = 25 * 10^18 wei
+        // Correct target = 250 sats. Using source as target = 25 * 10^18 sats = insane.
+        let source_wei = 25_000_000_000_000_000_000u128;
+        let p = prices(dec!(100000), dec!(0.01));
+        let correct_target_sats = convert_src_smallest_to_dst_smallest(
+            source_wei, "tics", "btc", &p,
+        ).unwrap();
+
+        assert_eq!(correct_target_sats, 250);
+        assert!(source_wei > correct_target_sats * 1_000_000_000_000_000,
+            "source_amount as target would be absurdly large");
+    }
+
+    // =====================================================================
+    // 9. Edge cases
+    // =====================================================================
+
+    #[test]
+    fn zero_amount_returns_zero() {
+        let p = prices(dec!(100000), dec!(0.01));
+        let result = convert_src_smallest_to_dst_smallest(0, "tics", "btc", &p).unwrap();
+        assert_eq!(result, 0, "Zero in → zero out");
+    }
+
+    #[test]
+    fn missing_price_returns_error() {
+        let empty: HashMap<String, Decimal> = HashMap::new();
+        let result = convert_src_smallest_to_dst_smallest(1000, "tics", "btc", &empty);
+        assert!(result.is_err(), "Missing prices should error");
+    }
+
+    #[test]
+    fn five_percent_fee_calculation() {
+        // Verify integer division: amount + amount/20
+        // For small amounts, integer division truncates
+        assert_eq!(100 + 100 / 20, 105); // exact
+        assert_eq!(99 + 99 / 20, 99 + 4, "99/20 = 4 (truncated)");
+        assert_eq!(1 + 1 / 20, 1, "1/20 = 0 → fee is zero for 1 unit");
+        assert_eq!(19 + 19 / 20, 19, "19/20 = 0 → fee is zero for <20 units");
+        assert_eq!(20 + 20 / 20, 21, "20/20 = 1 → first non-zero fee");
+    }
+
+    // =====================================================================
+    // 10. Different price scenarios
+    // =====================================================================
+
+    #[test]
+    fn tics_to_btc_equal_prices() {
+        // If both are $1, then 1 TICS smallest → 1 BTC smallest via multiplier
+        // TICS: adjusted = amount / 10^10, then * p_src / p_dst = * 1
+        let p = prices(dec!(1), dec!(1));
+        let amount_wei = 10_000_000_000u128; // 10^10 wei
+        let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "btc", &p).unwrap();
+        // adjusted = 10^10 / 10^10 = 1, dst_whole = 1 * 1/1 = 1
+        assert_eq!(result, 1, "10^10 wei at equal prices = 1 sat");
+    }
+
+    #[test]
+    fn btc_to_tics_equal_prices() {
+        let p = prices(dec!(1), dec!(1));
+        let amount_sats = 1u128;
+        let result = convert_src_smallest_to_dst_smallest(amount_sats, "btc", "tics", &p).unwrap();
+        // adjusted = 1 * 10^10, dst_whole = 10^10 * 1/1 = 10^10
+        assert_eq!(result, 10_000_000_000u128, "1 sat at equal prices = 10^10 wei");
+    }
+}

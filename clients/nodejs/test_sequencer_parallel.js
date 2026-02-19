@@ -175,8 +175,8 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "a68d106da7edc096afc315832153baf0fa44390b21dde28cbb8cab83318af549",
   // "bd38393080ca0608a825dc2555e60e1c6c1a54a5a3d45ac0d6def14503550d98",
   "ef137a62fa9c0ab2a0bd13d4afffec895424952f96bb3536b8c0fdd616b10778",
-  "f74194d2cc8893a0c814455a22ffc6895624eea4e2e4388356002fe8b6aaa3c0",
-  "0ee6024eb7a687b8e0f705913ce232079437105f05616abba45b048b1f882fe8",
+  // "f74194d2cc8893a0c814455a22ffc6895624eea4e2e4388356002fe8b6aaa3c0",
+  // "0ee6024eb7a687b8e0f705913ce232079437105f05616abba45b048b1f882fe8",
   // "da794137eb016a06e6f97375298e189983efc8204214902eef884bdb0e79927e",
   // "bdf8f80d26a676c94739e77584457de74656f47ad86c0fb9304e0171f5b38dd2",
   // "168a0ea51e814d488fb0f6c009945ffe494a907e532e633b6d1acc3cb540e11e",
@@ -540,13 +540,13 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       // source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
-      target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
-      // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
+      // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
+      target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount,
-      source_token: 'TT',
-      target_token: 'TT',
+      source_token: 'TICS',
+      target_token: 'BTC',
       timestamp: intentTimestamp,
     };
 
@@ -865,8 +865,8 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    // const amount = "5000000000000000000";  // 12 TICS
-    const amount = "700";  // btc
+    const amount = "5000000000000000000";  // 12 TICS
+    // const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });
