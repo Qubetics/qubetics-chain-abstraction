@@ -5,6 +5,15 @@
  * ============================
  * Onboards solvers, validates them, and adds both EVM (TICS) and BTC liquidity.
  *
+ * Usage:
+ *   node setup_solver.js <PeerId1> <PeerId2> ... <PeerIdN>
+ *
+ * Example:
+ *   node setup_solver.js 12D3KooWMU5HZBpd1pnzPsF6FkKXE8j42QGFJ2CyUpxRtf1HdQkM 12D3KooWMFWExBUizT3PgWEztcG9oYqQuc7MwXUXH7itqen53878
+ *
+ * For each PeerId, a random EVM private key is generated, and a BTC testnet
+ * address is derived from it. No need to manually configure keys or addresses.
+ *
  * How the contract works:
  *   - The `validatorAddress` (stored on-chain) signs EIP-712 messages to authorize
  *     onboarding and validation. This is a "permission slip" from the validator.
@@ -16,15 +25,17 @@
  *   SOLVER_CONTRACT_RPC_URL   - Qubetics RPC endpoint
  *   SOLVER_CONTRACT_ADDRESS   - SolverManager contract address
  *   VALIDATOR_PK              - Private key of the validator (signs EIP-712 messages)
- *
- * Configure solvers in the SOLVERS array below.
- * Each solver's `privateKey` is used to send transactions — msg.sender becomes the solver identity.
  */
 
 import dotenv from 'dotenv';
 import { ethers } from 'ethers';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import * as bitcoin from 'bitcoinjs-lib';
+import * as tinysecp from 'tiny-secp256k1';
+import { ECPairFactory } from 'ecpair';
+
+const ECPair = ECPairFactory(tinysecp);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,51 +44,47 @@ const __dirname = dirname(__filename);
 dotenv.config({ path: join(__dirname, '../../.env') });
 
 // ============================================================
-// SOLVERS CONFIG
-// Each solver's privateKey is used to SEND transactions (msg.sender = solver identity).
-// The validator key (from .env) signs EIP-712 messages to authorize actions.
+// PEER IDS — pass them as CLI arguments
 // ============================================================
-const SOLVERS = [
-  {
-    // Solver 1 — this key's address becomes the solver's on-chain identity
-    privateKey: "a5d6d05532a0f6ee1de3586a2da787429a8b62289d776ca084783c8dc9ffa5a7",
-    solverId: "12D3KooWJX7Gxkfp7UviibMhfi8VMVFyGpYAgFJm2LBqR3tJ2y9P",
-    solverName: "Solver_1",
+const PEER_IDS = process.argv.slice(2);
+
+if (PEER_IDS.length === 0) {
+  console.error("Usage: node setup_solver.js <PeerId1> [PeerId2] ... [PeerIdN]");
+  console.error("Example: node setup_solver.js 12D3KooWMU5HZBpd1pnzPsF6FkKXE8j42QGFJ2CyUpxRtf1HdQkM");
+  process.exit(1);
+}
+
+// ============================================================
+// AUTO-GENERATE SOLVER CONFIGS
+// For each PeerId, generate a random private key, derive EVM address,
+// and derive a BTC testnet address from the same key.
+// ============================================================
+const TESTNET = bitcoin.networks.testnet;
+const EVM_LIQUIDITY = "10000000000000000000"; // 10 TICS
+const BTC_LIQUIDITY = "10000"; // 10000 sats
+
+function generateSolverConfig(peerId, index) {
+  const wallet = ethers.Wallet.createRandom();
+  const privateKeyBytes = Buffer.from(wallet.privateKey.slice(2), 'hex');
+  const keyPair = ECPair.fromPrivateKey(privateKeyBytes, { network: TESTNET });
+  const { address: btcAddress } = bitcoin.payments.p2wpkh({
+    pubkey: Buffer.from(keyPair.publicKey),
+    network: TESTNET,
+  });
+
+  return {
+    privateKey: wallet.privateKey,
+    solverId: peerId,
+    solverName: `Solver_${index + 1}`,
     chainIds: [0, 9029],
-    solverAddresses: [
-      "tb1q5h7k9m2n4p6r8t0v2x4z6y8w0u3s5q7l9c2d4f",   // BTC address
-      "0xaB5d121c8c20DE97FF577DeE75aaA62a4F3bf93C",      // EVM address
-    ],
-    evmLiquidityAmount: "10000000000000000000",  // 10 TICS in wei
-    btcLiquidityAmount: "10000",               // in satoshis
-  },
-  // {
-  //   // Solver 2 — use a DIFFERENT private key (different msg.sender = different solver)
-  //   privateKey: "15d5488130680e229fb5edceadec7c9a58b6236b5b5c08e339f89236f3ef59b2",
-  //   solverId: "",
-  //   solverName: "Solver_2",
-  //   chainIds: [0, 9029],
-  //   solverAddresses: [
-  //     "tb1q8v9u5r6k3m4n2p0x7z9y8w6v5u4t3s2r1q0xyz",     // BTC address
-  //     "0xd3C9D5DC51eb2bf66921533Ff664500a3042ff02",       // EVM address
-  //   ],
-  //   evmLiquidityAmount: "10000000000000000000",
-  //   btcLiquidityAmount: "10000",
-  // },
-  // {
-  //   // Solver 3 — use a DIFFERENT private key
-  //   privateKey: "4289ba4c078eb7c639b72f3b253e03fe6420d64a3e2f60b2a6f6046b9e6d5010",
-  //   solverId: "",
-  //   solverName: "Solver_3",
-  //   chainIds: [0, 9029],
-  //   solverAddresses: [
-  //     "tb1q2w3e4r5t6y7u8i9o0pqlkjhgfdsazxcvbnm123",
-  //     "0x93F3D30c1c76652B964f63e547f1Fb6dA920a935",
-  //   ],
-  //   evmLiquidityAmount: "10000000000000000000",
-  //   btcLiquidityAmount: "10000",
-  // },
-];
+    solverAddresses: [btcAddress, wallet.address],
+    evmLiquidityAmount: EVM_LIQUIDITY,
+    btcLiquidityAmount: BTC_LIQUIDITY,
+  };
+}
+
+const SOLVERS = PEER_IDS.map((peerId, i) => generateSolverConfig(peerId, i));
+
 
 // ============================================================
 // CONTRACT SETUP
@@ -85,6 +92,8 @@ const SOLVERS = [
 const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL || process.env.RPC_URL;
 const CONTRACT_ADDRESS = process.env.SOLVER_CONTRACT_ADDRESS || process.env.SOLVER_MANAGER_ADDRESS;
 const VALIDATOR_PK = process.env.VALIDATOR_PK;
+const FUNDING_PK = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
+const FUND_AMOUNT = "10";
 
 if (!RPC_URL || !CONTRACT_ADDRESS) {
   console.error("SOLVER_CONTRACT_RPC_URL and SOLVER_CONTRACT_ADDRESS must be set in .env");
@@ -101,13 +110,16 @@ const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 // Validator wallet — signs EIP-712 messages (must match validatorAddress on contract)
 const validatorWallet = new ethers.Wallet(VALIDATOR_PK, provider);
 
+// Funding wallet — sends TICS to solvers for gas (defaults to validator)
+const fundingWallet = new ethers.Wallet(FUNDING_PK, provider);
+
 const ABI = [
   "function getNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
   "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
   "function validateSolverId(uint256,bytes)",
   "function isSolverActive(string) view returns (bool)",
-  "function isSolverIdValidated(address) view returns (bool)",
+  "function isSolverIdValidated(string) view returns (bool)",
   "function isSolverOnboarded(string) view returns (bool)",
   "function getSolverChainAmount(string,uint256) view returns (uint256)",
   "function getSolver(string) view returns (tuple(string,string,uint256[],string[],bool,bool,uint256,uint256))",
@@ -237,7 +249,7 @@ async function onboard(solverWallet, config) {
 // - Solver sends the transaction (msg.sender must match onboarded address)
 // ============================================================
 async function validate(solverWallet, solverId) {
-  const isValidated = await contract.isSolverIdValidated(solverWallet.address);
+  const isValidated = await contract.isSolverIdValidated(solverId);
   if (isValidated) {
     console.log("    Already validated — skipping.");
     return true;
@@ -329,6 +341,32 @@ async function addLiquidity(solverWallet, config) {
 }
 
 // ============================================================
+// FUNDING
+// - Sent from fundingWallet (defaults to validator)
+// - Ensures solver has enough TICS for gas and liquidity deposit
+// ============================================================
+async function fundSolver(solverAddress, amountTics) {
+  const balance = await provider.getBalance(solverAddress);
+  const required = ethers.utils.parseEther(amountTics);
+
+  if (balance.lt(required)) {
+    const toFund = required.sub(balance);
+    console.log(`    Funding ${solverAddress} with ${ethers.utils.formatEther(toFund)} TICS...`);
+
+    const tx = await fundingWallet.sendTransaction({
+      to: solverAddress,
+      value: toFund,
+    });
+
+    console.log(`    Tx: ${tx.hash}`);
+    await tx.wait();
+    console.log(`    Funding confirmed.`);
+  } else {
+    console.log(`    Balance looks sufficient (${ethers.utils.formatEther(balance)} TICS).`);
+  }
+}
+
+// ============================================================
 // MAIN — processes each solver sequentially
 // ============================================================
 async function main() {
@@ -344,6 +382,17 @@ async function main() {
   console.log(`  Validator:   ${validatorWallet.address} (EIP-712 signer)`);
   console.log("=".repeat(60));
 
+  // Print generated solver details
+  console.log("\n  Generated Solver Configs:");
+  for (const s of SOLVERS) {
+    const w = new ethers.Wallet(s.privateKey);
+    console.log(`    ${s.solverName} (${s.solverId.slice(0, 20)}...)`);
+    console.log(`      EVM:  ${w.address}`);
+    console.log(`      BTC:  ${s.solverAddresses[0]}`);
+    console.log(`      Key:  ${s.privateKey}`);
+  }
+  console.log("");
+
   // Verify validator matches on-chain validatorAddress
   const onChainValidator = await contract.validatorAddress();
   if (onChainValidator.toLowerCase() !== validatorWallet.address.toLowerCase()) {
@@ -354,18 +403,6 @@ async function main() {
   }
   console.log(`  Validator verified against on-chain address.`);
 
-  // Validate that all solver private keys are unique
-  const seenKeys = new Set();
-  for (const solver of SOLVERS) {
-    const normalized = solver.privateKey.replace(/^0x/, '').toLowerCase();
-    if (seenKeys.has(normalized)) {
-      console.error(`\nERROR: Duplicate private key found for solver "${solver.solverId}".`);
-      console.error("Each solver MUST have a unique private key (unique msg.sender = unique solver).");
-      process.exit(1);
-    }
-    seenKeys.add(normalized);
-  }
-
   for (let i = 0; i < SOLVERS.length; i++) {
     const config = SOLVERS[i];
     // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
@@ -374,7 +411,17 @@ async function main() {
     console.log(`\n${"#".repeat(60)}`);
     console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
     console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
+    console.log(`  BTC address:                 ${config.solverAddresses[0]}`);
     console.log(`${"#".repeat(60)}`);
+
+    // Step -1: Fund solver if needed
+    console.log(`\n  [Funding]`);
+    try {
+      await fundSolver(solverWallet.address, FUND_AMOUNT);
+    } catch (e) {
+      console.error(`    ERROR during funding: ${e.message}`);
+      // Continue even if funding fails, as balance might already be enough
+    }
 
     // Step 0: Check current status
     console.log(`\n  [Status]`);
