@@ -6,5 +6,13 @@
     "derivedBtcAddress": "mncx2cpY7EGqUidthUXcTAycWMMmCAbLPk",
     "hasUserGroupKey": true,
     "registeredAt": "2026-02-18T19:26:23.931Z"
+  },
+  {
+    "userId": 1,
+    "walletAddress": "0xE0e3E3f5FBD6F17C88dc74Fb821be3ed49A3C5f0",
+    "derivedEthAddress": "0xb0f368237162981da90a1dfd47a8456152b32f15",
+    "derivedBtcAddress": "mnD5DQMQ2zNXFjHqRUzBpwKrZKUjrLRE8s",
+    "hasUserGroupKey": true,
+    "registeredAt": "2026-02-19T06:54:58.664Z"
   }
 ]

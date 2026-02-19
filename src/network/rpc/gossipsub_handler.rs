@@ -76,6 +76,17 @@ impl MpcNetworkLayer {
 
                     // Parse the disconnected node ID
                     if let Ok(peer_id) = disconnected_node_id.parse::<PeerId>() {
+                        // A node must never remove itself from its own active list.
+                        // During reconnection, connection flapping + REJOIN_BLOCKED can
+                        // cause a fresh disconnect broadcast about us while we are still alive.
+                        if peer_id == self.local_peer_id {
+                            warn!(
+                                "📢 [DISCONNECT] Ignoring disconnect broadcast about ourselves ({}) from {} — we are still alive",
+                                peer_id, broadcaster_node_id
+                            );
+                            return Ok(());
+                        }
+
                         // Check if we haven't already processed this disconnect
                         if self.node_manager.get_active_nodes().contains(&peer_id) {
                             info!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
@@ -232,7 +243,7 @@ impl MpcNetworkLayer {
                     }
                 };
                 debug!(
-                    "📥 [SELECTION] Received selected nodes broadcast: round={}, from={}, received_by={}",
+                    "���� [SELECTION] Received selected nodes broadcast: round={}, from={}, received_by={}",
                     round, selector_node_id, self.local_peer_id
                 );
 
@@ -1343,6 +1354,7 @@ impl MpcNetworkLayer {
                 }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
+                // Each receiving node independently validates every intent before signing.
                 let mut intent_data = Vec::new();
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
@@ -1350,6 +1362,42 @@ impl MpcNetworkLayer {
 
                     for intent_hash in &intent_hashes {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [BATCH] Intent {} failed chain/token/address validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 2. Amount > 0
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            // 3. Intent status must not be Solved or Rejected
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_intent_hash(intent_hash)
+                                .await
+                            {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status == IntentStatus::Solved || status == IntentStatus::Rejected {
+                                        warn!(
+                                            "⚠️ [BATCH] Intent {} status is {:?}, skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
                             batch_intents.push((intent_hash.clone(), intent.clone()));
                             if let Some(tx_ids) = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
@@ -1400,58 +1448,72 @@ impl MpcNetworkLayer {
                             intent_data.len()
                         );
 
-                        // Step 0.5: Fetch crypto prices for TICS → BTC conversion
-                        let prices = match crate::rpc_server::utils::fetch_crypto_prices().await {
-                            Ok(p) => p,
-                            Err(e) => {
-                                error!(
-                                    "❌ [BATCH] Failed to fetch crypto prices for conversion: {}",
-                                    e
-                                );
-                                return Ok(());
-                            }
-                        };
-
-                        info!("💱 [BATCH] Fetched crypto prices for conversion");
+                        // Fetch crypto prices as fallback for intents missing stored target_amount.
+                        // Prefer stored target_amount (locked at intent submission) to ensure
+                        // the user receives the amount they were promised regardless of price changes.
+                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices().await.ok();
 
                         // Step 1: Build BatchOutput list from intents
                         use crate::signing::chains::bitcoin_batch::BatchOutput;
                         let mut batch_outputs = Vec::new();
 
                         for (intent_hash, intent, _tx_ids) in &intent_data {
-                            // Parse TICS amount (in smallest units, 18 decimals)
-                            let amount_tics_smallest: u128 = match intent.amount.parse() {
-                                Ok(amt) => amt,
-                                Err(e) => {
-                                    warn!(
-                                        "⚠️ [BATCH] Failed to parse amount for intent {}: {}",
-                                        intent_hash, e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            // Convert TICS → BTC satoshis using price conversion
-                            let amount_sats =
+                            // Use stored target_amount (in satoshis for BTC target).
+                            // This was computed at RPC/gossip validation time and stored via
+                            // store_intent_target_amount(). Prefer this over re-computing from
+                            // current prices to honour the amount promised to the user.
+                            let amount_sats: u64 = if let Some(stored) = user_intent_manager
+                                .get_intent_target_amount(intent_hash)
+                                .await
+                            {
+                                info!(
+                                    "💱 [BATCH] Intent {} using stored target_amount = {} sats",
+                                    intent_hash, stored
+                                );
+                                stored as u64
+                            } else {
+                                // Fallback: re-compute from current prices if stored value missing
+                                warn!(
+                                    "⚠️ [BATCH] No stored target_amount for intent {}; falling back to price conversion",
+                                    intent_hash
+                                );
+                                let source_amount: u128 = match intent.amount.parse() {
+                                    Ok(amt) => amt,
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️ [BATCH] Failed to parse amount for intent {}: {}",
+                                            intent_hash, e
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let prices = match &fallback_prices {
+                                    Some(p) => p,
+                                    None => {
+                                        error!(
+                                            "❌ [BATCH] No prices available for fallback conversion of intent {}; skipping",
+                                            intent_hash
+                                        );
+                                        continue;
+                                    }
+                                };
                                 match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
-                                    amount_tics_smallest,
+                                    source_amount,
                                     &intent.source_chain,
                                     &intent.target_chain,
-                                    &prices,
+                                    prices,
                                 ) {
                                     Ok(amt) => amt as u64,
                                     Err(e) => {
                                         error!("❌ [BATCH] Currency conversion failed for intent {}: {:?}", intent_hash, e);
                                         continue;
                                     }
-                                };
-
-                            info!("💱 [BATCH] Converted {} TICS ({} smallest units) → {} BTC satoshis", 
-                                intent.amount, amount_tics_smallest, amount_sats);
+                                }
+                            };
 
                             // Validate dust threshold
                             if amount_sats < 546 {
-                                warn!("⚠️ [BATCH] Intent {} amount {} sats is below dust threshold, skipping", 
+                                warn!("⚠️ [BATCH] Intent {} amount {} sats is below dust threshold, skipping",
                                     intent_hash, amount_sats);
                                 continue;
                             }
@@ -1723,6 +1785,9 @@ impl MpcNetworkLayer {
                         // Prepare BatchIntentInput array for processBatchIntents contract call
                         let mut batch_intent_inputs = Vec::new();
 
+                        // Fetch prices as fallback for intents missing stored target_amount
+                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices().await.ok();
+
                         for (intent_hash, intent) in &batch_intents {
                             let source_amount = match intent.amount.parse::<u128>() {
                                 Ok(amt) => amt,
@@ -1734,10 +1799,42 @@ impl MpcNetworkLayer {
                                     continue;
                                 }
                             };
-                            let target_amount = user_intent_manager
+                            // Use stored target_amount (pre-computed at intent submission).
+                            // For same-chain (TICS→TICS) target_amount == source_amount.
+                            // For cross-chain (BTC→TICS) target_amount is in wei, NOT satoshis.
+                            // Do NOT fall back to source_amount — units may differ across chains.
+                            let target_amount = match user_intent_manager
                                 .get_intent_target_amount(intent_hash)
                                 .await
-                                .unwrap_or(source_amount);
+                            {
+                                Some(amt) => amt,
+                                None => {
+                                    // Fallback: re-compute if same-chain use source, else price convert
+                                    warn!(
+                                        "⚠️ [TICS_BATCH] No stored target_amount for intent {}; computing fallback",
+                                        intent_hash
+                                    );
+                                    if intent.source_chain.to_lowercase() == intent.target_chain.to_lowercase() {
+                                        source_amount
+                                    } else if let Some(prices) = &tics_fallback_prices {
+                                        match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                                            source_amount,
+                                            &intent.source_chain,
+                                            &intent.target_chain,
+                                            prices,
+                                        ) {
+                                            Ok(amt) => amt,
+                                            Err(e) => {
+                                                error!("❌ [TICS_BATCH] Fallback conversion failed for intent {}: {:?}", intent_hash, e);
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        error!("❌ [TICS_BATCH] No prices available for fallback conversion of intent {}; skipping", intent_hash);
+                                        continue;
+                                    }
+                                }
+                            };
 
                             // Get UserToVault transaction hash for this intent, if available
                             let tx_ids = user_intent_manager
@@ -1986,6 +2083,7 @@ impl MpcNetworkLayer {
                     let mut batch_intents = Vec::new();
                     for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Check intent has not already been processed
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
                                 .await;
@@ -2000,6 +2098,7 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 2. Source chain must be TICS
                             let source_ok = intent.source_chain.eq_ignore_ascii_case("tics")
                                 || intent.source_chain.eq_ignore_ascii_case("qubetics");
                             if !source_ok {
@@ -2009,10 +2108,40 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 3. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} failed validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 4. Amount must be > 0
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            // 5. Intent status must be Pending or Batched
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
                                 .await
                             {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status != IntentStatus::Pending && status != IntentStatus::Batched {
+                                        warn!(
+                                            "⚠️ [TICS_UTV_BATCH] Intent {} status is {:?} (expected Pending/Batched), skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,
@@ -2059,11 +2188,12 @@ impl MpcNetworkLayer {
                         Option<k256::Scalar>,
                     )> = Vec::new();
                     for (intent_hash, intent, user_eth_addr) in &batch_intents {
-                        let target_amount = user_intent_manager
-                            .get_intent_target_amount(intent_hash)
-                            .await
-                            .unwrap_or_else(|| intent.amount.parse().unwrap_or(0u128));
-                        let amount = target_amount + (target_amount / 20);
+                        // For TICS UserToVault, amount must be in source-chain units (wei for EVM).
+                        // intent.amount is always in source-chain smallest units.
+                        // Do NOT use get_intent_target_amount — that is in target-chain units
+                        // (e.g. satoshis for TICS->BTC), which is wrong for a source-chain tx.
+                        let source_amount: u128 = intent.amount.parse().unwrap_or(0);
+                        let amount = source_amount + (source_amount / 20);
 
                         let user =
                             match user_intent_manager.get_user_by_address(user_eth_addr).await {
@@ -2216,6 +2346,7 @@ impl MpcNetworkLayer {
                     let mut batch_intents = Vec::new();
                     for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Check intent has not already been processed
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
                                 .await;
@@ -2230,6 +2361,7 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 2. Source chain must be Bitcoin
                             let source_ok = intent.source_chain.eq_ignore_ascii_case("bitcoin")
                                 || intent.source_chain.eq_ignore_ascii_case("btc");
                             if !source_ok {
@@ -2239,10 +2371,47 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 3. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} failed validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 4. Amount must be > 0 and above dust for BTC source
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if (parsed_amount as u64) < DUST_LIMIT_SATS {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} amount {} sats below dust limit {}, skipping",
+                                    intent_hash, parsed_amount, DUST_LIMIT_SATS
+                                );
+                                continue;
+                            }
+                            // 5. Intent status must be Pending or Batched
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
                                 .await
                             {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status != IntentStatus::Pending && status != IntentStatus::Batched {
+                                        warn!(
+                                            "⚠️ [BTC_UTV_BATCH] Intent {} status is {:?} (expected Pending/Batched), skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,
@@ -3890,6 +4059,15 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // Ignore disconnect broadcasts about ourselves — we are still alive
+                if solver_id == self.local_peer_id.to_string() {
+                    warn!(
+                        "📡 [PEER_DISCONNECT] Ignoring disconnection broadcast about ourselves ({}) — we are still alive",
+                        solver_id
+                    );
+                    return Ok(());
+                }
+
                 // Validate timestamp is sane (not too far in past/future)
                 let now = chrono::Utc::now().timestamp();
                 let max_age_secs = 3600; // 1 hour in the past
@@ -4381,6 +4559,109 @@ impl MpcNetworkLayer {
                 if let Some(arc) = &self.signing_node {
                     let node = arc.lock().await;
                     node.invalidate_nonces_local(&nonce_tuple_ids, &reason).await;
+                }
+            }
+            GossipsubMessage::ActivePeerList {
+                node_id,
+                peers,
+                timestamp,
+            } => {
+                // Periodic peer list reconciliation — merge-up only (never remove).
+                // If a peer in the received list is missing from our node_manager but
+                // we have an active connection to it, re-add it. If we are missing from
+                // the sender's list, re-announce ourselves.
+                let now = chrono::Utc::now().timestamp();
+                let max_age_secs = 300; // 5 minutes
+
+                if timestamp < now - max_age_secs || timestamp > now + max_age_secs {
+                    warn!(
+                        "⚠️ [PEER_SYNC] Ignoring stale/future ActivePeerList from {} (ts={}, now={})",
+                        node_id, timestamp, now
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "📋 [PEER_SYNC] Received ActivePeerList from {} with {} peers",
+                    node_id,
+                    peers.len()
+                );
+
+                let current_nodes = self.node_manager.get_active_nodes();
+                let mut added_count = 0u32;
+
+                for (peer_str, idx) in &peers {
+                    if let Ok(peer_id) = peer_str.parse::<PeerId>() {
+                        // Skip ourselves
+                        if peer_id == self.local_peer_id {
+                            continue;
+                        }
+                        // If peer is NOT in our node_manager but IS actively connected
+                        if !current_nodes.contains(&peer_id)
+                            && self.connected_peers_cache.contains(&peer_id)
+                        {
+                            // Store index if provided
+                            if let Some(i) = idx {
+                                self.peer_discovery.peer_indices.insert(peer_id, *i);
+                                let key = crate::database::key_utils::peer_index_key(&peer_id.to_string());
+                                if let Err(e) = self.db.put_string(&key, i) {
+                                    warn!("⚠️ [PEER_SYNC] Failed to persist peer index: {:?}", e);
+                                }
+                            }
+
+                            match self.node_manager.add_node(peer_id) {
+                                Ok(_) => {
+                                    added_count += 1;
+                                    info!(
+                                        "✅ [PEER_SYNC] Re-added missing peer {} (idx: {:?}) from {}'s ActivePeerList",
+                                        peer_id, idx, node_id
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [PEER_SYNC] Failed to re-add peer {}: {:?}",
+                                        peer_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if added_count > 0 {
+                    let total = self.node_manager.get_total_nodes();
+                    info!(
+                        "📊 [PEER_SYNC] Added {} missing peer(s) from {}'s list. Total nodes now: {}",
+                        added_count, node_id, total
+                    );
+                }
+
+                // Check if WE are missing from the sender's list — if so, re-announce
+                let our_id_str = self.local_peer_id.to_string();
+                let we_are_in_list = peers.iter().any(|(p, _)| *p == our_id_str);
+                if !we_are_in_list {
+                    info!(
+                        "📢 [PEER_SYNC] We ({}) are missing from {}'s peer list — re-announcing",
+                        our_id_str, node_id
+                    );
+                    let our_index = self.peer_discovery.peer_indices.get(&self.local_peer_id).copied();
+                    let announce_msg = GossipsubMessage::PeerDiscovered {
+                        peer: self.local_peer_id,
+                        sequence: None,
+                        index: our_index,
+                    };
+                    if let Ok(msg_bytes) = serde_json::to_vec(&announce_msg) {
+                        if let Err(e) = self
+                            .message_tx
+                            .send(crate::types::messaging::ChannelMessage::Broadcast {
+                                topic: "peer-discovery".to_string(),
+                                data: msg_bytes,
+                            })
+                            .await
+                        {
+                            warn!("⚠️ [PEER_SYNC] Failed to re-announce ourselves: {}", e);
+                        }
+                    }
                 }
             }
         }
