@@ -1005,6 +1005,59 @@ pub(crate) async fn handle_user_mpc_deposit(
                     }));
                 }
 
+                // BTC source: verify user has enough *confirmed* UTXOs to cover the amount.
+                // The balance check above uses total balance (may include unconfirmed funds).
+                // During batch processing only confirmed UTXOs are used, so reject early if
+                // there are not enough confirmed funds.
+                if src_is_btc {
+                    let is_testnet = crate::types::network::network_type().is_testnet();
+                    match crate::utils::transaction::fetch_bitcoin_utxos(
+                        &req.msg.source_address,
+                        is_testnet,
+                    )
+                    .await
+                    {
+                        Ok(utxos) => {
+                            let confirmed_balance: u128 = utxos
+                                .iter()
+                                .filter(|u| u.status.confirmed)
+                                .map(|u| u.value as u128)
+                                .sum();
+                            if confirmed_balance < source_amount {
+                                warn!(
+                                    "⚠️ [HTTP] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {}",
+                                    intent_hash_hex, confirmed_balance, source_amount
+                                );
+                                return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                    status: "error".to_string(),
+                                    intent_hash: intent_hash_hex.clone(),
+                                    error_message: Some(format!(
+                                        "Insufficient confirmed balance: you have {} confirmed sats but need {}. \
+                                         Please wait for your pending transactions to confirm.",
+                                        confirmed_balance, source_amount
+                                    )),
+                                    signer_eth_address: None,
+                                }));
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [HTTP] Failed to fetch UTXOs for BTC source address {}: {}",
+                                req.msg.source_address, e
+                            );
+                            return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                                status: "error".to_string(),
+                                intent_hash: intent_hash_hex.clone(),
+                                error_message: Some(format!(
+                                    "Failed to verify confirmed BTC balance: {}",
+                                    e
+                                )),
+                                signer_eth_address: None,
+                            }));
+                        }
+                    }
+                }
+
                 // Network balance check for ALL directions:
                 // - BTC->TICS: Treasury vault balance >= target_amount
                 // - All others: DKG address balance on target chain >= target_amount

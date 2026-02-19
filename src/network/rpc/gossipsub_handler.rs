@@ -2369,7 +2369,7 @@ impl MpcNetworkLayer {
                                 {
                                     let _ = user_intent_manager
                                         .update_intent_status(
-                                            &user.ethereum_address,
+                                            &user.tics_address,
                                             intent_hash,
                                             IntentStatus::Rejected,
                                         )
@@ -2389,7 +2389,7 @@ impl MpcNetworkLayer {
                                 {
                                     let _ = user_intent_manager
                                         .update_intent_status(
-                                            &user.ethereum_address,
+                                            &user.tics_address,
                                             intent_hash,
                                             IntentStatus::Rejected,
                                         )
@@ -2509,6 +2509,21 @@ impl MpcNetworkLayer {
                                     "❌ [BTC_UTV_BATCH] Failed to create chain tx for intent {}: {}",
                                     intent_hash, e
                                 );
+                                // Revert intent status back to Pending so it can be retried
+                                // in a future batch (e.g. once UTXOs are confirmed).
+                                if let Err(revert_err) = user_intent_manager
+                                    .update_intent_status(
+                                        &user.tics_address,
+                                        intent_hash,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [BTC_UTV_BATCH] Failed to revert intent {} to Pending: {}",
+                                        intent_hash, revert_err
+                                    );
+                                }
                                 continue;
                             }
                         };
