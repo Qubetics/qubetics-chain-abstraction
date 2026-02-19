@@ -177,14 +177,12 @@ impl MpcNetworkLayer {
             }
 
             ChannelMessage::PeerConnectionCheck { peer_id, responder } => {
-                let (connected, active_in_network) = if let Ok(pid) = peer_id.parse::<PeerId>() {
-                    let directly_connected = swarm.is_connected(&pid);
-                    let in_node_manager = self.node_manager.get_active_nodes().contains(&pid);
-                    (directly_connected, in_node_manager)
+                let connected = if let Ok(pid) = peer_id.parse::<PeerId>() {
+                    self.node_manager.get_active_nodes().contains(&pid)
                 } else {
-                    (false, false)
+                    false
                 };
-                let _ = responder.send((connected, active_in_network));
+                let _ = responder.send(connected);
             }
 
             // this is used in the dkg code

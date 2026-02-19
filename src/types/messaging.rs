@@ -362,11 +362,10 @@ pub enum ChannelMessage {
     NodeMultiaddrRequest {
         responder: oneshot::Sender<Option<String>>,
     },
-    /// Check if this node is connected to a specific peer.
-    /// Returns (directly_connected, active_in_network).
+    /// Check if a peer is active in the network (present in node_manager).
     PeerConnectionCheck {
         peer_id: String,
-        responder: oneshot::Sender<(bool, bool)>,
+        responder: oneshot::Sender<bool>,
     },
 }
 

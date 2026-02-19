@@ -382,5 +382,4 @@ pub struct RejoinStatusResponse {
 pub struct PeerConnectionResponse {
     pub peer_id: String,
     pub connected: bool,
-    pub active_in_network: bool,
 }
