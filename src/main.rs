@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::level_filters::LevelFilter;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -225,52 +225,6 @@ impl NodeContext {
 
         info!("🗄️ [MAIN] Database initialized successfully");
         info!("🧩 [MAIN] Database module wired for dependent components");
-
-        Ok(())
-    }
-
-    async fn check_and_migrate(&self) -> Result<()> {
-        use mpc_node::database::upgrade::{MigrationRunner, VersionStorage};
-
-        let db = self
-            .database
-            .as_ref()
-            .context("Database must be initialized before migration check")?;
-
-        let version_storage = VersionStorage::new((**db).clone());
-        let current_version = env!("CARGO_PKG_VERSION");
-
-        // Check if this is first run or version changed
-        match version_storage.get_node_version().await? {
-            None => {
-                info!("📦 [MIGRATION] First run detected, initializing version tracking");
-                version_storage.store_node_version(current_version).await?;
-            }
-            Some(stored_version) if stored_version == current_version => {
-                info!(
-                    "✅ [MIGRATION] Node version {} matches database, no migration needed",
-                    current_version
-                );
-            }
-            Some(stored_version) => {
-                info!(
-                    "🔄 [MIGRATION] Version change detected: {} -> {}",
-                    stored_version, current_version
-                );
-
-                // Run migrations
-                let migration_runner = MigrationRunner::new((**db).clone());
-                migration_runner.migrate_to_version(current_version).await?;
-
-                // Update stored version
-                version_storage.store_node_version(current_version).await?;
-
-                info!(
-                    "✅ [MIGRATION] Successfully migrated to version {}",
-                    current_version
-                );
-            }
-        }
 
         Ok(())
     }
@@ -509,12 +463,6 @@ async fn main() -> Result<()> {
     );
 
     context.init_database()?;
-
-    // Check and run migrations if version changed
-    if let Err(e) = context.check_and_migrate().await {
-        error!("❌ [MAIN] Migration failed: {}", e);
-        return Err(e);
-    }
 
     context.init_network().await?;
     context.spawn_rpc().await?;

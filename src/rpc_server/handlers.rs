@@ -1369,8 +1369,7 @@ pub(crate) async fn handle_get_node_info(
         "peers": peer_indices.unwrap_or_default(),
         "capabilities": {
             "signing": true,
-            "vrf": true,
-            "upgradeable": true
+            "vrf": true
         }
     })))
 }

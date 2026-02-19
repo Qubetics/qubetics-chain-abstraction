@@ -541,21 +541,6 @@ pub enum GossipsubMessage {
         /// Node that is acknowledging
         node_id: PeerId,
     },
-    /// Version announcement for rolling upgrades
-    VersionAnnouncement {
-        peer: PeerId,
-        version: String,
-        features: Vec<String>,
-        timestamp: i64,
-    },
-    /// Upgrade announcement (starting, completed, failed)
-    UpgradeAnnouncement {
-        peer: PeerId,
-        target_version: String,
-        phase: String, // "starting", "completed", "failed", "rolled_back"
-        timestamp: u64,
-    },
-
     TransactionBroadcast {
         /// Sequencer request ID (None for non-sequencer transactions)
         sequencer_request_id: Option<String>,

@@ -26,11 +26,6 @@ use super::{
         handle_user_mpc_deposit, handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
-    upgrade_handlers::{
-        handle_cleanup_snapshots, handle_complete_upgrade, handle_rollback, handle_upgrade,
-        handle_upgrade_status, handle_validate_upgrade, CleanupSnapshotsRequest, RollbackRequest,
-        StartUpgradeRequest as UpgradeRequest, ValidateUpgradeRequest,
-    },
 };
 use crate::types::rpc_server::{
     AddLiquidityRequest, ClaimRewardRequest, GetSolverRewardsRequest, RequestContext,
@@ -294,48 +289,6 @@ pub async fn start_http_server(
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_check_peer_connection);
 
-    // Upgrade endpoints
-    let validate_upgrade = warp::path("validate-upgrade")
-        .and(warp::post())
-        .and(limited_json_body::<ValidateUpgradeRequest>())
-        .and(with_database(database.clone()))
-        .and(with_node_id(node_id.clone()))
-        .and(with_auth())
-        .and_then(handle_validate_upgrade);
-
-    let upgrade = warp::path("upgrade")
-        .and(warp::post())
-        .and(limited_json_body::<UpgradeRequest>())
-        .and(with_database(database.clone()))
-        .and(with_node_id(node_id.clone()))
-        .and(with_auth())
-        .and_then(handle_upgrade);
-
-    let upgrade_status = warp::path("upgrade-status")
-        .and(warp::get())
-        .and(with_database(database.clone()))
-        .and_then(handle_upgrade_status);
-
-    let rollback = warp::path("rollback")
-        .and(warp::post())
-        .and(limited_json_body::<RollbackRequest>())
-        .and(with_database(database.clone()))
-        .and(with_auth())
-        .and_then(handle_rollback);
-
-    let cleanup_snapshots = warp::path("cleanup-snapshots")
-        .and(warp::post())
-        .and(limited_json_body::<CleanupSnapshotsRequest>())
-        .and(with_database(database.clone()))
-        .and(with_auth())
-        .and_then(handle_cleanup_snapshots);
-
-    let complete_upgrade = warp::path("complete-upgrade")
-        .and(warp::post())
-        .and(with_database(database.clone()))
-        .and(with_auth())
-        .and_then(handle_complete_upgrade);
-
     let routes = register_user
         .or(get_user_info)
         .or(get_intent_details)
@@ -357,13 +310,7 @@ pub async fn start_http_server(
         .or(get_pending_intents_count)
         .or(get_user_count)
         .or(rejoin_status)
-        .or(check_peer_connection)
-        .or(validate_upgrade)
-        .or(upgrade)
-        .or(upgrade_status)
-        .or(rollback)
-        .or(cleanup_snapshots)
-        .or(complete_upgrade);
+        .or(check_peer_connection);
 
     info!("🌐 Starting HTTP RPC server on port {}", port);
     let cors = warp::cors()
