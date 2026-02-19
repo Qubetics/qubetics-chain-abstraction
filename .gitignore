@@ -9,3 +9,8 @@ node*/*
 *.log
 *.md
 /Audit-report
+chain-abstraction-contracts
+new-contracts/
+
+# macOS
+.DS_Store

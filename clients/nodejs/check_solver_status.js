@@ -28,7 +28,7 @@ const SOLVER_IDS = [
 const ABI = [
   'function isSolverActive(string) view returns (bool)',
   'function isSolverOnboarded(string) view returns (bool)',
-  'function isSolverIdValidated(address) view returns (bool)',
+  'function isSolverIdValidated(string) view returns (bool)',
   'function getSolver(string) view returns (tuple(string,string,uint256[],string[],bool,bool,uint256,uint256))',
   'function getSolverId(address) view returns (string)',
   'function getSolverEvmAddress(string) view returns (address)',
@@ -57,15 +57,10 @@ async function checkSolver(contract, solverId) {
     console.log(`  Onboarded: ⚠️  error - ${e.message}`);
   }
 
-  // isSolverIdValidated — requires EVM address lookup first
+  // isSolverIdValidated — now takes solverId string directly
   try {
-    const evmAddr = await contract.getSolverEvmAddress(solverId);
-    if (evmAddr && evmAddr !== ethers.constants.AddressZero) {
-      const validated = await contract.isSolverIdValidated(evmAddr);
-      console.log(`  Validated: ${validated ? '✅ true' : '❌ false'}  (address: ${evmAddr})`);
-    } else {
-      console.log(`  Validated: ⚠️  no EVM address mapped`);
-    }
+    const validated = await contract.isSolverIdValidated(solverId);
+    console.log(`  Validated: ${validated ? '✅ true' : '❌ false'}`);
   } catch (e) {
     console.log(`  Validated: ⚠️  error - ${e.message}`);
   }

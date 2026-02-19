@@ -114,7 +114,8 @@ const validatorWallet = new ethers.Wallet(VALIDATOR_PK, provider);
 const fundingWallet = new ethers.Wallet(FUNDING_PK, provider);
 
 const ABI = [
-  "function getNonce(address) view returns (uint256)",
+  "function getOnboardNonce(address) view returns (uint256)",
+  "function getValidateNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
   "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
   "function validateSolverId(uint256,bytes)",
@@ -194,13 +195,13 @@ async function onboard(solverWallet, config) {
   }
 
   const domain = await getEip712Domain();
-  // Nonce is the validator's nonce (contract uses nonces[validatorAddress])
-  const nonce = await contract.getNonce(validatorWallet.address);
+  // Nonce is the validator's onboard nonce (contract uses onboardNonces[validatorAddress])
+  const nonce = await contract.getOnboardNonce(validatorWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
   console.log(`    Validator (EIP-712 signer): ${validatorWallet.address}`);
   console.log(`    Solver (msg.sender):        ${solverWallet.address}`);
-  console.log(`    Validator nonce:            ${nonce.toString()}`);
+  console.log(`    Validator onboard nonce:    ${nonce.toString()}`);
 
   const types = {
     OnboardSolver: [
@@ -256,13 +257,13 @@ async function validate(solverWallet, solverId) {
   }
 
   const domain = await getEip712Domain();
-  // Nonce is the validator's nonce (contract uses nonces[validatorAddress])
-  const nonce = await contract.getNonce(validatorWallet.address);
+  // Nonce is the validator's validate nonce (contract uses validateNonces[validatorAddress])
+  const nonce = await contract.getValidateNonce(validatorWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
   console.log(`    Validator (EIP-712 signer): ${validatorWallet.address}`);
   console.log(`    Solver (msg.sender):        ${solverWallet.address}`);
-  console.log(`    Validator nonce:            ${nonce.toString()}`);
+  console.log(`    Validator validate nonce:   ${nonce.toString()}`);
 
   const types = {
     ValidateSolver: [

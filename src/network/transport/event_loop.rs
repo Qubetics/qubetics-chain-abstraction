@@ -268,11 +268,48 @@ impl MpcNetworkLayer {
     /// - self.node_manager: Box<dyn NodeMembership> (for getting available nodes)
     /// - And all other MpcNetworkLayer fields
     async fn handle_global_clock_tick(&mut self) -> Result<()> {
-        info!("⏰ [CLOCK] Global clock tick triggered - performing node selection");
+        self.clock_tick_count += 1;
+        info!("⏰ [CLOCK] Global clock tick #{} triggered - performing node selection", self.clock_tick_count);
 
         // Get available nodes from node manager and convert to Vec
         let available_nodes: Vec<libp2p::PeerId> =
             self.node_manager.get_active_nodes().into_iter().collect();
+
+        // Every 3rd tick, broadcast our active peer list for reconciliation
+        if self.clock_tick_count % 3 == 0 {
+            let peers: Vec<(String, Option<usize>)> = available_nodes
+                .iter()
+                .map(|p| {
+                    let idx = self.peer_discovery.peer_indices.get(p).copied();
+                    (p.to_string(), idx)
+                })
+                .collect();
+
+            let active_list_msg = crate::types::messaging::GossipsubMessage::ActivePeerList {
+                node_id: self.local_peer_id.to_string(),
+                peers,
+                timestamp: chrono::Utc::now().timestamp(),
+            };
+
+            if let Ok(msg_bytes) = serde_json::to_vec(&active_list_msg) {
+                if let Err(e) = self
+                    .message_tx
+                    .send(crate::types::messaging::ChannelMessage::Broadcast {
+                        topic: "peer-discovery".to_string(),
+                        data: msg_bytes,
+                    })
+                    .await
+                {
+                    warn!("⚠️ [CLOCK] Failed to broadcast ActivePeerList: {}", e);
+                } else {
+                    info!(
+                        "📋 [CLOCK] Broadcast ActivePeerList with {} peers (tick #{})",
+                        available_nodes.len(),
+                        self.clock_tick_count
+                    );
+                }
+            }
+        }
 
         if available_nodes.is_empty() {
             warn!("⏰ [CLOCK] No available nodes for selection, skipping");

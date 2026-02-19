@@ -986,6 +986,23 @@ pub(crate) async fn handle_user_mpc_deposit(
                     }));
                 }
 
+                // BTC->TICS minimum satoshi check (source amount must be above Bitcoin dust limit)
+                if src_is_btc && source_amount < (DUST_LIMIT_SATS as u128) {
+                    warn!(
+                        "⚠️ [HTTP] BTC-source intent {} below dust limit: {} satoshis (min {})",
+                        intent_hash_hex, source_amount, DUST_LIMIT_SATS
+                    );
+                    return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
+                        status: "error".to_string(),
+                        intent_hash: intent_hash_hex.clone(),
+                        error_message: Some(format!(
+                            "BTC amount too small: {} satoshis is below Bitcoin dust limit (minimum {} satoshis required)",
+                            source_amount, DUST_LIMIT_SATS
+                        )),
+                        signer_eth_address: None,
+                    }));
+                }
+
                 // Network balance check for ALL directions:
                 // - BTC->TICS: Treasury vault balance >= target_amount
                 // - All others: DKG address balance on target chain >= target_amount

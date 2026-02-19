@@ -27,7 +27,7 @@ const CONTRACT_ADDRESS =
 const SOLVER_ADDRESS = process.env.SOLVER_ADDRESS || process.argv[2];
 
 const ABI = [
-  'function isSolverIdValidated(address) view returns (bool)',
+  'function isSolverIdValidated(string) view returns (bool)',
   'function getSolverEvmAddress(string) view returns (address)',
   'function getSolverId(address) view returns (string)',
 ];
@@ -72,19 +72,17 @@ async function main() {
   console.log('');
 
   try {
-    const validated = await contract.isSolverIdValidated(solverAddress);
-    console.log('Validated:', validated);
-
-    try {
-      const solverId = await contract.getSolverId(solverAddress);
-      if (solverId && solverId !== '') {
-        console.log('Solver ID:', solverId);
-      }
-    } catch (_) {
-      // getSolverId may revert if not mapped
+    const solverId = await contract.getSolverId(solverAddress);
+    if (solverId && solverId !== '') {
+      console.log('Solver ID:', solverId);
+      const validated = await contract.isSolverIdValidated(solverId);
+      console.log('Validated:', validated);
+    } else {
+      console.log('Solver ID: not mapped');
+      console.log('Validated: N/A (no solver ID)');
     }
 
-    process.exit(validated ? 0 : 1);
+    process.exit(0);
   } catch (e) {
     console.error('❌ Error:', e.message);
     process.exit(2);
