@@ -48,7 +48,7 @@ const SOLVER_MANAGER_ABI = [
   'function getMinimumLiquidityTICS() view returns (uint256)',
   'function getMinimumLiquidityBTC() view returns (uint256)',
   'function eip712Domain() view returns (bytes1 fields, string name, string version, uint256 chainId, address verifyingContract, bytes32 salt, uint256[] extensions)',
-  'function getNonce(address) view returns (uint256)',
+  'function getOnboardNonce(address) view returns (uint256)',
 ];
 
 const colors = {
@@ -160,8 +160,8 @@ async function runOnboard(provider, contract, wallet) {
   const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
 
   // Get the nonce for the validator wallet
-  const nonce = await contract.getNonce(wallet.address);
-  console.log(`${colors.blue}Validator nonce: ${nonce.toString()}${colors.reset}`);
+  const nonce = await contract.getOnboardNonce(wallet.address);
+  console.log(`${colors.blue}Validator onboard nonce: ${nonce.toString()}${colors.reset}`);
 
   const domain = await getEip712Domain(contract);
   const typedData = buildOnboardTypedData(domain, solverId, solverName, chainIds, solverAddresses, nonce, deadline);

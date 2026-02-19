@@ -317,6 +317,21 @@ impl UserIntentManager {
             } else if intent.source_chain.to_lowercase() != source_lower {
                 continue;
             }
+            // For BTC-source intents, skip if amount is below Bitcoin dust limit (546 sats).
+            // These can never produce a valid on-chain transaction, so exclude them from the batch
+            // to avoid wasting gossipsub bandwidth and nonce reservations.
+            let is_btc_source = intent.source_chain.eq_ignore_ascii_case("bitcoin")
+                || intent.source_chain.eq_ignore_ascii_case("btc");
+            if is_btc_source {
+                let parsed_amount: u64 = intent.amount.parse().unwrap_or(0);
+                if parsed_amount < crate::utils::transaction::DUST_LIMIT_SATS {
+                    warn!(
+                        "⚠️ [BATCH_PICK] Skipping intent {} — BTC amount {} sats below dust limit {}",
+                        intent_hash, parsed_amount, crate::utils::transaction::DUST_LIMIT_SATS
+                    );
+                    continue;
+                }
+            }
             // Skip if we already have an intent from this source address in the batch.
             // The second intent will be picked up in a subsequent batch cycle.
             let source_addr_lower = intent.source_address.to_lowercase();
