@@ -104,17 +104,18 @@ impl MpcNetworkLayer {
         //     }
         // }
 
-        // 2. Pending invalidation check — block peer if invalidateSolverIds txn is pending or in-flight
+        // 2. Staging cleanup — if this peer is in the disconnection staging map it means it
+        //    disconnected earlier but is now rejoining before epoch-2 promoted it to the
+        //    invalidation queue.  Remove it from staging so the epoch-2 batch will not include it.
         {
             let solver_id = peer_id.to_string();
-            let pending_key = format!("{}{}", keys::PENDING_DISCONNECTION, solver_id);
-            if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
-                warn!(
-                    "🚫 [REJOIN_BLOCKED] Peer {} has a pending invalidation — rejecting connection until invalidation transaction completes",
+            let staging_key = format!("{}{}", keys::DISCONNECTION_STAGING, solver_id);
+            if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {
+                info!(
+                    "♻️ [REJOIN] Peer {} found in disconnection staging — removing before epoch-2 promotes it; no invalidation will be queued",
                     peer_id
                 );
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
+                let _ = self.db.delete_string(&staging_key);
             }
         }
 
@@ -636,18 +637,17 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // STEP 1.5: Broadcast peer disconnection for contract invalidation
+                // STEP 1.5: Broadcast peer disconnection and write to the staging map.
+                // The staging entry is NOT the invalidation queue; it is a grace-period buffer.
+                // At epoch-2 any entry still in staging (peer never rejoined) is promoted to
+                // PENDING_DISCONNECTION for batch invalidation.
                 let solver_id = peer_id.to_string(); // peer_id IS the solver_id
 
-                // One PENDING_DISCONNECTION entry per solver — check if already exists
-                let pending_key = format!(
-                    "{}{}",
-                    keys::PENDING_DISCONNECTION,
-                    solver_id
-                );
-                if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
+                // One staging entry per solver — check if already exists to avoid duplicate broadcast
+                let staging_key = format!("{}{}", keys::DISCONNECTION_STAGING, solver_id);
+                if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {
                     info!(
-                        "ℹ️ [DISCONNECT] PENDING_DISCONNECTION already exists for solver {}, skipping duplicate broadcast",
+                        "ℹ️ [DISCONNECT] Staging entry already exists for solver {}, skipping duplicate broadcast",
                         solver_id
                     );
                     // Still process the internal disconnect (remove from active nodes etc.)
@@ -683,7 +683,7 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Store locally for batch processing — one entry per solver (no timestamp suffix)
+                // Write to staging (not invalidation queue) — epoch-2 will promote if peer never rejoins
                 let disconnection_record = serde_json::json!({
                     "peer_id": peer_id.to_string(),
                     "solver_id": solver_id,
@@ -692,14 +692,14 @@ impl MpcNetworkLayer {
                 });
 
                 if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
-                    if let Err(e) = self.db.put_string(&pending_key, &record_str) {
+                    if let Err(e) = self.db.put_string(&staging_key, &record_str) {
                         error!(
-                            "❌ [DISCONNECT] Failed to store disconnection record: {}",
+                            "❌ [DISCONNECT] Failed to store staging record: {}",
                             e
                         );
                     } else {
                         info!(
-                            "💾 [DISCONNECT] Stored disconnection record for solver: {}",
+                            "💾 [DISCONNECT] Stored disconnection staging record for solver: {} (will be promoted to invalidation at epoch-2 if peer does not rejoin)",
                             solver_id
                         );
                     }

@@ -25,7 +25,7 @@ if (!CONTRACT_ADDRESS || !CONTRACT_ADDRESS.startsWith('0x')) {
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
 // Three payer keys: each pays gas for its own solver (1,2,3).
-const SOLVER_PAYER_KEYS = ['SOLVER4_PK' ];
+const SOLVER_PAYER_KEYS = ['SOLVER1_PK', 'SOLVER2_PK', 'SOLVER3_PK', 'SOLVER4_PK' ];
 const payerWallets = SOLVER_PAYER_KEYS.map((key) => {
   const pk = process.env[key];
   if (!pk) {
@@ -483,13 +483,13 @@ async function main() {
   // Whitelisted addresses (do not fund): 3 ETH + 3 BTC below, one pair per solver; all unique.
   const SOLVER_ETH_ADDRESSES = [
     "0x36D35b85b8664a48A41B93dA2fE48AD7fB25b76F",
-    // "0x1dF8C867c71B270Da6b60CA0cf9328ace3757593",
-    // "0x04023269c934B3D249ACFBCdAF37C289C23F72e8"
+    "0x1dF8C867c71B270Da6b60CA0cf9328ace3757593",
+    "0x04023269c934B3D249ACFBCdAF37C289C23F72e8"
   ];
   const SOLVER_BTC_ADDRESSES = [
     "tb1qhtnzsm4kgpj4q6prztnp535a48yeulaj0zd7nw",
-    // "tb1qahuwhrh27rud5sd03dfd85fjl52d8l288v04sf",
-    // "tb1qdz0arcvm9psgd3839dsnzlasm7nmydrxjcelpq"
+    "tb1qahuwhrh27rud5sd03dfd85fjl52d8l288v04sf",
+    "tb1qdz0arcvm9psgd3839dsnzlasm7nmydrxjcelpq"
   ];
 
   const solverConfigs = [

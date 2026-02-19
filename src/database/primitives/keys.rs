@@ -60,10 +60,16 @@ pub const NONCE_R_POINT: &str = "nonce_r_point:";
 pub const NONCE_POOL_METRICS: &str = "nonce_pool_metrics";
 /// List of available (unconsumed) nonce tuple IDs for quick lookup
 pub const NONCE_AVAILABLE_IDS: &str = "nonce_available_ids";
+/// Staging area for peer disconnections — written immediately when a peer disconnects.
+/// Key format: "disconnection_staging:{solver_id}" — one entry per solver.
+/// Cleared immediately if the peer reconnects before epoch-2 (no invalidation).
+/// At epoch-2 surviving entries are promoted to PENDING_DISCONNECTION for batch processing.
+pub const DISCONNECTION_STAGING: &str = "disconnection_staging:";
+
 /// Pending peer disconnections for batch invalidation.
 /// Key format: "pending_disconnection:{solver_id}" — exactly one entry per solver.
-/// Created on disconnect, deleted after successful on-chain invalidateSolverIds tx.
-/// While this entry exists, the peer is blocked from rejoining the network.
+/// Promoted from DISCONNECTION_STAGING at epoch-2 (only if peer did not rejoin).
+/// Deleted after successful on-chain invalidateSolverIds tx.
 pub const PENDING_DISCONNECTION: &str = "pending_disconnection:";
 
 // ============================================================

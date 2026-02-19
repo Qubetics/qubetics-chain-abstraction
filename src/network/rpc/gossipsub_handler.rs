@@ -4069,53 +4069,25 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // One PENDING_DISCONNECTION entry per solver — check if already exists
-                let pending_key = format!(
+                // Write to the staging map — NOT the invalidation queue.
+                // At epoch-2 surviving staging entries are promoted to PENDING_DISCONNECTION.
+                // The on-chain validation check is deferred to epoch-2 (before promotion).
+                // If the peer reconnects before epoch-2 the staging entry is cleared on connect
+                // and no invalidation is ever queued for this peer.
+                let staging_key = format!(
                     "{}{}",
-                    crate::database::keys::PENDING_DISCONNECTION,
+                    crate::database::keys::DISCONNECTION_STAGING,
                     solver_id
                 );
-                if let Ok(Some(_)) = self.db.get_string::<String>(&pending_key) {
+                if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {
                     info!(
-                        "ℹ️ [PEER_DISCONNECT] PENDING_DISCONNECTION already exists for solver {}, skipping duplicate",
+                        "ℹ️ [PEER_DISCONNECT] Staging entry already exists for solver {}, skipping duplicate",
                         solver_id
                     );
                     return Ok(());
                 }
 
-                // Check on-chain if the solver is already invalidated (solverIdValidated == false).
-                // If already invalidated, skip creating PENDING_DISCONNECTION to avoid poisoning
-                // future batches — invalidateSolverIds reverts if any solver in the batch is
-                // already invalidated, which blocks invalidation of other solvers in the same batch.
-                if let Ok(Some(config)) = crate::contract::get_solver_contract_config() {
-                    let client = crate::contract::ContractClient::new(config.clone());
-                    if let Ok(client) = client {
-                        let contract = crate::contract::SolverManagerContract::new(&config, client.provider());
-                        if let Ok(contract) = contract {
-                            match contract.is_solver_id_validated(&solver_id).await {
-                                Ok(false) => {
-                                    info!(
-                                        "ℹ️ [PEER_DISCONNECT] Solver {} is already invalidated on-chain (solverIdValidated=false), skipping PENDING_DISCONNECTION",
-                                        solver_id
-                                    );
-                                    return Ok(());
-                                }
-                                Ok(true) => {
-                                    // Solver is still validated on-chain, proceed to create PENDING_DISCONNECTION
-                                }
-                                Err(e) => {
-                                    // Contract call failed — proceed anyway to avoid missing a real disconnection
-                                    warn!(
-                                        "⚠️ [PEER_DISCONNECT] Failed to check on-chain validation for solver {}: {} — proceeding with PENDING_DISCONNECTION",
-                                        solver_id, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Store the disconnection record for batch processing in epoch-2
+                // Store in staging for batch promotion at epoch-2
                 let disconnection_record = serde_json::json!({
                     "peer_id": peer_id,
                     "solver_id": solver_id,
@@ -4124,14 +4096,14 @@ impl MpcNetworkLayer {
                 });
 
                 if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
-                    if let Err(e) = self.db.put_string(&pending_key, &record_str) {
+                    if let Err(e) = self.db.put_string(&staging_key, &record_str) {
                         error!(
-                            "❌ [PEER_DISCONNECT] Failed to store disconnection record: {}",
+                            "❌ [PEER_DISCONNECT] Failed to store staging record: {}",
                             e
                         );
                     } else {
                         info!(
-                            "💾 [PEER_DISCONNECT] Stored disconnection record for solver: {}",
+                            "💾 [PEER_DISCONNECT] Stored disconnection staging record for solver: {} (promoted to invalidation at epoch-2 if peer does not rejoin)",
                             solver_id
                         );
                     }
