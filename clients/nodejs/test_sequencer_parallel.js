@@ -22,7 +22,8 @@ const RPC_NODES = [
   // 'http://127.0.0.1:8082',
   // 'http://127.0.0.1:8083',
   // 'http://127.0.0.1:8084',
-  'http://127.0.0.1:8082',
+  // 'http://127.0.0.1:8082',
+  'http://124.243.185.174:8082',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -174,7 +175,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "a9b9e65588ce7c6a848f1c1b774fe97355df42c320dfe1f4bb7f080e6502886d",
   // "a68d106da7edc096afc315832153baf0fa44390b21dde28cbb8cab83318af549",
   // "bd38393080ca0608a825dc2555e60e1c6c1a54a5a3d45ac0d6def14503550d98",
-  "ef137a62fa9c0ab2a0bd13d4afffec895424952f96bb3536b8c0fdd616b10778",
+  // "ef137a62fa9c0ab2a0bd13d4afffec895424952f96bb3536b8c0fdd616b10778",
   // "f74194d2cc8893a0c814455a22ffc6895624eea4e2e4388356002fe8b6aaa3c0",
   // "0ee6024eb7a687b8e0f705913ce232079437105f05616abba45b048b1f882fe8",
   // "da794137eb016a06e6f97375298e189983efc8204214902eef884bdb0e79927e",
@@ -197,7 +198,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "323bdf5617d1deda889bdf59689131b202411f85616be098ffbff32bfda63069",
   // "a0f8a492d449b90591caa7357b42d1ce098427cdbab2cf3bcc663e4ce1558d4b",
   // "e34894d12b2549b5d007c87692419a4eeab7e196ce049e61934d06baa57f89eb",
-  // "8a36aff116bb7de5b81d1e0639f9a7cc0ff72c6406e2b0c2234b74b633a563ac",
+  "8a36aff116bb7de5b81d1e0639f9a7cc0ff72c6406e2b0c2234b74b633a563ac",
   // "36411b3c9bf1ee28d867a102939ddb63cd661d90a9db5e28a62c5dff92a4665b",
   // "e46c3fafd3aaeba93fda80eccbab01506a79e7025c41d34231954e3780ae19b7",
   // "542254c961bc8666efbc683ca379353526bf7a05cf6416f19aa297799544574b",
@@ -426,7 +427,7 @@ async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
     const response = await axios.post(
       `${nodeUrl}/register_user`,
       {
-        ethereum_address: ethereumAddress,
+        tics_address: ethereumAddress,
         signature: signature,
         message: message
       },
@@ -447,7 +448,9 @@ async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
     return { success: true, data: response.data };
   } catch (error) {
     if (error.response) {
-      log(`[User ${userId}] ❌ Registration failed: ${error.response.data?.message || error.response.statusText}`, 'red');
+      const body = error.response.data;
+      const detail = typeof body === 'object' ? JSON.stringify(body) : body;
+      log(`[User ${userId}] ❌ Registration failed (HTTP ${error.response.status}): ${detail || error.response.statusText}`, 'red');
     } else {
       log(`[User ${userId}] ❌ Registration error: ${error.message}`, 'red');
     }
@@ -541,12 +544,13 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
       // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
-      target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
+      target_address: "0x88c8045Fd96b88394B67fcA04FC92172CF7E6940",
+      // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'qubetics',
-      target_chain: 'bitcoin',
+      target_chain: 'qubetics',
       amount: amount,
       source_token: 'TICS',
-      target_token: 'BTC',
+      target_token: 'TICS',
       timestamp: intentTimestamp,
     };
 
@@ -865,7 +869,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "5000000000000000000";  // 12 TICS
+    const amount = "35000000000000000000";  // 12 TICS
     // const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
