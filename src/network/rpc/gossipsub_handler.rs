@@ -76,6 +76,17 @@ impl MpcNetworkLayer {
 
                     // Parse the disconnected node ID
                     if let Ok(peer_id) = disconnected_node_id.parse::<PeerId>() {
+                        // A node must never remove itself from its own active list.
+                        // During reconnection, connection flapping + REJOIN_BLOCKED can
+                        // cause a fresh disconnect broadcast about us while we are still alive.
+                        if peer_id == self.local_peer_id {
+                            warn!(
+                                "📢 [DISCONNECT] Ignoring disconnect broadcast about ourselves ({}) from {} — we are still alive",
+                                peer_id, broadcaster_node_id
+                            );
+                            return Ok(());
+                        }
+
                         // Check if we haven't already processed this disconnect
                         if self.node_manager.get_active_nodes().contains(&peer_id) {
                             info!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
@@ -232,7 +243,7 @@ impl MpcNetworkLayer {
                     }
                 };
                 debug!(
-                    "📥 [SELECTION] Received selected nodes broadcast: round={}, from={}, received_by={}",
+                    "���� [SELECTION] Received selected nodes broadcast: round={}, from={}, received_by={}",
                     round, selector_node_id, self.local_peer_id
                 );
 
@@ -4048,6 +4059,15 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // Ignore disconnect broadcasts about ourselves — we are still alive
+                if solver_id == self.local_peer_id.to_string() {
+                    warn!(
+                        "📡 [PEER_DISCONNECT] Ignoring disconnection broadcast about ourselves ({}) — we are still alive",
+                        solver_id
+                    );
+                    return Ok(());
+                }
+
                 // Validate timestamp is sane (not too far in past/future)
                 let now = chrono::Utc::now().timestamp();
                 let max_age_secs = 3600; // 1 hour in the past
@@ -4539,6 +4559,109 @@ impl MpcNetworkLayer {
                 if let Some(arc) = &self.signing_node {
                     let node = arc.lock().await;
                     node.invalidate_nonces_local(&nonce_tuple_ids, &reason).await;
+                }
+            }
+            GossipsubMessage::ActivePeerList {
+                node_id,
+                peers,
+                timestamp,
+            } => {
+                // Periodic peer list reconciliation — merge-up only (never remove).
+                // If a peer in the received list is missing from our node_manager but
+                // we have an active connection to it, re-add it. If we are missing from
+                // the sender's list, re-announce ourselves.
+                let now = chrono::Utc::now().timestamp();
+                let max_age_secs = 300; // 5 minutes
+
+                if timestamp < now - max_age_secs || timestamp > now + max_age_secs {
+                    warn!(
+                        "⚠️ [PEER_SYNC] Ignoring stale/future ActivePeerList from {} (ts={}, now={})",
+                        node_id, timestamp, now
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "📋 [PEER_SYNC] Received ActivePeerList from {} with {} peers",
+                    node_id,
+                    peers.len()
+                );
+
+                let current_nodes = self.node_manager.get_active_nodes();
+                let mut added_count = 0u32;
+
+                for (peer_str, idx) in &peers {
+                    if let Ok(peer_id) = peer_str.parse::<PeerId>() {
+                        // Skip ourselves
+                        if peer_id == self.local_peer_id {
+                            continue;
+                        }
+                        // If peer is NOT in our node_manager but IS actively connected
+                        if !current_nodes.contains(&peer_id)
+                            && self.connected_peers_cache.contains(&peer_id)
+                        {
+                            // Store index if provided
+                            if let Some(i) = idx {
+                                self.peer_discovery.peer_indices.insert(peer_id, *i);
+                                let key = crate::database::key_utils::peer_index_key(&peer_id.to_string());
+                                if let Err(e) = self.db.put_string(&key, i) {
+                                    warn!("⚠️ [PEER_SYNC] Failed to persist peer index: {:?}", e);
+                                }
+                            }
+
+                            match self.node_manager.add_node(peer_id) {
+                                Ok(_) => {
+                                    added_count += 1;
+                                    info!(
+                                        "✅ [PEER_SYNC] Re-added missing peer {} (idx: {:?}) from {}'s ActivePeerList",
+                                        peer_id, idx, node_id
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [PEER_SYNC] Failed to re-add peer {}: {:?}",
+                                        peer_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if added_count > 0 {
+                    let total = self.node_manager.get_total_nodes();
+                    info!(
+                        "📊 [PEER_SYNC] Added {} missing peer(s) from {}'s list. Total nodes now: {}",
+                        added_count, node_id, total
+                    );
+                }
+
+                // Check if WE are missing from the sender's list — if so, re-announce
+                let our_id_str = self.local_peer_id.to_string();
+                let we_are_in_list = peers.iter().any(|(p, _)| *p == our_id_str);
+                if !we_are_in_list {
+                    info!(
+                        "📢 [PEER_SYNC] We ({}) are missing from {}'s peer list — re-announcing",
+                        our_id_str, node_id
+                    );
+                    let our_index = self.peer_discovery.peer_indices.get(&self.local_peer_id).copied();
+                    let announce_msg = GossipsubMessage::PeerDiscovered {
+                        peer: self.local_peer_id,
+                        sequence: None,
+                        index: our_index,
+                    };
+                    if let Ok(msg_bytes) = serde_json::to_vec(&announce_msg) {
+                        if let Err(e) = self
+                            .message_tx
+                            .send(crate::types::messaging::ChannelMessage::Broadcast {
+                                topic: "peer-discovery".to_string(),
+                                data: msg_bytes,
+                            })
+                            .await
+                        {
+                            warn!("⚠️ [PEER_SYNC] Failed to re-announce ourselves: {}", e);
+                        }
+                    }
                 }
             }
         }

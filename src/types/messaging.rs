@@ -677,4 +677,15 @@ pub enum GossipsubMessage {
         #[serde(default)]
         nonce_tuple_id: Option<String>,
     },
+    /// Periodic active peer list broadcast for peer count reconciliation.
+    /// Nodes broadcast their active peer list every 3rd clock tick so peers
+    /// can detect and fix missing entries (merge-up only, never removes).
+    ActivePeerList {
+        /// Node broadcasting its peer list
+        node_id: String,
+        /// List of (peer_id_string, optional_index) pairs
+        peers: Vec<(String, Option<usize>)>,
+        /// Timestamp of broadcast
+        timestamp: i64,
+    },
 }

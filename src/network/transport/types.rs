@@ -244,6 +244,8 @@ pub struct MpcNetworkLayer {
     /// Pending peer invalidation: round (string) -> solver_ids. Filled when processing PeerInvalidationBatch;
     /// used when TransactionBroadcast(peer_invalidation:round) is received to broadcast PeerInvalidationTxConfirmed.
     pub(crate) peer_invalidation_pending: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Counter for global clock ticks — used for periodic peer list sync (every 3rd tick)
+    pub(crate) clock_tick_count: u64,
 }
 
 impl MpcNetworkLayer {

@@ -105,6 +105,7 @@ impl MpcNetworkLayer {
             outbound_inflight: Arc::new(Mutex::new(HashMap::new())),
             outbound_retry: Arc::new(Mutex::new(HashMap::new())),
             peer_invalidation_pending: Arc::new(Mutex::new(HashMap::new())),
+            clock_tick_count: 0,
         };
 
         this.bootstrap_peer_ids = this
