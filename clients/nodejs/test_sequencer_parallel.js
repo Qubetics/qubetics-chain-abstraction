@@ -19,11 +19,11 @@ import path from 'path';
 
 // Configuration
 const RPC_NODES = [
-  // 'http://127.0.0.1:8082',
+  'http://127.0.0.1:8082',
   // 'http://127.0.0.1:8083',
   // 'http://127.0.0.1:8084',
   // 'http://127.0.0.1:8082',
-  'http://124.243.185.174:8082',
+  // 'http://124.243.185.174:8082',
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -427,7 +427,7 @@ async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
     const response = await axios.post(
       `${nodeUrl}/register_user`,
       {
-        tics_address: ethereumAddress,
+        ethereum_address: ethereumAddress,
         signature: signature,
         message: message
       },

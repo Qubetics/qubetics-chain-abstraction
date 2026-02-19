@@ -332,7 +332,7 @@ impl UserIntentManager {
                     if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
                         let _ = self
                             .update_intent_status(
-                                &user.tics_address,
+                                &user.ethereum_address,
                                 &intent_hash,
                                 IntentStatus::Rejected,
                             )

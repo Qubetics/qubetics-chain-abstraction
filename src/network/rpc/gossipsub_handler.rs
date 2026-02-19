@@ -2369,7 +2369,7 @@ impl MpcNetworkLayer {
                                 {
                                     let _ = user_intent_manager
                                         .update_intent_status(
-                                            &user.tics_address,
+                                            &user.ethereum_address,
                                             intent_hash,
                                             IntentStatus::Rejected,
                                         )
@@ -2389,7 +2389,7 @@ impl MpcNetworkLayer {
                                 {
                                     let _ = user_intent_manager
                                         .update_intent_status(
-                                            &user.tics_address,
+                                            &user.ethereum_address,
                                             intent_hash,
                                             IntentStatus::Rejected,
                                         )
@@ -2513,7 +2513,7 @@ impl MpcNetworkLayer {
                                 // in a future batch (e.g. once UTXOs are confirmed).
                                 if let Err(revert_err) = user_intent_manager
                                     .update_intent_status(
-                                        &user.tics_address,
+                                        &user.ethereum_address,
                                         intent_hash,
                                         IntentStatus::Pending,
                                     )
