@@ -71,8 +71,8 @@ impl MpcNetworkLayer {
         info!("🌐 [P2P] Starting P2P server...");
         info!("🔑 [P2P] Local Peer ID: {}", self.local_peer_id);
 
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
 
         info!("⏳ [P2P] Waiting for listen addresses to be assigned...");
 
