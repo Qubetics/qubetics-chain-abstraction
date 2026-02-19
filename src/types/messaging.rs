@@ -362,6 +362,11 @@ pub enum ChannelMessage {
     NodeMultiaddrRequest {
         responder: oneshot::Sender<Option<String>>,
     },
+    /// Check if a peer is active in the network (present in node_manager).
+    PeerConnectionCheck {
+        peer_id: String,
+        responder: oneshot::Sender<bool>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,21 +541,6 @@ pub enum GossipsubMessage {
         /// Node that is acknowledging
         node_id: PeerId,
     },
-    /// Version announcement for rolling upgrades
-    VersionAnnouncement {
-        peer: PeerId,
-        version: String,
-        features: Vec<String>,
-        timestamp: i64,
-    },
-    /// Upgrade announcement (starting, completed, failed)
-    UpgradeAnnouncement {
-        peer: PeerId,
-        target_version: String,
-        phase: String, // "starting", "completed", "failed", "rolled_back"
-        timestamp: u64,
-    },
-
     TransactionBroadcast {
         /// Sequencer request ID (None for non-sequencer transactions)
         sequencer_request_id: Option<String>,

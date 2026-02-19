@@ -351,6 +351,22 @@ impl DkgStorage {
         self.db.get_string::<usize>(keys::DKG_SIGNER_COUNT)
     }
 
+    /// Store the PeerIds of the invulnerable nodes (the initial DKG signers that generated shares)
+    pub fn set_invulnerables(&self, peer_ids: &[String]) -> Result<()> {
+        self.db.put_string(keys::DKG_INVULNERABLES, &peer_ids.to_vec())?;
+        tracing::info!(
+            "🔢 [DKG_STORAGE] Stored invulnerables ({}): {:?}",
+            peer_ids.len(),
+            peer_ids
+        );
+        Ok(())
+    }
+
+    /// Get the PeerIds of the invulnerable nodes (initial DKG signers)
+    pub fn get_invulnerables(&self) -> Result<Option<Vec<String>>> {
+        self.db.get_string::<Vec<String>>(keys::DKG_INVULNERABLES)
+    }
+
     /// Store the node's permanent index (assigned during initial DKG or resharing)
     pub async fn set_my_permanent_index(&self, index: usize) -> Result<()> {
         self.db.put_string(keys::DKG_MY_PERMANENT_INDEX, &index)?;

@@ -176,6 +176,15 @@ impl MpcNetworkLayer {
                 }
             }
 
+            ChannelMessage::PeerConnectionCheck { peer_id, responder } => {
+                let connected = if let Ok(pid) = peer_id.parse::<PeerId>() {
+                    self.node_manager.get_active_nodes().contains(&pid)
+                } else {
+                    false
+                };
+                let _ = responder.send(connected);
+            }
+
             // this is used in the dkg code
             ChannelMessage::Broadcast { topic, data } => {
                 // dkg.s.1

@@ -137,6 +137,26 @@ impl SigningNode {
         }
     }
 
+    /// Clear stale pending rounds and apply fresh state from peer.
+    /// Used during state sync on rejoin to avoid mixing stale and fresh data.
+    pub async fn clear_and_apply_synced_pending_rounds(
+        &self,
+        withdraw_rounds: &[u64],
+        claim_reward_rounds: &[u64],
+    ) {
+        let mut wr = self.pending.withdraw_rounds.write().await;
+        wr.clear();
+        for r in withdraw_rounds {
+            wr.insert(*r);
+        }
+
+        let mut cr = self.pending.claim_reward_rounds.write().await;
+        cr.clear();
+        for r in claim_reward_rounds {
+            cr.insert(*r);
+        }
+    }
+
     pub fn vrf_service(&self) -> Option<&VrfService> {
         self.coordination.vrf_service()
     }
@@ -7752,25 +7772,113 @@ impl SigningNode {
         1
     }
 
-    /// Process peer invalidation batch for epoch-2
-    /// Collects disconnected solver IDs and broadcasts batch for all nodes to sign
+    /// Process peer invalidation batch for epoch-2.
+    ///
+    /// Two-phase logic:
+    ///   Phase 1 — Promote staging entries that survived the epoch.
+    ///     Scan DISCONNECTION_STAGING:* keys.  For each one:
+    ///       • Remove it from staging (consumed regardless of outcome).
+    ///       • Check on-chain: if the solver is still validated → write PENDING_DISCONNECTION.
+    ///       • If already invalidated on-chain → skip (nothing to do).
+    ///     This means any peer that reconnected before epoch-2 was already cleared from staging
+    ///     on connection and will never reach this point.
+    ///
+    ///   Phase 2 — Collect PENDING_DISCONNECTION entries (promoted in phase 1 plus any that
+    ///     were left over from a previous epoch) and broadcast the invalidation batch.
     async fn process_peer_invalidation_batch(&self, round: u64) -> Result<()> {
         info!(
             "🚫 [PEER_INVALIDATION] Processing peer invalidation batch for round {}",
             round
         );
 
-        // Collect all pending disconnections from database
         let database = self.database.as_ref()
             .ok_or_else(|| anyhow::anyhow!("Database not available"))?;
-        
-        // Collect solver IDs from PENDING_DISCONNECTION entries
-        // Key format: "pending_disconnection:{solver_id}" — one entry per solver
+
+        // ── Phase 1: Promote surviving staging entries ──────────────────────────────
+        let staging_prefix = crate::database::keys::DISCONNECTION_STAGING;
+        let staging_keys = database.get_keys_with_prefix_async(staging_prefix).await.unwrap_or_default();
+
+        if !staging_keys.is_empty() {
+            info!(
+                "🔄 [PEER_INVALIDATION] Phase 1: Found {} staging entry/entries to evaluate for promotion",
+                staging_keys.len()
+            );
+
+            // Build contract client once (optional — skip on error, entries stay in staging)
+            let contract_opt: Option<crate::contract::SolverManagerContract> =
+                if let Ok(Some(config)) = crate::contract::get_solver_contract_config() {
+                    if let Ok(client) = crate::contract::ContractClient::new(config.clone()) {
+                        crate::contract::SolverManagerContract::new(&config, client.provider()).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            for key in &staging_keys {
+                let solver_id = match key.strip_prefix(staging_prefix) {
+                    Some(s) if !s.is_empty() => s.to_string(),
+                    _ => continue,
+                };
+
+                // Always consume the staging entry first
+                let _ = database.delete_string(key);
+
+                // On-chain check: skip if already invalidated to avoid batch reverts
+                let should_promote = if let Some(ref contract) = contract_opt {
+                    match contract.is_solver_id_validated(&solver_id).await {
+                        Ok(true) => {
+                            true // still validated on-chain → promote
+                        }
+                        Ok(false) => {
+                            info!(
+                                "ℹ️ [PEER_INVALIDATION] Solver {} is already invalidated on-chain, dropping staging entry",
+                                solver_id
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [PEER_INVALIDATION] Failed to check on-chain validation for {} during promotion: {} — promoting anyway",
+                                solver_id, e
+                            );
+                            true
+                        }
+                    }
+                } else {
+                    // Contract unavailable — promote to be safe (existing fallback behaviour)
+                    true
+                };
+
+                if should_promote {
+                    let pending_key = format!(
+                        "{}{}",
+                        crate::database::keys::PENDING_DISCONNECTION,
+                        solver_id
+                    );
+                    // Only write if not already present (could be left over from a prior epoch)
+                    if let Ok(None) = database.get_string::<String>(&pending_key) {
+                        // Re-read the staging record to carry the original metadata forward
+                        let record = serde_json::json!({ "solver_id": solver_id });
+                        if let Ok(record_str) = serde_json::to_string(&record) {
+                            let _ = database.put_string(&pending_key, &record_str);
+                        }
+                        info!(
+                            "✅ [PEER_INVALIDATION] Promoted solver {} from staging to invalidation queue",
+                            solver_id
+                        );
+                    }
+                }
+            }
+        }
+
+        // ── Phase 2: Collect all PENDING_DISCONNECTION entries for the batch ────────
         let prefix = crate::database::keys::PENDING_DISCONNECTION;
         let keys = database.get_keys_with_prefix_async(prefix).await.unwrap_or_default();
 
         if keys.is_empty() {
-            info!("✅ [PEER_INVALIDATION] No pending disconnections to process");
+            info!("✅ [PEER_INVALIDATION] No pending disconnections to process after promotion");
             return Ok(());
         }
 
@@ -7788,8 +7896,40 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Guard: filter out invulnerable nodes (initial DKG signers) — they must never be invalidated
+        if let Some(ref dkg) = self.dkg_storage {
+            if let Ok(Some(invulnerables)) = dkg.get_invulnerables() {
+                let before = all_solver_ids.len();
+                all_solver_ids.retain(|sid| {
+                    if invulnerables.contains(sid) {
+                        info!(
+                            "🛡️ [PEER_INVALIDATION] Solver {} is an invulnerable (DKG signer) — removing from invalidation batch and clearing PENDING_DISCONNECTION",
+                            sid
+                        );
+                        let pending_key = format!("{}{}", prefix, sid);
+                        let _ = database.delete_string(&pending_key);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if before != all_solver_ids.len() {
+                    info!(
+                        "🛡️ [PEER_INVALIDATION] Filtered {} invulnerable(s) from batch, {} remaining",
+                        before - all_solver_ids.len(),
+                        all_solver_ids.len()
+                    );
+                }
+            }
+        }
+
+        if all_solver_ids.is_empty() {
+            info!("✅ [PEER_INVALIDATION] All pending solvers are invulnerables or already handled, nothing to do");
+            return Ok(());
+        }
+
         // Filter out solvers that are already invalidated on-chain to avoid
-        // batch reverts (invalidateSolverIds reverts if any solver is already invalidated).
+        // batch reverts (invalidateSolverIds reverts if any solver in the batch is already invalidated).
         // Also clean up their PENDING_DISCONNECTION entries since they don't need processing.
         let mut solver_ids: Vec<String> = Vec::new();
         if let Ok(Some(config)) = crate::contract::get_solver_contract_config() {

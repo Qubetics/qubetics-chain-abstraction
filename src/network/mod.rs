@@ -7,7 +7,6 @@ pub mod discovery;
 pub mod dkg;
 pub mod rpc;
 pub mod transport;
-pub mod upgrade;
 
 // Internal helpers for initialization and component management
 mod getters;
@@ -15,6 +14,3 @@ pub mod init;
 mod setters;
 mod utils;
 pub mod whitelist;
-pub use upgrade::{
-    NetworkVersionTracker, RollingUpgradeOrchestrator, UpgradePhase, UpgradeValidation,
-};

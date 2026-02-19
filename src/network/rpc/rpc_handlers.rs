@@ -1013,6 +1013,7 @@ impl MpcNetworkLayer {
             keys::SELECTED_NODES,
             keys::FINAL_NODE_ROUND,
             keys::PENDING_DISCONNECTION,
+            keys::DISCONNECTION_STAGING,
             keys::SOLVER_AMOUNTS,
             keys::SOLVER_ADD_LIQUIDITY,
             keys::PENDING_WITHDRAW_LIQUIDITY,

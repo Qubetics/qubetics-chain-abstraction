@@ -23,8 +23,6 @@ pub enum RpcError {
     Unauthorized(String),
     RateLimitExceeded(String),
 
-    // Upgrade errors
-    UpgradeFailed(String),
 }
 
 impl RpcError {
@@ -106,12 +104,6 @@ impl RpcError {
                 status: "error".to_string(),
                 error_code: "RATE_LIMIT_EXCEEDED".to_string(),
                 message: "Rate limit exceeded".to_string(),
-                details: Some(msg.clone()),
-            },
-            RpcError::UpgradeFailed(msg) => ErrorResponse {
-                status: "error".to_string(),
-                error_code: "UPGRADE_FAILED".to_string(),
-                message: "Node upgrade operation failed".to_string(),
                 details: Some(msg.clone()),
             },
         }
