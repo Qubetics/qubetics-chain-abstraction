@@ -41,6 +41,8 @@ const RATE_LIMIT_MAX_REQUESTS_PER_IP: u32 = 10;
 // Global: 100 requests (all IPs combined) per 60 seconds
 const RATE_LIMIT_MAX_GLOBAL_REQUESTS: u32 = 100;
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
+// Global GET rate limit: 200 requests (all IPs combined) per 60 seconds
+const RATE_LIMIT_MAX_GET_GLOBAL_REQUESTS: u32 = 200;
 
 pub async fn start_http_server(
     message_tx: mpsc::Sender<ChannelMessage>,
@@ -70,6 +72,10 @@ pub async fn start_http_server(
         RATE_LIMIT_MAX_GLOBAL_REQUESTS,
         Duration::from_secs(RATE_LIMIT_WINDOW_SECONDS),
     ));
+    let get_global_rate_limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_MAX_GET_GLOBAL_REQUESTS,
+        Duration::from_secs(RATE_LIMIT_WINDOW_SECONDS),
+    ));
 
     // Start background cleanup task for per-IP rate limiter
     let ip_rate_limiter_cleanup = ip_rate_limiter.clone();
@@ -91,10 +97,21 @@ pub async fn start_http_server(
         }
     });
 
+    // Start background cleanup task for GET global rate limiter
+    let get_global_rate_limiter_cleanup = get_global_rate_limiter.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            get_global_rate_limiter_cleanup.cleanup().await;
+        }
+    });
+
     info!(
-        "🚦 [RATE_LIMIT] Rate limiter initialized: {} requests/IP and {} requests total per {} seconds",
+        "🚦 [RATE_LIMIT] Rate limiter initialized: {} req/IP, {} global POST, {} global GET per {} seconds",
         RATE_LIMIT_MAX_REQUESTS_PER_IP,
         RATE_LIMIT_MAX_GLOBAL_REQUESTS,
+        RATE_LIMIT_MAX_GET_GLOBAL_REQUESTS,
         RATE_LIMIT_WINDOW_SECONDS
     );
 
@@ -156,11 +173,13 @@ pub async fn start_http_server(
 
     let get_solver_liquidity = warp::path("solver_liquidity")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(warp::query::<SolverLiquidityRequest>())
         .and_then(handle_get_solver_liquidity);
 
     let get_solver_rewards = warp::path("solver_rewards")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(warp::query::<GetSolverRewardsRequest>())
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_solver_rewards);
@@ -205,22 +224,26 @@ pub async fn start_http_server(
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_info);
 
     let get_intent_details = warp::path("intent_details")
         .and(warp::path::param())
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_intent_details);
 
     let get_node_id = warp::path("node_id")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_node_id(node_id.clone()))
         .and_then(handle_get_node_id);
 
     let get_node_info = warp::path("node-info")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and(with_node_id(node_id.clone()))
         .and(with_message_tx(message_tx.clone()))
@@ -228,20 +251,24 @@ pub async fn start_http_server(
 
     let get_status = warp::path("status")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_get_status);
 
     let get_dkg_status = warp::path("dkg_status")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_get_dkg_status);
 
     let heartbeat = warp::path("heartbeat")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and_then(handle_heartbeat);
 
     let uptime = warp::path("uptime")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_start_time(start_time.clone()))
         .and_then(handle_get_uptime);
 
@@ -259,33 +286,39 @@ pub async fn start_http_server(
 
     let get_network_addresses = warp::path("get_network_addresses")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_dkg_storage(dkg_storage.clone()))
         .and_then(handle_get_network_addresses);
 
     let get_intents_solved_count = warp::path("intents_solved_count")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_intents_solved_count);
 
     let get_pending_intents_count = warp::path("pending_intents_count")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_pending_intents_count);
 
     let get_user_count = warp::path("user_count")
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_count);
 
     let rejoin_status = warp::path("rejoin-status")
         .and(warp::path::param::<String>())
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_database(database.clone()))
         .and_then(handle_rejoin_status);
 
     let check_peer_connection = warp::path("check-peer-connection")
         .and(warp::path::param::<String>())
         .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_message_tx(message_tx.clone()))
         .and_then(handle_check_peer_connection);
 
@@ -468,6 +501,25 @@ fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
                 _ => Err(warp::reject::custom(super::errors::RpcError::Unauthorized(
                     "Invalid or missing API key".to_string(),
                 ))),
+            }
+        })
+        .untuple_one()
+}
+
+fn with_get_global_rate_limit(
+    get_global_rate_limiter: Arc<RateLimiter>,
+) -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
+    warp::any()
+        .and_then(move || {
+            let get_global_rate_limiter = get_global_rate_limiter.clone();
+            async move {
+                if !get_global_rate_limiter.check("GET_GLOBAL").await {
+                    return Err(warp::reject::custom(RpcError::RateLimitExceeded(format!(
+                        "Global GET rate limit exceeded. Maximum {} requests per {} seconds allowed.",
+                        RATE_LIMIT_MAX_GET_GLOBAL_REQUESTS, RATE_LIMIT_WINDOW_SECONDS
+                    ))));
+                }
+                Ok(())
             }
         })
         .untuple_one()
