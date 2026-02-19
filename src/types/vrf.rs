@@ -68,7 +68,7 @@ pub struct VrfSelectedNodesBroadcast {
     pub round: u64,
     pub selector_node_id: SerializablePeerId,
     pub timestamp: u64,
-    /// Operation type that triggered this VRF selection (e.g., "global_clock", "bitcoin", "ethereum")
+    /// Operation type that triggered this VRF selection (e.g., "global_clock", "bitcoin", "tics")
     #[serde(default)]
     pub operation_type: Option<String>,
 }

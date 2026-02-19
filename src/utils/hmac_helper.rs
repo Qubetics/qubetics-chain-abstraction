@@ -4,7 +4,7 @@ use sha2::Sha256;
 ///    ===============
 /// 1) hmac256_from_addr
 ///    ===============
-///    Takes an Ethereum-style address (20 bytes, hex string with/without 0x),
+///    Takes a TICS-style address (20 bytes, hex string with/without 0x),
 ///    runs HMAC-SHA256 with a secret key, and returns a full 32-byte digest.
 ///
 /// Use case: whenever you want a deterministic 32-byte constant
@@ -46,7 +46,7 @@ pub fn hmac64_from_addr(addr: &str, key: &[u8]) -> Result<u64, String> {
 /// - Ensures it's in [1..n-1] (avoids zero)
 ///
 /// Use case: if you need to map the result into something usable as an
-/// Ethereum private key, ECDSA scalar, or other crypto scalar domain.
+/// TICS private key, ECDSA scalar, or other crypto scalar domain.
 /// (This is often necessary if you're generating keys or using it
 /// inside threshold signing protocols.)
 pub fn hmac_scalar_mod_n(addr: &str, key: &[u8]) -> Result<[u8; 32], String> {

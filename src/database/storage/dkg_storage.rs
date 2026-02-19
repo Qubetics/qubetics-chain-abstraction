@@ -648,11 +648,11 @@ impl DkgStorage {
     pub async fn store_user_share_pubkey(
         &self,
         peer_id: &str,
-        user_eth_address: &str,
+        user_tics_address: &str,
         pubkey: &ProjectivePoint,
     ) -> Result<()> {
         use crate::database::key_utils;
-        let key = key_utils::node_share_pubkey_user_key(peer_id, user_eth_address);
+        let key = key_utils::node_share_pubkey_user_key(peer_id, user_tics_address);
         let affine = pubkey.to_affine();
         let serial = SerializablePoint(affine);
         self.db.put_string(&key, &serial)?;
@@ -663,7 +663,7 @@ impl DkgStorage {
         
         info!(
             "✅ [DKG_STORAGE] Stored user share pubkey for peer: {} user: {}",
-            peer_id, user_eth_address
+            peer_id, user_tics_address
         );
         info!(
             "   📍 User Share ETH Address: {}",
@@ -680,10 +680,10 @@ impl DkgStorage {
     pub async fn get_user_share_pubkey(
         &self,
         peer_id: &str,
-        user_eth_address: &str,
+        user_tics_address: &str,
     ) -> Result<Option<ProjectivePoint>> {
         use crate::database::key_utils;
-        let key = key_utils::node_share_pubkey_user_key(peer_id, user_eth_address);
+        let key = key_utils::node_share_pubkey_user_key(peer_id, user_tics_address);
         let result = self.db.get_string::<SerializablePoint>(&key)?;
         Ok(result.map(|sp| ProjectivePoint::from(sp.0)))
     }
@@ -709,7 +709,7 @@ impl DkgStorage {
     /// This should be called when a user registers
     pub async fn compute_and_store_user_share_pubkeys_for_user(
         &self,
-        user_eth_address: &str,
+        user_tics_address: &str,
         user_hmac_constant: &[u8; 32],
     ) -> Result<()> {
         use crate::utils::hmac_helper::bytes_to_scalar_mod_n;
@@ -717,7 +717,7 @@ impl DkgStorage {
 
         info!(
             "🔑 [DKG_STORAGE] Computing user share pubkeys for user: {}",
-            user_eth_address
+            user_tics_address
         );
 
         let commitments = self.get_all_commitments().await?;
@@ -740,7 +740,7 @@ impl DkgStorage {
         info!(
             "🔑 [DKG_STORAGE] Processing {} peers for user: {}",
             commitments.len(),
-            user_eth_address
+            user_tics_address
         );
 
         // Step 1: Aggregate all commitments coefficient-wise
@@ -757,7 +757,7 @@ impl DkgStorage {
 
         info!(
             "🔑 [DKG_STORAGE] Aggregating commitments (max degree: {}) for user: {}",
-            max_degree, user_eth_address
+            max_degree, user_tics_address
         );
 
         // Aggregate commitments: aggregated_C[k] = sum over all peers i of C_i[k]
@@ -772,7 +772,7 @@ impl DkgStorage {
 
         info!(
             "🔑 [DKG_STORAGE] Aggregated {} commitment coefficients for user: {}",
-            max_degree, user_eth_address
+            max_degree, user_tics_address
         );
 
         // Step 2: Evaluate aggregated polynomial at each peer's index
@@ -792,13 +792,13 @@ impl DkgStorage {
             let user_share_pubkey = network_share_pubkey + user_tweak_point;
 
             // Store user share pubkey
-            self.store_user_share_pubkey(peer_id, user_eth_address, &user_share_pubkey)
+            self.store_user_share_pubkey(peer_id, user_tics_address, &user_share_pubkey)
                 .await?;
         }
 
         info!(
             "✅ [DKG_STORAGE] Completed computing user share pubkeys for user: {}",
-            user_eth_address
+            user_tics_address
         );
         Ok(())
     }

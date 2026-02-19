@@ -5,15 +5,15 @@ use crate::types::{ContractTransaction, DummyTransaction};
 
 use super::ChainHandler;
 use crate::chain_abstraction::transactions::{
-    ChainSignature, ChainTransaction, EthereumSignature, EthereumTransaction,
+    ChainSignature, ChainTransaction, TicsSignature, TicsTransaction,
 };
 
-/// Ethereum chain handler implementation
-pub struct EthereumChainHandler {
+/// TICS chain handler implementation
+pub struct TicsChainHandler {
     chain_id: u64,
 }
 
-impl EthereumChainHandler {
+impl TicsChainHandler {
     pub fn new(chain_id: u64) -> Self {
         Self { chain_id }
     }
@@ -21,7 +21,7 @@ impl EthereumChainHandler {
     fn ensure_chain_id(&self, tx_chain_id: u64) -> Result<()> {
         if tx_chain_id != self.chain_id {
             Err(anyhow!(
-                "Mismatched chain ID for Ethereum handler: expected {}, got {}",
+                "Mismatched chain ID for TICS handler: expected {}, got {}",
                 self.chain_id, tx_chain_id
             ))
         } else {
@@ -30,14 +30,14 @@ impl EthereumChainHandler {
     }
 }
 
-impl ChainHandler for EthereumChainHandler {
+impl ChainHandler for TicsChainHandler {
     fn chain_type(&self) -> &'static str {
-        "ethereum"
+        "tics"
     }
 
     fn create_transaction_bytes(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
-            ChainTransaction::Ethereum(eth_tx) => {
+            ChainTransaction::Tics(eth_tx) => {
                 self.ensure_chain_id(eth_tx.chain_id)?;
 
                 if let Some(data) = &eth_tx.data {
@@ -56,7 +56,7 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
-                    let sanitized_tx = EthereumTransaction {
+                    let sanitized_tx = TicsTransaction {
                         chain_id: self.chain_id,
                         ..eth_tx.clone()
                     };
@@ -66,14 +66,14 @@ impl ChainHandler for EthereumChainHandler {
                 }
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid transaction type for Ethereum handler"
+                "Invalid transaction type for TICS handler"
             )),
         }
     }
 
     fn create_transaction_bytes_contract(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
-            ChainTransaction::Ethereum(eth_tx) => {
+            ChainTransaction::Tics(eth_tx) => {
                 self.ensure_chain_id(eth_tx.chain_id)?;
 
                 if let Some(data) = &eth_tx.data {
@@ -92,7 +92,7 @@ impl ChainHandler for EthereumChainHandler {
                         ),
                     )
                 } else {
-                    let sanitized_tx = EthereumTransaction {
+                    let sanitized_tx = TicsTransaction {
                         chain_id: self.chain_id,
                         ..eth_tx.clone()
                     };
@@ -102,7 +102,7 @@ impl ChainHandler for EthereumChainHandler {
                 }
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid transaction type for Ethereum handler"
+                "Invalid transaction type for TICS handler"
             )),
         }
     }
@@ -114,20 +114,20 @@ impl ChainHandler for EthereumChainHandler {
         transaction: &ChainTransaction,
     ) -> Result<ChainSignature> {
         if signature_data.len() != 64 {
-            return Err(anyhow::anyhow!("Invalid signature length for Ethereum"));
+            return Err(anyhow::anyhow!("Invalid signature length for TICS"));
         }
 
         let r = signature_data[0..32].to_vec();
         let s = signature_data[32..64].to_vec();
 
-        let v = if let ChainTransaction::Ethereum(eth_tx) = transaction {
+        let v = if let ChainTransaction::Tics(eth_tx) = transaction {
             self.ensure_chain_id(eth_tx.chain_id)?;
             recovery_id as u64 + 35 + self.chain_id * 2
         } else {
             recovery_id as u64 + 27
         };
 
-        Ok(ChainSignature::Ethereum(EthereumSignature {
+        Ok(ChainSignature::Tics(TicsSignature {
             v,
             r,
             s,
@@ -142,7 +142,7 @@ impl ChainHandler for EthereumChainHandler {
         public_key: &[u8],
     ) -> Result<bool> {
         match (transaction, signature) {
-            (ChainTransaction::Ethereum(eth_tx), ChainSignature::Ethereum(eth_sig)) => {
+            (ChainTransaction::Tics(eth_tx), ChainSignature::Tics(eth_sig)) => {
                 if eth_sig.r.len() != 32 || eth_sig.s.len() != 32 {
                     return Ok(false);
                 }
@@ -152,13 +152,13 @@ impl ChainHandler for EthereumChainHandler {
                 }
 
                 tracing::info!(
-                    "Ethereum signature verification - basic validation passed for transaction to: {}",
+                    "TICS signature verification - basic validation passed for transaction to: {}",
                     eth_tx.to
                 );
                 Ok(true)
             }
             _ => Err(anyhow::anyhow!(
-                "Mismatched transaction and signature types for Ethereum"
+                "Mismatched transaction and signature types for TICS"
             )),
         }
     }
@@ -166,7 +166,7 @@ impl ChainHandler for EthereumChainHandler {
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction> {
         self.ensure_chain_id(dummy_tx.chain_id)?;
 
-        Ok(ChainTransaction::Ethereum(EthereumTransaction {
+        Ok(ChainTransaction::Tics(TicsTransaction {
             to: dummy_tx.to.clone(),
             value: dummy_tx.value.clone(),
             gas_limit: dummy_tx.gas_limit,
@@ -193,8 +193,8 @@ impl ChainHandler for EthereumChainHandler {
 mod tests {
     use super::*;
 
-    fn base_eth_transaction(chain_id: u64) -> EthereumTransaction {
-        EthereumTransaction {
+    fn base_eth_transaction(chain_id: u64) -> TicsTransaction {
+        TicsTransaction {
             to: "0x0000000000000000000000000000000000000000".to_string(),
             value: "0x0".to_string(),
             gas_limit: 21_000,
@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn rejects_transactions_with_mismatched_chain_id() {
-        let handler = EthereumChainHandler::new(1);
-        let tx = ChainTransaction::Ethereum(base_eth_transaction(2));
+        let handler = TicsChainHandler::new(1);
+        let tx = ChainTransaction::Tics(base_eth_transaction(2));
 
         assert!(handler.create_transaction_bytes(&tx).is_err());
         assert!(handler.create_transaction_bytes_contract(&tx).is_err());
@@ -216,8 +216,8 @@ mod tests {
 
     #[test]
     fn rejects_signatures_for_wrong_chain_id() {
-        let handler = EthereumChainHandler::new(1);
-        let tx = ChainTransaction::Ethereum(base_eth_transaction(2));
+        let handler = TicsChainHandler::new(1);
+        let tx = ChainTransaction::Tics(base_eth_transaction(2));
         let sig = vec![0u8; 64];
 
         assert!(handler.create_signature(&sig, 0, &tx).is_err());

@@ -535,7 +535,6 @@ mod tests {
     fn symbol_for_tics_variants() {
         assert_eq!(symbol_for("tics"), "TICS");
         assert_eq!(symbol_for("qubetics"), "TICS");
-        assert_eq!(symbol_for("ethereum"), "TICS");
     }
 
     #[test]

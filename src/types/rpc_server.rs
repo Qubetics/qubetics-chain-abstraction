@@ -43,10 +43,10 @@ pub struct UptimeResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistrationRequest {
-    pub ethereum_address: String,
+    pub tics_address: String,
     /// Signature of the registration message (required for security)
     pub signature: Option<String>,
-    /// The message that was signed (should be in format: "register:{ethereum_address}:{timestamp}")
+    /// The message that was signed (should be in format: "register:{tics_address}:{timestamp}")
     pub message: Option<String>,
 }
 
@@ -81,7 +81,7 @@ pub struct UserMpcDepositVerifyResponse {
     /// Intent hash (hex); use this to fetch intent details later. Empty on error before hash is computed.
     pub intent_hash: String,
     pub error_message: Option<String>,
-    /// When present (e.g. on "User not registered"), the Ethereum address that signed the request.
+    /// When present (e.g. on "User not registered"), the TICS address that signed the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signer_eth_address: Option<String>,
 }
@@ -167,7 +167,7 @@ pub struct UnclaimedRewardEntry {
     pub request_id: String,
     pub status: String,
     pub tx_id: Option<String>,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
 }
 
@@ -187,14 +187,14 @@ pub struct GetSolverRewardsResponse {
 pub struct ClaimRewardRequest {
     pub signature: String,
     pub message: String,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimRewardResponse {
     pub status: String,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
     pub reward_btc: Option<String>,
     pub reward_tics: Option<String>,
@@ -216,7 +216,7 @@ pub struct ErrorResponse {
 pub struct UserInfoResponse {
     pub status: String,
     pub user_id: Option<String>,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub has_tweaked_share: Option<bool>,
     pub has_user_group_key: Option<bool>,
     pub derived_eth_address: Option<String>,
@@ -238,7 +238,7 @@ pub struct EnhancedUserRegistrationResponse {
 pub struct WithdrawLiquidityRequest {
     pub signature: String,
     pub message: String,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
     pub amount_tics: Option<String>,
     pub amount_btc: Option<String>,
@@ -250,7 +250,7 @@ pub struct WithdrawLiquidityResponse {
     pub solver_address: String,
     pub liquidity_btc: Option<String>,
     pub liquidity_tics: Option<String>,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
     pub tics_withdraw_tx_id: Option<String>,
     pub btc_withdraw_tx_id: Option<String>,
@@ -268,7 +268,7 @@ pub struct PendingWithdrawRequest {
     pub asset: String,
     /// Amount as decimal string in smallest units for the asset chain
     pub amount: String,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
     /// Original signed message payload from the HTTP request
     pub message: String,
@@ -284,7 +284,7 @@ pub struct PendingWithdrawRequest {
 pub struct PendingClaimRewardRequest {
     pub request_id: String,
     pub solver_address: String,
-    pub ethereum_address: Option<String>,
+    pub tics_address: Option<String>,
     pub btc_address: Option<String>,
     /// Original signed message payload from the HTTP request
     pub message: String,
@@ -330,7 +330,7 @@ pub struct LogPartialPubkeysResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserSharePubkeyInfo {
-    pub user_eth_address: String,
+    pub user_tics_address: String,
     pub share_pubkey: String,
 }
 

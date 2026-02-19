@@ -1,7 +1,7 @@
 use crate::signing::SigningNode;
 use crate::types::signing::SigningMessage;
 use crate::{
-    chain_abstraction::{ChainTransaction, EthereumTransaction},
+    chain_abstraction::{ChainTransaction, TicsTransaction},
     types::{
         intent::{ContractTransaction, DummyTransaction},
         signing::ECDSASignature,
@@ -23,12 +23,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
-/// Convenience wrapper for Ethereum-focused signing flows.
-pub struct EthereumSigner<'a> {
+/// Convenience wrapper for TICS-focused signing flows.
+pub struct TicsSigner<'a> {
     node: &'a mut SigningNode,
 }
 
-impl<'a> EthereumSigner<'a> {
+impl<'a> TicsSigner<'a> {
     pub fn new(node: &'a mut SigningNode) -> Self {
         Self { node }
     }
@@ -45,9 +45,9 @@ impl<'a> EthereumSigner<'a> {
         &mut self,
         message: Vec<u8>,
         chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
-        transaction: &EthereumTransaction,
+        transaction: &TicsTransaction,
         user_tweaked_share: Option<Scalar>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
@@ -59,7 +59,7 @@ impl<'a> EthereumSigner<'a> {
                 chain_handler,
                 transaction,
                 user_tweaked_share,
-                user_eth_address,
+                user_tics_address,
                 intent_hashes,
                 transaction_type,
                 solver_address,
@@ -74,7 +74,7 @@ impl<'a> EthereumSigner<'a> {
         chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         contract_tx: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
@@ -89,7 +89,7 @@ impl<'a> EthereumSigner<'a> {
                 chain_handler,
                 contract_tx,
                 user_tweaked_share,
-                user_eth_address,
+                user_tics_address,
                 intent_hashes,
                 signing_key_override,
                 request_id,
@@ -141,7 +141,7 @@ impl<'a> EthereumSigner<'a> {
 }
 
 impl SigningNode {
-    pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+    pub async fn fetch_tics_nonce(address: &str, chain_id: u64) -> Result<u64> {
         let rpc_url = get_evm_rpc_url(chain_id)?;
 
         let client = Client::new();
@@ -192,7 +192,7 @@ impl SigningNode {
         chain_id: u64,
         description: &str,
     ) -> Result<String> {
-        let nonce = Self::fetch_ethereum_nonce(address, chain_id).await?;
+        let nonce = Self::fetch_tics_nonce(address, chain_id).await?;
         info!(
             "🔢 [SIGNING] {}: fetching nonce {} from address {}",
             description, nonce, address
@@ -313,7 +313,7 @@ impl SigningNode {
         Ok(())
     }
 
-    pub(crate) async fn broadcast_ethereum_transaction(
+    pub(crate) async fn broadcast_tics_transaction(
         raw_tx_hex: &str,
         chain_id: u64,
     ) -> Result<Option<String>> {
@@ -328,7 +328,7 @@ impl SigningNode {
         });
 
         info!(
-            "Broadcasting Ethereum transaction to chain {}: {}",
+            "Broadcasting TICS transaction to chain {}: {}",
             chain_id, rpc_url
         );
 
@@ -376,9 +376,9 @@ impl SigningNode {
         &mut self,
         _message: Vec<u8>,
         chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
-        transaction: &EthereumTransaction,
+        transaction: &TicsTransaction,
         user_tweaked_share: Option<Scalar>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
@@ -420,7 +420,7 @@ impl SigningNode {
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
         let chain_transaction =
-            ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+            ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -530,7 +530,7 @@ impl SigningNode {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,
-            user_eth_address: user_eth_address.clone(), // Clone to avoid borrow checker issues
+            user_tics_address: user_tics_address.clone(), // Clone to avoid borrow checker issues
         };
 
         // Synchronize rounds before advancing and acquiring the signing round
@@ -557,7 +557,7 @@ impl SigningNode {
         if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
             let solver_addr = solver_address.expect("Solver address should be validated above");
             let chain_tx =
-                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
                     to: transaction.to.clone(),
                     value: transaction.value.clone(),
                     gas_limit: transaction.gas_limit,
@@ -592,7 +592,7 @@ impl SigningNode {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending.pending_transactions.write().await;
             let chain_tx =
-                ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+                ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
                     to: transaction.to.clone(),
                     value: transaction.value.clone(),
                     gas_limit: transaction.gas_limit,
@@ -637,7 +637,7 @@ impl SigningNode {
         _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         transaction: &ContractTransaction,
         user_tweaked_share: Option<Scalar>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         signing_key_override: Option<Scalar>,
         request_id: Option<String>,
@@ -670,7 +670,7 @@ impl SigningNode {
         };
 
         let chain_transaction =
-            ChainTransaction::Ethereum(crate::chain_abstraction::EthereumTransaction {
+            ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
                 to: transaction.to.clone(),
                 value: transaction.value.clone(),
                 gas_limit: transaction.gas_limit,
@@ -703,12 +703,12 @@ impl SigningNode {
                     &available_nodes,
                     crate::vrf::VRF_NODE_SELECTION_COUNT,
                     round,
-                    "ethereum",
+                    "tics",
                 )
                 .await?;
 
             info!(
-                "🎯 [SIGNING] Node {} completed selection for ethereum signing round {}",
+                "🎯 [SIGNING] Node {} completed selection for TICS signing round {}",
                 self.id, round
             );
         }
@@ -790,7 +790,7 @@ impl SigningNode {
             let (recovery_id, signature_bytes) = signature.serialize_compact();
 
             info!(
-                "✍️ [SIGNING] Node {} created Ethereum contract signature",
+                "✍️ [SIGNING] Node {} created TICS contract signature",
                 self.id
             );
 
@@ -799,7 +799,7 @@ impl SigningNode {
                 signature: signature_bytes.to_vec(),
                 signer_id: self.id.clone(),
                 recovery_id: recovery_id.to_i32() as u8,
-                user_eth_address: user_eth_address.clone(),
+                user_tics_address: user_tics_address.clone(),
             };
 
             // Synchronize rounds before advancing and acquiring the signing round
@@ -892,7 +892,7 @@ impl SigningNode {
                     self.id, round, identifiers.len()
                 );
                 info!(
-                    "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+                    "📤 [SIGNING] Node {} broadcasted TICS contract signature",
                     self.id
                 );
                 return Ok(());
@@ -922,7 +922,7 @@ impl SigningNode {
                     self.id, round, identifiers.len()
                 );
                 info!(
-                    "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+                    "📤 [SIGNING] Node {} broadcasted TICS contract signature",
                     self.id
                 );
                 return Ok(());
@@ -1001,13 +1001,13 @@ impl SigningNode {
         );
 
         info!(
-            "📤 [SIGNING] Node {} broadcasted Ethereum contract signature",
+            "📤 [SIGNING] Node {} broadcasted TICS contract signature",
             self.id
         );
         Ok(())
     }
 
-    pub async fn reconstruct_signed_ethereum_transaction(
+    pub async fn reconstruct_signed_tics_transaction(
         &self,
         round: u64,
         aggregated_signature: &[u8],
@@ -1023,13 +1023,13 @@ impl SigningNode {
             claim_reward_rounds.contains(&round)
         };
 
-        let user_eth_address = {
+        let user_tics_address = {
             let signatures_by_round = self.signatures.signatures_by_round.read().await;
             if let Some(round_signatures) = signatures_by_round.get(&round) {
                 round_signatures
                     .values()
                     .next()
-                    .and_then(|sig| sig.user_eth_address.clone())
+                    .and_then(|sig| sig.user_tics_address.clone())
             } else {
                 None
             }
@@ -1084,12 +1084,12 @@ impl SigningNode {
         };
 
         if let Some(chain_tx) = chain_tx {
-            if let ChainTransaction::Ethereum(original_tx) = chain_tx {
+            if let ChainTransaction::Tics(original_tx) = chain_tx {
                 let is_contract_tx =
                     original_tx.data.is_some() && !original_tx.data.as_ref().unwrap().is_empty();
 
                 info!(
-                    "🔧 [SIGNING] Node {} reconstructing signed Ethereum transaction for round {} (contract: {})",
+                    "🔧 [SIGNING] Node {} reconstructing signed TICS transaction for round {} (contract: {})",
                     self.id, round, is_contract_tx
                 );
 
@@ -1112,7 +1112,7 @@ impl SigningNode {
 
                 let nonce_address = match transaction_type {
                     Some(crate::types::TransactionType::UserToVault) => {
-                        if let Some(user_addr) = &user_eth_address {
+                        if let Some(user_addr) = &user_tics_address {
                             if let Some(user_intent_manager) = &self.user_intent_manager {
                                 if let Some(user) =
                                     user_intent_manager.get_user_by_address(user_addr).await
@@ -1126,7 +1126,7 @@ impl SigningNode {
                                         .await?
                                     } else {
                                         return Err(anyhow!(
-                                            "User {} has no derived Ethereum address",
+                                            "User {} has no derived TICS address",
                                             user_addr
                                         ));
                                     }
@@ -1143,7 +1143,7 @@ impl SigningNode {
                             }
                         } else {
                             return Err(anyhow!(
-                                "UserToVault transaction requires user_eth_address"
+                                "UserToVault transaction requires user_tics_address"
                             ));
                         }
                     }
@@ -1189,7 +1189,7 @@ impl SigningNode {
                         .await?
                     }
                     None => {
-                        if let Some(user_addr) = &user_eth_address {
+                        if let Some(user_addr) = &user_tics_address {
                             if let Some(user_intent_manager) = &self.user_intent_manager {
                                 if let Some(user) =
                                     user_intent_manager.get_user_by_address(user_addr).await
@@ -1203,7 +1203,7 @@ impl SigningNode {
                                         .await?
                                     } else {
                                         return Err(anyhow!(
-                                            "User {} has no derived Ethereum address",
+                                            "User {} has no derived TICS address",
                                             user_addr
                                         ));
                                     }
@@ -1261,7 +1261,7 @@ impl SigningNode {
                 let signed_tx_hex = format!("0x{}", hex::encode(&signed_tx));
 
                 info!(
-                    "✅ [SIGNING] Node {} successfully reconstructed signed Ethereum transaction for round {}",
+                    "✅ [SIGNING] Node {} successfully reconstructed signed TICS transaction for round {}",
                     self.id, round
                 );
                 info!("📄 [SIGNING] Signed transaction prepared");
@@ -1271,22 +1271,22 @@ impl SigningNode {
                 Ok(Some(signed_tx_hex))
             } else {
                 warn!(
-                    "❌ [SIGNING] Node {} expected Ethereum transaction for round {} but got different type",
+                    "❌ [SIGNING] Node {} expected TICS transaction for round {} but got different type",
                     self.id, round
                 );
                 Ok(None)
             }
         } else {
             warn!(
-                "❌ [SIGNING] Node {} cannot reconstruct Ethereum transaction for round {} - original transaction not found",
+                "❌ [SIGNING] Node {} cannot reconstruct TICS transaction for round {} - original transaction not found",
                 self.id, round
             );
             Ok(None)
         }
     }
 
-    /// Reconstruct signed Ethereum tx for one TICS UserToVault batch slot (round, intent_hash).
-    pub async fn reconstruct_signed_ethereum_transaction_for_batch_slot(
+    /// Reconstruct signed TICS tx for one TICS UserToVault batch slot (round, intent_hash).
+    pub async fn reconstruct_signed_tics_transaction_for_batch_slot(
         &self,
         round: u64,
         slot_id: &str,
@@ -1325,7 +1325,7 @@ impl SigningNode {
             }
             result.ok_or_else(|| anyhow!("No TICS UserToVault batch for round {} slot {}", round, slot_id))?
         };
-        let ChainTransaction::Ethereum(original_tx) = &chain_tx else {
+        let ChainTransaction::Tics(original_tx) = &chain_tx else {
             return Ok(None);
         };
         let r = &aggregated_signature[0..32];
@@ -1343,7 +1343,7 @@ impl SigningNode {
                     .await?
                 } else {
                     return Err(anyhow!(
-                        "User {} has no derived Ethereum address",
+                        "User {} has no derived TICS address",
                         user_eth
                     ));
                 }
@@ -1379,7 +1379,7 @@ impl SigningNode {
     pub fn create_ecdsa_signature_with_key(
         &self,
         message: &Message,
-        _transaction: &EthereumTransaction,
+        _transaction: &TicsTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // Synchronous version - uses fixed k (for backward compatibility)
@@ -1411,7 +1411,7 @@ impl SigningNode {
     pub async fn create_ecdsa_signature_with_key_async(
         &self,
         message: &Message,
-        _transaction: &EthereumTransaction,
+        _transaction: &TicsTransaction,
         signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
         // Acquire nonce from pool
@@ -1490,9 +1490,9 @@ impl SigningNode {
     fn create_partial_ecdsa_for_tics_slot_deprecated(
         &self,
         tx_bytes: &[u8],
-        transaction: &EthereumTransaction,
+        transaction: &TicsTransaction,
         signing_key: &SecretKey,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     ) -> Result<ECDSASignature> {
         // SECURITY: This function is deprecated - uses fixed k
         error!("🔴 [SIGNING] create_partial_ecdsa_for_tics_slot_DEPRECATED called - this uses fixed k which is INSECURE");
@@ -1506,7 +1506,7 @@ impl SigningNode {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,
-            user_eth_address,
+            user_tics_address,
         })
     }
 
@@ -1514,9 +1514,9 @@ impl SigningNode {
     pub async fn create_partial_ecdsa_for_tics_slot_async(
         &self,
         tx_bytes: &[u8],
-        transaction: &EthereumTransaction,
+        transaction: &TicsTransaction,
         signing_key: &SecretKey,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     ) -> Result<ECDSASignature> {
         let mut hasher = sha3::Keccak256::new();
         hasher.update(tx_bytes);
@@ -1528,7 +1528,7 @@ impl SigningNode {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,
-            user_eth_address,
+            user_tics_address,
         })
     }
 
@@ -1586,10 +1586,10 @@ impl SigningNode {
                 }
             };
             let eth_tx = match &chain_tx {
-                ChainTransaction::Ethereum(t) => t,
+                ChainTransaction::Tics(t) => t,
                 _ => {
                     warn!(
-                        "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
+                        "⚠️ [TICS_UTV_BATCH] Intent {} is not TICS, skipping",
                         intent_hash
                     );
                     continue;
@@ -1615,7 +1615,7 @@ impl SigningNode {
                 signature: ecdsa_sig,
                 round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                user_eth_address: Some(user_eth_clone),
+                user_tics_address: Some(user_eth_clone),
                 slot_id: Some(intent_hash.clone()),
             };
             let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -1637,7 +1637,7 @@ impl SigningNode {
                     transaction_type: Some("UserToVault".to_string()),
                     request_id: None,
                     chain_tx_json,
-                    user_eth_address: Some(user_eth),
+                    user_tics_address: Some(user_eth),
                     batch_identifiers: None,
                 };
                 let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
@@ -1723,10 +1723,10 @@ impl SigningNode {
                     }
                 };
                 let eth_tx = match &chain_tx {
-                    ChainTransaction::Ethereum(t) => t,
+                    ChainTransaction::Tics(t) => t,
                     _ => {
                         warn!(
-                            "⚠️ [TICS_UTV_BATCH] Intent {} is not Ethereum, skipping",
+                            "⚠️ [TICS_UTV_BATCH] Intent {} is not TICS, skipping",
                             intent_hash
                         );
                         continue;
@@ -1802,7 +1802,7 @@ impl SigningNode {
                     signature: ecdsa_sig,
                     round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                    user_eth_address: Some(user_eth_clone),
+                    user_tics_address: Some(user_eth_clone),
                     slot_id: Some(intent_hash.clone()),
                 };
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -1827,7 +1827,7 @@ impl SigningNode {
                         transaction_type: Some("UserToVault".to_string()),
                         request_id: None,
                         chain_tx_json,
-                        user_eth_address: Some(user_eth),
+                        user_tics_address: Some(user_eth),
                         batch_identifiers: None,
                     };
                     let tx_data_gossip = crate::types::GossipsubMessage::Signing(tx_data_msg);
@@ -1850,9 +1850,9 @@ impl SigningNode {
     async fn create_partial_ecdsa_for_tics_slot_with_nonce(
         &self,
         tx_bytes: &[u8],
-        _transaction: &EthereumTransaction,
+        _transaction: &TicsTransaction,
         signing_key: &SecretKey,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         nonce_tuple: &crate::types::nonce::NonceTuple,
     ) -> Result<ECDSASignature> {
         use sha3::Digest;
@@ -1875,7 +1875,7 @@ impl SigningNode {
             signature: signature_bytes.to_vec(),
             signer_id: self.id.clone(),
             recovery_id: recovery_id.to_i32() as u8,
-            user_eth_address,
+            user_tics_address,
         })
     }
 }

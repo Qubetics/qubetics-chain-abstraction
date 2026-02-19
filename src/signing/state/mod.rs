@@ -40,7 +40,7 @@ pub struct ReceivedTxData {
     pub intent_hash: Option<String>,
     pub transaction_type: Option<String>,
     pub request_id: Option<String>,
-    pub user_eth_address: Option<String>,
+    pub user_tics_address: Option<String>,
     /// Full batch identifiers for withdraw/claim-reward batches ("request_id|solver_address").
     pub batch_identifiers: Option<Vec<String>>,
 }
@@ -147,7 +147,7 @@ pub struct PendingStore {
                 u64,
                 Vec<(
                     String,           // intent_hash
-                    String,           // user_eth_address
+                    String,           // user_tics_address
                     ChainTransaction,
                     Vec<u8>,          // tx_bytes
                 )>,
@@ -162,7 +162,7 @@ pub struct PendingStore {
                 u64,
                 Vec<(
                     String,              // intent_hash (slot_id)
-                    String,              // user_eth_address
+                    String,              // user_tics_address
                     ChainTransaction,    // Bitcoin tx with potentially multiple inputs
                     Vec<u8>,             // tx_bytes (serialized unsigned tx)
                     Option<BtcRoundExtras>, // BTC extras (pubkey33, signer_h160, from_kind, is_testnet)
@@ -249,7 +249,7 @@ mod tests {
                     signature: vec![1u8; 65],
                     signer_id: "node-a".to_string(),
                     recovery_id: 0,
-                    user_eth_address: None,
+                    user_tics_address: None,
                 },
             );
         }
@@ -263,7 +263,7 @@ mod tests {
                     signature: vec![2u8; 65],
                     signer_id: "node-b".to_string(),
                     recovery_id: 1,
-                    user_eth_address: Some("0xabc".to_string()),
+                    user_tics_address: Some("0xabc".to_string()),
                 },
             );
         }
@@ -389,10 +389,10 @@ impl SigningEnvironmentBuilder {
         let peer_id = coordination::derive_peer_id_from_string(&self.id);
         let coordination = Coordination::new(peer_id, self.message_tx.clone());
 
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {
@@ -404,10 +404,10 @@ impl SigningEnvironmentBuilder {
     }
 
     pub fn build_with_coordination(self, coordination: Coordination) -> SigningEnvironment {
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {

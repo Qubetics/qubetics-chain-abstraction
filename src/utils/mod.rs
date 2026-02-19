@@ -29,13 +29,13 @@ pub fn get_eth_address_from_group_key(pubkey: ProjectivePoint) -> String {
     format!("0x{}", hex::encode(eth_address))
 }
 
-/// Derive an Ethereum address from a group key using a specific derivation path
+/// Derive a TICS address from a group key using a specific derivation path
 /// This creates different addresses from the same group key based on the derivation path
 pub fn get_eth_address_from_group_key_with_path(
     pubkey: ProjectivePoint,
     derivation_path: &str,
 ) -> Result<String> {
-    // Parse the derivation path (e.g., "m/44'/60'/0'/0/0" for Ethereum)
+    // Parse the derivation path (e.g., "m/44'/60'/0'/0/0" for TICS)
     let path = DerivationPath::from_str(derivation_path)
         .map_err(|e| anyhow!("Invalid derivation path '{}': {}", derivation_path, e))?;
 
@@ -64,9 +64,9 @@ pub fn get_eth_address_from_group_key_with_path(
     // Convert the derived scalar to a public key point
     let derived_pubkey = ProjectivePoint::GENERATOR * derived_scalar;
 
-    // Generate Ethereum address from the derived public key
+    // Generate TICS address from the derived public key
     let derived_affine = AffinePoint::from(derived_pubkey);
-    let derived_ep = derived_affine.to_encoded_point(false); // uncompressed for Ethereum
+    let derived_ep = derived_affine.to_encoded_point(false); // uncompressed for TICS
     let derived_bytes = derived_ep.as_bytes();
     let hash = keccak256(&derived_bytes[1..]);
     let eth_address = &hash[12..];
@@ -179,7 +179,7 @@ mod tests {
 
         // Test different derivation paths
         let paths = [
-            "m/44'/60'/0'/0/0", // Standard Ethereum path
+            "m/44'/60'/0'/0/0", // Standard TICS path
             "m/44'/60'/0'/0/1", // Second address
             "m/44'/60'/1'/0/0", // Second account
             "m/44'/60'/2'/0/0", // Third account

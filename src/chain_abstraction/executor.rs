@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::node_selection::NodeMembership;
 use crate::protocols::DKGNode;
-use crate::signing::{EthereumSigner, SigningNode};
+use crate::signing::{TicsSigner, SigningNode};
 use crate::types::{ContractTransaction, DepositIntent, TransactionType};
 
 /// Service for executing contract calls on blockchain networks
@@ -73,9 +73,9 @@ impl MpcChainExecutor {
                     node_manager.get_active_nodes().into_iter().collect();
                 signing_node.set_available_nodes(available_nodes);
 
-                // Handle Ethereum transactions
+                // Handle TICS transactions
                 match contract_transaction {
-                    crate::chain_abstraction::ChainTransaction::Ethereum(ref eth_tx) => {
+                    crate::chain_abstraction::ChainTransaction::Tics(ref eth_tx) => {
                         let contract_tx = ContractTransaction {
                             to: eth_tx.to.clone(),
                             value: eth_tx.value.clone(),
@@ -109,7 +109,7 @@ impl MpcChainExecutor {
                         // Execute the signing operation (retry metadata no longer used)
                         let contract_chain_handler =
                             signing_node.get_contract_chain_handler().clone();
-                        let mut eth_signer = EthereumSigner::new(signing_node);
+                        let mut eth_signer = TicsSigner::new(signing_node);
                         eth_signer
                             .sign_contract_message(
                                 contract_tx_bytes,
@@ -129,7 +129,7 @@ impl MpcChainExecutor {
                     }
                     _ => {
                         info!(
-                            "📝 [CHAIN_EXECUTOR] Contract call transaction is not Ethereum type, skipping"
+                            "📝 [CHAIN_EXECUTOR] Contract call transaction is not TICS type, skipping"
                         );
                     }
                 }

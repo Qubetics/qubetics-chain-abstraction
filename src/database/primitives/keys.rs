@@ -40,7 +40,7 @@ pub const VRF_PEER_ROUND: &str = "vrf_peer_round:";
 pub const NODE_SHARE_PUBKEY_NETWORK: &str = "node_share_pubkey_network:";
 pub const NODE_SHARE_PUBKEY_VAULT: &str = "node_share_pubkey_vault:";
 pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";
-/// Reverse index: intent_hash -> ethereum_address for O(1) get_user_by_intent_hash
+/// Reverse index: intent_hash -> tics_address for O(1) get_user_by_intent_hash
 pub const INTENT_HASH_TO_USER: &str = "intent_to_user:";
 /// Target chain amount (in smallest units) for an intent, computed from prices per node
 pub const INTENT_TARGET_AMOUNT: &str = "intent_target_amount:";

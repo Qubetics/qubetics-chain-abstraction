@@ -79,9 +79,9 @@ pub async fn create_invalidate_solver_ids_transaction(
 
     info!("🔧 [CONTRACT] invalidateSolverIds gas price: {}", gas_price);
     info!("🔧 [CONTRACT] invalidateSolverIds gas limit: {}", gas_limit);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -91,5 +91,5 @@ pub async fn create_invalidate_solver_ids_transaction(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }

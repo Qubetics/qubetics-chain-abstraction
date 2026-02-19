@@ -67,19 +67,19 @@ impl UserRegistry {
     /// Register a new user
     pub async fn register_user(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         dkg_secret_share: Option<&Scalar>,
         node_id: &str,
     ) -> Result<UserRegistration, String> {
         info!("👤 [USER_REGISTRY] register_user called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}, Node: {}", 
-              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), ethereum_address, node_id);
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), tics_address, node_id);
 
         // 1) Normalize to canonical EIP-55
-        let addr_cs = match checksum_from_any(ethereum_address) {
+        let addr_cs = match checksum_from_any(tics_address) {
             Ok(a) => a,
             Err(e) => {
                 return Err(format!(
-                    "Invalid ethereum_address '{ethereum_address}': {e}"
+                    "Invalid tics_address '{tics_address}': {e}"
                 ))
             }
         };
@@ -99,7 +99,7 @@ impl UserRegistry {
         // 4) Create registration
         let mut registration = UserRegistration {
             user_id: user_id.clone(),
-            ethereum_address: addr_cs.clone(),
+            tics_address: addr_cs.clone(),
             hmac_constant,
             tweaked_secret_share: None,
             user_group_key: None,
@@ -132,17 +132,17 @@ impl UserRegistry {
         users.get(user_id).cloned()
     }
 
-    /// Get user registration by ethereum address
-    pub async fn get_user_by_address(&self, ethereum_address: &str) -> Option<UserRegistration> {
+    /// Get user registration by TICS address
+    pub async fn get_user_by_address(&self, tics_address: &str) -> Option<UserRegistration> {
         info!("🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}", 
-              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), ethereum_address);
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), tics_address);
 
         let users = self.users.read().await;
-        let result = users.get(ethereum_address).cloned();
+        let result = users.get(tics_address).cloned();
 
         info!(
             "🔍 [USER_REGISTRY] get_user_by_address result - Address: {}, Found: {}",
-            ethereum_address,
+            tics_address,
             result.is_some()
         );
 
@@ -156,8 +156,8 @@ impl UserRegistry {
     }
 
     /// Get the HMAC constant for a user
-    pub async fn get_hmac_constant(&self, ethereum_address: &str) -> Option<[u8; 32]> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+    pub async fn get_hmac_constant(&self, tics_address: &str) -> Option<[u8; 32]> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             Some(registration.hmac_constant)
         } else {
             None
@@ -167,7 +167,7 @@ impl UserRegistry {
     /// Set user group key and derived addresses
     pub async fn set_user_group_key(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         group_key: ProjectivePoint,
     ) -> Result<(), String> {
         let affine = group_key.to_affine();
@@ -180,24 +180,24 @@ impl UserRegistry {
         // Log the derived addresses
         info!(
             "📬 [USER_REGISTRY] Derived ETH address for {}: {}",
-            ethereum_address, derived_eth
+            tics_address, derived_eth
         );
         info!(
             "📬 [USER_REGISTRY] Derived BTC address for {}: {}",
-            ethereum_address, derived_btc
+            tics_address, derived_btc
         );
 
         let mut users = self.users.write().await;
         if let Some(user) = users
             .values_mut()
-            .find(|u| u.ethereum_address == ethereum_address)
+            .find(|u| u.tics_address == tics_address)
         {
             user.user_group_key = Some(serial);
             user.derived_eth_address = Some(derived_eth);
             user.derived_btc_address = Some(derived_btc);
             info!(
                 "✅ Set user group key and derived addresses for {}",
-                ethereum_address
+                tics_address
             );
             Ok(())
         } else {
@@ -208,18 +208,18 @@ impl UserRegistry {
     /// Set derived addresses for a user
     pub async fn set_derived_addresses(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         eth_address: String,
         btc_address: String,
     ) -> Result<(), String> {
         let mut users = self.users.write().await;
         if let Some(user) = users
             .values_mut()
-            .find(|u| u.ethereum_address == ethereum_address)
+            .find(|u| u.tics_address == tics_address)
         {
             user.derived_eth_address = Some(eth_address);
             user.derived_btc_address = Some(btc_address);
-            info!("✅ Set derived addresses for {}", ethereum_address);
+            info!("✅ Set derived addresses for {}", tics_address);
             Ok(())
         } else {
             Err("User not found".to_string())
@@ -240,7 +240,7 @@ impl UserRegistry {
         let mut users = self.users.write().await;
         if let Some(user) = users
             .values_mut()
-            .find(|u| u.ethereum_address == user_address)
+            .find(|u| u.tics_address == user_address)
         {
             // Convert intent hash to hex string for storage
 
@@ -303,9 +303,9 @@ impl UserRegistry {
     /// Get intent hash information for a user
     pub async fn get_intent_hashes(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
     ) -> Option<HashMap<String, IntentStatus>> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             Some(registration.intent_hashes.clone())
         } else {
             None
@@ -313,8 +313,8 @@ impl UserRegistry {
     }
 
     /// Check if a specific intent hash exists for a user
-    pub async fn has_intent_hash(&self, ethereum_address: &str, intent_hash: &str) -> bool {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+    pub async fn has_intent_hash(&self, tics_address: &str, intent_hash: &str) -> bool {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration.intent_hashes.contains_key(intent_hash)
         } else {
             false
@@ -324,10 +324,10 @@ impl UserRegistry {
     /// Get amount for a specific intent hash
     pub async fn get_intent_amount(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
     ) -> Option<u128> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration
                 .intent_hashes
                 .get(intent_hash)
@@ -346,20 +346,20 @@ impl UserRegistry {
     /// Update intent status
     pub async fn update_intent_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
         new_status: IntentStatus,
     ) -> Result<(), String> {
         let mut users = self.users.write().await;
         if let Some(user) = users
             .values_mut()
-            .find(|u| u.ethereum_address == ethereum_address)
+            .find(|u| u.tics_address == tics_address)
         {
             if let Some(intent_info) = user.intent_hashes.get_mut(intent_hash) {
                 *intent_info = new_status.clone();
                 info!(
                     "✅ Updated intent status for user {}: {} -> {:?}",
-                    ethereum_address, intent_hash, new_status
+                    tics_address, intent_hash, new_status
                 );
                 Ok(())
             } else {
@@ -373,10 +373,10 @@ impl UserRegistry {
     /// Get intent status
     pub async fn get_intent_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
     ) -> Option<IntentStatus> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration.intent_hashes.get(intent_hash).cloned()
         } else {
             None
@@ -386,10 +386,10 @@ impl UserRegistry {
     /// Get all intents with a specific status for a user
     pub async fn get_intents_by_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         status: IntentStatus,
     ) -> Vec<(String, IntentStatus)> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration
                 .intent_hashes
                 .iter()
