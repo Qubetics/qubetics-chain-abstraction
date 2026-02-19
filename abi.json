@@ -94,6 +94,32 @@
 		"type": "error"
 	},
 	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "solverId",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "chainId",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "requested",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "available",
+				"type": "uint256"
+			}
+		],
+		"name": "InsufficientRewards",
+		"type": "error"
+	},
+	{
 		"inputs": [],
 		"name": "InvalidAmount",
 		"type": "error"
@@ -485,6 +511,56 @@
 		"inputs": [
 			{
 				"indexed": false,
+				"internalType": "uint256",
+				"name": "oldFee",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "newFee",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "timestamp",
+				"type": "uint256"
+			}
+		],
+		"name": "SolverFeeUpdated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "solverId",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "solverAddress",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "timestamp",
+				"type": "uint256"
+			}
+		],
+		"name": "SolverIdInvalidated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
 				"internalType": "string",
 				"name": "solverId",
 				"type": "string"
@@ -544,29 +620,13 @@
 		"type": "function"
 	},
 	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "targetChainId",
-				"type": "uint256"
-			},
-			{
-				"internalType": "uint256",
-				"name": "totalRewardAmount",
-				"type": "uint256"
-			}
-		],
-		"name": "AllSolverRewards",
+		"inputs": [],
+		"name": "DEFAULT_ADMIN_ROLE",
 		"outputs": [
 			{
-				"internalType": "string[]",
-				"name": "solverIds",
-				"type": "string[]"
-			},
-			{
-				"internalType": "uint256[]",
-				"name": "rewards",
-				"type": "uint256[]"
+				"internalType": "bytes32",
+				"name": "",
+				"type": "bytes32"
 			}
 		],
 		"stateMutability": "view",
@@ -574,7 +634,7 @@
 	},
 	{
 		"inputs": [],
-		"name": "DEFAULT_ADMIN_ROLE",
+		"name": "INTENT_MANAGER_ROLE",
 		"outputs": [
 			{
 				"internalType": "bytes32",
@@ -657,35 +717,6 @@
 			{
 				"internalType": "uint256",
 				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "string",
-				"name": "solverId",
-				"type": "string"
-			},
-			{
-				"internalType": "uint256",
-				"name": "targetChainId",
-				"type": "uint256"
-			},
-			{
-				"internalType": "uint256",
-				"name": "totalRewardAmount",
-				"type": "uint256"
-			}
-		],
-		"name": "SolverReward",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "solverReward",
 				"type": "uint256"
 			}
 		],
@@ -800,16 +831,16 @@
 						"internalType": "uint256",
 						"name": "amount",
 						"type": "uint256"
+					},
+					{
+						"internalType": "enum SolverManager.ChainType",
+						"name": "chainType",
+						"type": "uint8"
 					}
 				],
 				"internalType": "struct SolverManager.RewardClaim[]",
 				"name": "claims",
 				"type": "tuple[]"
-			},
-			{
-				"internalType": "enum SolverManager.ChainType",
-				"name": "chainType",
-				"type": "uint8"
 			}
 		],
 		"name": "claimRewardsBatch",
@@ -946,7 +977,7 @@
 				"type": "address"
 			}
 		],
-		"name": "getNonce",
+		"name": "getOnboardNonce",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -1143,6 +1174,19 @@
 		"type": "function"
 	},
 	{
+		"inputs": [],
+		"name": "getSolverFeePercentage",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
 		"inputs": [
 			{
 				"internalType": "address",
@@ -1162,8 +1206,63 @@
 		"type": "function"
 	},
 	{
+		"inputs": [
+			{
+				"internalType": "string[]",
+				"name": "solverIds",
+				"type": "string[]"
+			}
+		],
+		"name": "getSolversUnclaimedRewards",
+		"outputs": [
+			{
+				"components": [
+					{
+						"internalType": "string",
+						"name": "solverId",
+						"type": "string"
+					},
+					{
+						"internalType": "uint256",
+						"name": "btcUnclaimed",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "ticsUnclaimed",
+						"type": "uint256"
+					}
+				],
+				"internalType": "struct SolverManager.SolverUnclaimedRewards[]",
+				"name": "rewards",
+				"type": "tuple[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
 		"inputs": [],
 		"name": "getTotalActiveSolvers",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "account",
+				"type": "address"
+			}
+		],
+		"name": "getValidateNonce",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -1232,9 +1331,27 @@
 				"internalType": "address",
 				"name": "_validator",
 				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "_intentmanager",
+				"type": "address"
 			}
 		],
 		"name": "initialize",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string[]",
+				"name": "solverIds",
+				"type": "string[]"
+			}
+		],
+		"name": "invalidateSolverIds",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"
@@ -1261,9 +1378,9 @@
 	{
 		"inputs": [
 			{
-				"internalType": "address",
-				"name": "solver",
-				"type": "address"
+				"internalType": "string",
+				"name": "solverId",
+				"type": "string"
 			}
 		],
 		"name": "isSolverIdValidated",
@@ -1440,6 +1557,55 @@
 			}
 		],
 		"name": "setMinimumLiquidityTICS",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "newFee",
+				"type": "uint256"
+			}
+		],
+		"name": "setSolverFeePercentage",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "solverFeePercentage",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "sourceChainId",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "targetChainId",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "intentSourceAmount",
+				"type": "uint256"
+			}
+		],
+		"name": "solverRewardUpdation",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"

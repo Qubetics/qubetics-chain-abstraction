@@ -27,12 +27,13 @@ const solver4 = new ethers.Wallet(SOLVER_004_PK, provider);
 
 // -------- ABI (ONLY WHAT WE USE) --------
 const ABI = [
-  "function getNonce(address) view returns (uint256)",
+  "function getOnboardNonce(address) view returns (uint256)",
+  "function getValidateNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
   "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
   "function validateSolverId(uint256,bytes)",
   "function isSolverActive(string) view returns (bool)",
-  "function isSolverIdValidated(address) view returns (bool)",
+  "function isSolverIdValidated(string) view returns (bool)",
   "function isSolverOnboarded(string) view returns (bool)",
   "function getSolverChainAmount(string,uint256) view returns (uint256)",
   "function getSolver(string) view returns (tuple(string,string,uint256[],string[],bool,bool,uint256,uint256))",
@@ -163,12 +164,12 @@ async function onboardSolver(solverId, solverName, chainIds, solverAddresses) {
     console.log("✓ Solver ID is available for onboarding\n");
   }
   
-  let nonce = await solverManager.getNonce(solver1.address);
+  let nonce = await solverManager.getOnboardNonce(solver1.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
-  
-  console.log("Nonce:", nonce.toString());
+
+  console.log("Onboard Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
-  
+
   const onboardTypes = {
     OnboardSolver: [
       { name: "solverId", type: "string" },
@@ -280,10 +281,10 @@ async function validateSolver(solverId, solverWallet = solver1) {
     verifyingContract: CONTRACT_ADDRESS
   };
 
-  let nonce = await solverManager.getNonce(solverWallet.address);
+  let nonce = await solverManager.getValidateNonce(solverWallet.address);
   const deadline = Math.floor(Date.now() / 1000) + 3600;
 
-  console.log("Nonce:", nonce.toString());
+  console.log("Validate Nonce:", nonce.toString());
   console.log("Deadline:", deadline.toString());
 
   const validateTypes = {

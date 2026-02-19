@@ -2360,16 +2360,41 @@ impl MpcNetworkLayer {
                             let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
                             if parsed_amount == 0 {
                                 warn!(
-                                    "⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, skipping",
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, marking as Rejected",
                                     intent_hash
                                 );
+                                if let Some(user) = user_intent_manager
+                                    .get_user_by_intent_hash(intent_hash)
+                                    .await
+                                {
+                                    let _ = user_intent_manager
+                                        .update_intent_status(
+                                            &user.ethereum_address,
+                                            intent_hash,
+                                            IntentStatus::Rejected,
+                                        )
+                                        .await;
+                                }
                                 continue;
                             }
                             if (parsed_amount as u64) < DUST_LIMIT_SATS {
                                 warn!(
-                                    "⚠️ [BTC_UTV_BATCH] Intent {} amount {} sats below dust limit {}, skipping",
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} amount {} sats below dust limit {}, marking as Rejected",
                                     intent_hash, parsed_amount, DUST_LIMIT_SATS
                                 );
+                                // Mark as Rejected so this intent is never re-picked for future batches
+                                if let Some(user) = user_intent_manager
+                                    .get_user_by_intent_hash(intent_hash)
+                                    .await
+                                {
+                                    let _ = user_intent_manager
+                                        .update_intent_status(
+                                            &user.ethereum_address,
+                                            intent_hash,
+                                            IntentStatus::Rejected,
+                                        )
+                                        .await;
+                                }
                                 continue;
                             }
                             // 5. Intent status must be Pending or Batched
