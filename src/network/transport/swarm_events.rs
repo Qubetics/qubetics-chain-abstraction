@@ -643,6 +643,18 @@ impl MpcNetworkLayer {
                 // PENDING_DISCONNECTION for batch invalidation.
                 let solver_id = peer_id.to_string(); // peer_id IS the solver_id
 
+                // Guard: invulnerable nodes (initial DKG signers) are never staged for invalidation
+                if let Ok(Some(invulnerables)) = self.db.get_string::<Vec<String>>(keys::DKG_INVULNERABLES) {
+                    if invulnerables.contains(&solver_id) {
+                        info!(
+                            "🛡️ [DISCONNECT] Solver {} is an invulnerable (DKG signer) — skipping disconnection staging",
+                            solver_id
+                        );
+                        self.handle_node_disconnect_internal(peer_id).await;
+                        return;
+                    }
+                }
+
                 // One staging entry per solver — check if already exists to avoid duplicate broadcast
                 let staging_key = format!("{}{}", keys::DISCONNECTION_STAGING, solver_id);
                 if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {

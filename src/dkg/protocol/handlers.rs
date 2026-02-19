@@ -332,6 +332,14 @@ impl DKGNode {
             info!("🔢 [DKG] Stored initial DKG signer count: {}", signer_count);
         }
 
+        // Store the PeerIds of the invulnerable nodes (initial DKG signers)
+        let invulnerables: Vec<String> = commitments.keys().cloned().collect();
+        if let Err(e) = self.storage.set_invulnerables(&invulnerables) {
+            warn!("⚠️ [DKG] Failed to store invulnerables: {}", e);
+        } else {
+            info!("🔢 [DKG] Stored invulnerables: {:?}", invulnerables);
+        }
+
         info!("🎯 [DKG] DKG COMPLETED for node {}!", self.id);
         info!(
             "🔐 [DKG] Final secret share computed and stored for node {}",

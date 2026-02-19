@@ -27,6 +27,7 @@ pub const DKG_VAULT_BTC_ADDRESS: &str = "dkg_vault_btc_address";
 pub const DKG_POLYNOMIAL: &str = "dkg_polynomial";
 pub const DKG_INITIAL_COMPLETE: &str = "dkg_initial_complete";
 pub const DKG_SIGNER_COUNT: &str = "dkg_signer_count";
+pub const DKG_INVULNERABLES: &str = "dkg_invulnerables";
 pub const DKG_MY_PERMANENT_INDEX: &str = "dkg_my_permanent_index";
 pub const DKG_RECEIVED_SHARE: &str = "dkg_received_share:";
 pub const DKG_EXPECTED_SHARES: &str = "dkg_expected_shares";

@@ -4069,6 +4069,17 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // Guard: invulnerable nodes (initial DKG signers) are never staged for invalidation
+                if let Ok(Some(invulnerables)) = self.db.get_string::<Vec<String>>(crate::database::keys::DKG_INVULNERABLES) {
+                    if invulnerables.contains(&solver_id) {
+                        info!(
+                            "🛡️ [PEER_DISCONNECT] Solver {} is an invulnerable (DKG signer) — skipping disconnection staging",
+                            solver_id
+                        );
+                        return Ok(());
+                    }
+                }
+
                 // Write to the staging map — NOT the invalidation queue.
                 // At epoch-2 surviving staging entries are promoted to PENDING_DISCONNECTION.
                 // The on-chain validation check is deferred to epoch-2 (before promotion).

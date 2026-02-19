@@ -7896,6 +7896,38 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Guard: filter out invulnerable nodes (initial DKG signers) — they must never be invalidated
+        if let Some(ref dkg) = self.dkg_storage {
+            if let Ok(Some(invulnerables)) = dkg.get_invulnerables() {
+                let before = all_solver_ids.len();
+                all_solver_ids.retain(|sid| {
+                    if invulnerables.contains(sid) {
+                        info!(
+                            "🛡️ [PEER_INVALIDATION] Solver {} is an invulnerable (DKG signer) — removing from invalidation batch and clearing PENDING_DISCONNECTION",
+                            sid
+                        );
+                        let pending_key = format!("{}{}", prefix, sid);
+                        let _ = database.delete_string(&pending_key);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if before != all_solver_ids.len() {
+                    info!(
+                        "🛡️ [PEER_INVALIDATION] Filtered {} invulnerable(s) from batch, {} remaining",
+                        before - all_solver_ids.len(),
+                        all_solver_ids.len()
+                    );
+                }
+            }
+        }
+
+        if all_solver_ids.is_empty() {
+            info!("✅ [PEER_INVALIDATION] All pending solvers are invulnerables or already handled, nothing to do");
+            return Ok(());
+        }
+
         // Filter out solvers that are already invalidated on-chain to avoid
         // batch reverts (invalidateSolverIds reverts if any solver in the batch is already invalidated).
         // Also clean up their PENDING_DISCONNECTION entries since they don't need processing.
