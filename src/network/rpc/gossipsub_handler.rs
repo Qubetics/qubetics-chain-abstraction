@@ -1343,6 +1343,7 @@ impl MpcNetworkLayer {
                 }
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
+                // Each receiving node independently validates every intent before signing.
                 let mut intent_data = Vec::new();
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
@@ -1350,6 +1351,42 @@ impl MpcNetworkLayer {
 
                     for intent_hash in &intent_hashes {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [BATCH] Intent {} failed chain/token/address validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 2. Amount > 0
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            // 3. Intent status must not be Solved or Rejected
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_intent_hash(intent_hash)
+                                .await
+                            {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status == IntentStatus::Solved || status == IntentStatus::Rejected {
+                                        warn!(
+                                            "⚠️ [BATCH] Intent {} status is {:?}, skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
                             batch_intents.push((intent_hash.clone(), intent.clone()));
                             if let Some(tx_ids) = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
@@ -2035,6 +2072,7 @@ impl MpcNetworkLayer {
                     let mut batch_intents = Vec::new();
                     for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Check intent has not already been processed
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
                                 .await;
@@ -2049,6 +2087,7 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 2. Source chain must be TICS
                             let source_ok = intent.source_chain.eq_ignore_ascii_case("tics")
                                 || intent.source_chain.eq_ignore_ascii_case("qubetics");
                             if !source_ok {
@@ -2058,10 +2097,40 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 3. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} failed validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 4. Amount must be > 0
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [TICS_UTV_BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            // 5. Intent status must be Pending or Batched
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
                                 .await
                             {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status != IntentStatus::Pending && status != IntentStatus::Batched {
+                                        warn!(
+                                            "⚠️ [TICS_UTV_BATCH] Intent {} status is {:?} (expected Pending/Batched), skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,
@@ -2266,6 +2335,7 @@ impl MpcNetworkLayer {
                     let mut batch_intents = Vec::new();
                     for intent_hash in intent_hashes.iter() {
                         if let Some(intent) = user_intent_manager.get_intent(intent_hash).await {
+                            // 1. Check intent has not already been processed
                             let tx_ids = user_intent_manager
                                 .get_intent_transaction_ids(intent_hash)
                                 .await;
@@ -2280,6 +2350,7 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 2. Source chain must be Bitcoin
                             let source_ok = intent.source_chain.eq_ignore_ascii_case("bitcoin")
                                 || intent.source_chain.eq_ignore_ascii_case("btc");
                             if !source_ok {
@@ -2289,10 +2360,47 @@ impl MpcNetworkLayer {
                                 );
                                 continue;
                             }
+                            // 3. Chain/token/address consistency
+                            if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&intent) {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} failed validation: {}, skipping",
+                                    intent_hash, e
+                                );
+                                continue;
+                            }
+                            // 4. Amount must be > 0 and above dust for BTC source
+                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
+                            if parsed_amount == 0 {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, skipping",
+                                    intent_hash
+                                );
+                                continue;
+                            }
+                            if (parsed_amount as u64) < DUST_LIMIT_SATS {
+                                warn!(
+                                    "⚠️ [BTC_UTV_BATCH] Intent {} amount {} sats below dust limit {}, skipping",
+                                    intent_hash, parsed_amount, DUST_LIMIT_SATS
+                                );
+                                continue;
+                            }
+                            // 5. Intent status must be Pending or Batched
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
                                 .await
                             {
+                                if let Some(status) = user_intent_manager
+                                    .get_intent_status(&user.ethereum_address, intent_hash)
+                                    .await
+                                {
+                                    if status != IntentStatus::Pending && status != IntentStatus::Batched {
+                                        warn!(
+                                            "⚠️ [BTC_UTV_BATCH] Intent {} status is {:?} (expected Pending/Batched), skipping",
+                                            intent_hash, status
+                                        );
+                                        continue;
+                                    }
+                                }
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,
