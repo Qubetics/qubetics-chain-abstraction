@@ -363,9 +363,10 @@ pub enum ChannelMessage {
         responder: oneshot::Sender<Option<String>>,
     },
     /// Check if this node is connected to a specific peer.
+    /// Returns (directly_connected, active_in_network).
     PeerConnectionCheck {
         peer_id: String,
-        responder: oneshot::Sender<bool>,
+        responder: oneshot::Sender<(bool, bool)>,
     },
 }
 

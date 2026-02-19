@@ -3135,7 +3135,7 @@ pub(crate) async fn handle_check_peer_connection(
         })?;
     }
 
-    let connected = tokio::time::timeout(Duration::from_secs(5), receiver)
+    let (connected, active_in_network) = tokio::time::timeout(Duration::from_secs(5), receiver)
         .await
         .map_err(|_| {
             warp::reject::custom(super::errors::RpcError::Timeout(
@@ -3153,5 +3153,6 @@ pub(crate) async fn handle_check_peer_connection(
     Ok(warp::reply::json(&PeerConnectionResponse {
         peer_id,
         connected,
+        active_in_network,
     }))
 }
