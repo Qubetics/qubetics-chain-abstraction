@@ -136,20 +136,28 @@ impl MpcNetworkLayer {
 
         // Contract sequencer removed
 
-        // Update DKG and signing node parameters
-        if let Some(dkg_node) = &mut self.dkg_node {
-            if let Err(e) = dkg_node.update_node_params(new_total, new_threshold) {
-                warn!("⚠️ [DISCONNECT] Failed to update DKG params: {}", e);
-            }
-        }
-
-        // Only update signing threshold if initial DKG is not yet complete
-        // After DKG, threshold is fixed based on initial DKG participants
+        // Only update DKG and signing node parameters if initial DKG is not yet complete.
+        // After DKG, total_nodes and threshold are fixed based on initial DKG participants only.
+        // Updating them with node_manager values (which include observers) inflates the
+        // DKGNode's threshold and breaks signing.
         let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
             dkg_node.is_initial_dkg_complete().await
         } else {
             false
         };
+
+        if !initial_dkg_complete {
+            if let Some(dkg_node) = &mut self.dkg_node {
+                if let Err(e) = dkg_node.update_node_params(new_total, new_threshold) {
+                    warn!("⚠️ [DISCONNECT] Failed to update DKG params: {}", e);
+                }
+            }
+        } else {
+            info!(
+                "ℹ️ [DISCONNECT] Skipping DKGNode param update - initial DKG already complete (params fixed at DKG signer count)"
+            );
+        }
+
         if !initial_dkg_complete {
             // If we already know the DKG signer count, use it for threshold
             // instead of total_nodes — prevents observer threshold inflation

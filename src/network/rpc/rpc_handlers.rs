@@ -1642,8 +1642,31 @@ impl MpcNetworkLayer {
         let (should_sync, sync_peer_opt, _new_node_index_opt, needs_retry) = if let Some(dkg_node) =
             &mut self.dkg_node
         {
-            dkg_node.update_node_params(total, threshold)?;
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+
+            // If initial DKG is already complete, use the stored DKG signer count
+            // for params instead of node_manager values (which include observers).
+            // This prevents inflating total_nodes/threshold when observers are connected.
+            if has_dkg_data || dkg_node.is_initial_dkg_complete().await {
+                if let Some(dkg_count) = dkg_node.get_dkg_signer_count() {
+                    let dkg_threshold = dkg_count / 2 + 1;
+                    info!(
+                        "🔄 [RECONNECT] Using DKG signer count for params: total_nodes={}, threshold={} (node_manager has total={}, threshold={})",
+                        dkg_count, dkg_threshold, total, threshold
+                    );
+                    dkg_node.update_node_params(dkg_count, dkg_threshold)?;
+                } else {
+                    // Fallback: DKG data exists but signer count not stored yet
+                    info!(
+                        "⚠️ [RECONNECT] DKG data exists but signer count not found, using node_manager values: total={}, threshold={}",
+                        total, threshold
+                    );
+                    dkg_node.update_node_params(total, threshold)?;
+                }
+            } else {
+                // Initial DKG not yet complete - safe to use node_manager values
+                dkg_node.update_node_params(total, threshold)?;
+            }
 
             if has_dkg_data {
                 // Main DKG node restarting - preserve DKG shares and restore completed state
