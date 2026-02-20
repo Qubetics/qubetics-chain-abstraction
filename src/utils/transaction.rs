@@ -1093,7 +1093,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                         || chain_to_use.eq_ignore_ascii_case("qubetics")
                     {
                         let contract_address_env = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                            .unwrap_or_else(|_| "0xf798258Eae04159B4aFD8B47749A7E77c4d0Fff0".to_string());
+                            .unwrap_or_else(|_| "0x2d2dB8853A650A82bED6bb87787d37B22A5d8524".to_string());
                         if contract_address_env
                             != "0x0000000000000000000000000000000000000000"
                         {
@@ -1271,7 +1271,7 @@ pub async fn create_chain_transaction_from_contract_call(
     // Get contract address from environment variable and normalize to 0x-prefixed
     // For processBatchIntents / intent management, use the IntentManager contract
     let contract_address_env = std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x57344396D388ACbf8cDa5127A6c8641f4BC090e3".to_string());
+        .unwrap_or_else(|_| "0xEE0D8EbBC04613d939eeD51A6c451fbe038C3b68".to_string());
 
     info!(
         "[create_chain_transaction_from_contract_call] encode_deposit_intent_calldata params:\n  source_address: {}\n  target_address: {}\n  source_chain: {}\n  target_chain: {}\n  amount: {}\n  source_token: {}\n  target_token: {}\n  transaction_hash: {}\n  intent_hash: {}",

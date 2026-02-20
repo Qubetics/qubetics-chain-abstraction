@@ -85,7 +85,7 @@ impl ConfigBuilder {
         }
 
         Ok(Config {
-            rpc_port: self.rpc_port.unwrap_or(8082),
+            rpc_port: self.rpc_port.unwrap_or(80),
             db_config: self.db_config.unwrap_or_else(|| {
                 DatabaseConfig::default()
                     .validate()

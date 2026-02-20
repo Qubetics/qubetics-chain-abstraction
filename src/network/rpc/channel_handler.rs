@@ -6,7 +6,7 @@ impl MpcNetworkLayer {
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
+            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
         let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
             .unwrap_or_else(|_| "9029".to_string())
             .parse::<u64>()
@@ -2932,7 +2932,7 @@ impl MpcNetworkLayer {
             // Contract address for IntentManager (processBatchIntents)
             let contract_address_env =
                 std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(|_| {
-                    "0x57344396D388ACbf8cDa5127A6c8641f4BC090e3".to_string()
+                    "0xEE0D8EbBC04613d939eeD51A6c451fbe038C3b68".to_string()
                 });
             if contract_address_env == "0x0000000000000000000000000000000000000000" {
                 warn!("❌ [BTC_INTENT_MANAGER] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
@@ -3159,7 +3159,7 @@ impl MpcNetworkLayer {
 
         // Get solver contract address from ENV
         let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
+            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
         if solver_contract_address.is_empty() {
             error!("❌ [ADD_LIQUIDITY_BATCH] SOLVER_CONTRACT_ADDRESS not configured");
             return Err(anyhow!("SOLVER_CONTRACT_ADDRESS not configured"));

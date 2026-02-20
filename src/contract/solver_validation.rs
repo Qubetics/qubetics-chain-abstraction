@@ -10,7 +10,7 @@ use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
 /// Get contract configuration from environment variables
 pub fn get_solver_contract_config() -> Result<Option<ContractConfig>> {
     let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
+        .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
 
     // Check if contract is configured
     if contract_address_env == "0x0000000000000000000000000000000000000000" {
