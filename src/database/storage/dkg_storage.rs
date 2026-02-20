@@ -720,12 +720,15 @@ impl DkgStorage {
             user_eth_address
         );
 
-        let commitments = self.get_all_commitments().await?;
+        // Use original commitments (stored permanently during DKG, never deleted on disconnect)
+        // instead of regular commitments (which may be partially deleted when peers disconnect).
+        // This ensures correct aggregated polynomial evaluation even after network topology changes.
+        let commitments = self.get_all_original_commitments().await?;
         let peer_indices = self.get_peer_indices().await?;
 
         if commitments.is_empty() {
             return Err(anyhow::anyhow!(
-                "No commitments available - DKG may not be complete"
+                "No original commitments available - DKG may not be complete"
             ));
         }
 
@@ -832,9 +835,9 @@ impl DkgStorage {
         
         info!("🔍 [DKG_STORAGE] === Logging all stored share public keys ===");
         
-        let commitments = self.get_all_commitments().await?;
-        
-        for (peer_id, _) in commitments.iter() {
+        let peer_indices = self.get_peer_indices().await?;
+
+        for (peer_id, _) in peer_indices.iter() {
             info!("🔍 [DKG_STORAGE] === Share Pubkeys for Peer: {} ===", peer_id);
             
             // Network share pubkey

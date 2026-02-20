@@ -82,34 +82,47 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Also remove from peer_indices HashMap
+        // Remove from in-memory peer_indices HashMap (transient; will be restored from DB on reconnect).
+        // IMPORTANT: Do NOT delete the peer_index:{peer_id} key from the database!
+        // That key holds the original DKG index assigned during key generation.
+        // Lagrange interpolation requires exactly those indices to aggregate signatures correctly.
+        // Deleting and reassigning a new index (max+1) would produce wrong Lagrange coefficients
+        // and invalid threshold signatures.
         if let Some(removed_index) = self.peer_discovery.peer_indices.remove(&peer_id) {
             info!(
-                "✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap",
+                "✅ [DISCONNECT] Removed peer {} (index {}) from in-memory peer_indices (DB key preserved for DKG)",
                 peer_id, removed_index
             );
         }
 
-        // Remove from database as well (peer index and commitments so share_pubkey recompute doesn't fail)
-        let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
-        if let Err(e) = self.db.delete_string(&peer_index_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove peer {} from database: {}",
-                peer_id, e
-            );
-        } else {
-            info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
-        }
+        // Only delete commitments for non-invulnerable peers (observers).
+        // Invulnerable DKG signers' commitments must be preserved — they are needed
+        // for share pubkey computation and user key derivation even while the signer
+        // is temporarily offline. Signers always rejoin; deleting their commitments
+        // causes wrong aggregated polynomials and address mismatches.
+        let is_invulnerable = self
+            .db
+            .get_string::<Vec<String>>(keys::DKG_INVULNERABLES)
+            .ok()
+            .flatten()
+            .map(|inv| inv.contains(&peer_id.to_string()))
+            .unwrap_or(false);
 
-        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
-        let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
-        if let Err(e) = self.db.delete_string(&commitment_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
-                peer_id, e
+        if is_invulnerable {
+            info!(
+                "🛡️ [DISCONNECT] Preserving commitments for invulnerable signer {} (DKG commitments never deleted for signers)",
+                peer_id
             );
         } else {
-            info!("✅ [DISCONNECT] Removed commitments for peer {} from database", peer_id);
+            let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
+            if let Err(e) = self.db.delete_string(&commitment_key) {
+                warn!(
+                    "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
+                    peer_id, e
+                );
+            } else {
+                info!("✅ [DISCONNECT] Removed commitments for observer peer {} from database", peer_id);
+            }
         }
 
         // Update network parameters

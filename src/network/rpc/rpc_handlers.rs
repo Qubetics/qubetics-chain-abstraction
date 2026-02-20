@@ -292,8 +292,12 @@ impl MpcNetworkLayer {
                 if reference == 0 {
                     return true;
                 }
+                // Only reject rounds that are too far BEHIND our reference.
+                // Rounds ahead are always accepted — peers legitimately advance
+                // while this node is offline or slow, and rejecting them causes
+                // a permanent desync where a rejoining node can never catch up
+                // (the gap never closes because both sides tick at the same rate).
                 candidate_round >= reference.saturating_sub(MAX_VRF_ROUND_SKEW)
-                    && candidate_round <= reference.saturating_add(MAX_VRF_ROUND_SKEW)
             })
             .unwrap_or(true)
     }
@@ -1808,3 +1812,90 @@ impl MpcNetworkLayer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // is_vrf_round_within_range – verifies the asymmetric skew fix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn none_reference_accepts_any_candidate() {
+        // When a node has no established round, accept everything.
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(None, 0));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(None, 100));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(None, u64::MAX));
+    }
+
+    #[test]
+    fn zero_reference_accepts_any_candidate() {
+        // A node at round 0 just started — accept all peer rounds.
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 0));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 1));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 500));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), u64::MAX));
+    }
+
+    #[test]
+    fn candidate_within_skew_behind_is_accepted() {
+        // Candidate is 1..MAX_VRF_ROUND_SKEW rounds behind reference → ok.
+        let reference = 100;
+        for behind in 0..=MAX_VRF_ROUND_SKEW {
+            assert!(
+                MpcNetworkLayer::is_vrf_round_within_range(Some(reference), reference - behind),
+                "candidate {} should be accepted (reference {})",
+                reference - behind,
+                reference
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_too_far_behind_is_rejected() {
+        // Candidate is more than MAX_VRF_ROUND_SKEW rounds behind → reject.
+        let reference = 100;
+        let too_far = reference - MAX_VRF_ROUND_SKEW - 1;
+        assert!(
+            !MpcNetworkLayer::is_vrf_round_within_range(Some(reference), too_far),
+            "candidate {} should be rejected (reference {})",
+            too_far,
+            reference
+        );
+        assert!(!MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 0));
+    }
+
+    #[test]
+    fn candidate_ahead_is_always_accepted() {
+        // This is the key fix: rounds AHEAD must always be accepted so that
+        // a rejoining node can catch up to peers that advanced while it was offline.
+        let reference = 100;
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 101));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 110));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 200));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 1000));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), u64::MAX));
+    }
+
+    #[test]
+    fn candidate_far_ahead_after_restart_scenario() {
+        // Simulates the exact bug scenario: node restarts with stale round 310,
+        // peers are at 375+. Previously rejected (gap > 10), now accepted.
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(310), 375));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(310), 500));
+    }
+
+    #[test]
+    fn candidate_equal_to_reference_is_accepted() {
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(50), 50));
+    }
+
+    #[test]
+    fn saturating_sub_prevents_underflow() {
+        // reference=5, skew=10 → saturating_sub gives 0, so any candidate >= 0 accepted.
+        let reference = 5u64;
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 0));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 1));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 5));
+    }
+}

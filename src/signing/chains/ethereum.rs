@@ -1267,6 +1267,94 @@ impl SigningNode {
                 info!("📄 [SIGNING] Signed transaction prepared");
                 info!("📏 [SIGNING] Transaction size: {} bytes", signed_tx.len());
                 info!("🔗 [SIGNING] Chain ID: {}", chain_id);
+                info!(
+                    "🔍 [SIGNING] Raw signed tx hex for round {}: {}",
+                    round, signed_tx_hex
+                );
+                // Recover sender address from the signed transaction for debugging
+                {
+                    let unsigned_tx_bytes = if is_contract_tx {
+                        // Contract transactions must use the contract-aware encoder
+                        // that includes calldata in the RLP, matching what was actually signed.
+                        let data_hex = hex::encode(original_tx.data.as_ref().unwrap());
+                        crate::utils::transaction::create_transaction_for_signing_contract(
+                            &crate::types::ContractTransaction {
+                                to: original_tx.to.clone(),
+                                value: original_tx.value.clone(),
+                                nonce: original_tx.nonce,
+                                gas_limit: original_tx.gas_limit,
+                                gas_price: original_tx.gas_price.clone(),
+                                chain_id: original_tx.chain_id,
+                                data: data_hex,
+                            },
+                        )
+                    } else {
+                        crate::utils::transaction::create_transaction_for_signing(
+                            &crate::chain_abstraction::EthereumTransaction {
+                                to: original_tx.to.clone(),
+                                value: original_tx.value.clone(),
+                                nonce: original_tx.nonce,
+                                gas_limit: original_tx.gas_limit,
+                                gas_price: original_tx.gas_price.clone(),
+                                chain_id: original_tx.chain_id,
+                                data: original_tx.data.clone(),
+                            },
+                        )
+                    };
+                    let mut hasher = sha3::Keccak256::new();
+                    hasher.update(&unsigned_tx_bytes);
+                    let tx_hash = hasher.finalize();
+                    info!(
+                        "🔍 [SIGNING] Unsigned tx hash for round {}: 0x{}",
+                        round, hex::encode(&tx_hash)
+                    );
+                    info!(
+                        "🔍 [SIGNING] Signature r: 0x{}, s: 0x{}, v: {} (recovery_id: {})",
+                        hex::encode(r), hex::encode(s), v, recovery_id
+                    );
+                    if let Ok(msg) = Message::from_digest_slice(&tx_hash) {
+                        let secp = Secp256k1::new();
+                        let recid_for_recover = (v - 35 - chain_id * 2) as u8;
+                        if let Ok(rid) = secp256k1::ecdsa::RecoveryId::from_i32(recid_for_recover as i32) {
+                            let mut sig_bytes_64 = [0u8; 64];
+                            sig_bytes_64[0..32].copy_from_slice(r);
+                            sig_bytes_64[32..64].copy_from_slice(s);
+                            if let Ok(rec_sig) = RecoverableSignature::from_compact(&sig_bytes_64, rid) {
+                                match secp.recover_ecdsa(&msg, &rec_sig) {
+                                    Ok(pubkey) => {
+                                        let pub_bytes = pubkey.serialize_uncompressed();
+                                        let mut keccak = sha3::Keccak256::new();
+                                        keccak.update(&pub_bytes[1..]);
+                                        let hash = keccak.finalize();
+                                        let recovered_addr = format!("0x{}", hex::encode(&hash[12..]));
+                                        info!(
+                                            "🔍 [SIGNING] Recovered sender address for round {}: {}",
+                                            round, recovered_addr
+                                        );
+                                        info!(
+                                            "🔍 [SIGNING] Expected sender (nonce_address) for round {}: {}",
+                                            round, nonce_address
+                                        );
+                                        if recovered_addr.to_lowercase() != nonce_address.to_lowercase() {
+                                            error!(
+                                                "❌ [SIGNING] ADDRESS MISMATCH for round {}! Recovered: {} vs Expected: {}",
+                                                round, recovered_addr, nonce_address
+                                            );
+                                        } else {
+                                            info!(
+                                                "✅ [SIGNING] Address match confirmed for round {}",
+                                                round
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [SIGNING] Failed to recover sender from signature for round {}: {}", round, e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Ok(Some(signed_tx_hex))
             } else {
@@ -1332,7 +1420,7 @@ impl SigningNode {
         let s = &aggregated_signature[32..64];
         let chain_id = original_tx.chain_id;
         let v = recovery_id as u64 + 35 + chain_id * 2;
-        let nonce_address = if let Some(user_intent_manager) = &self.user_intent_manager {
+        let user_derived_address = if let Some(user_intent_manager) = &self.user_intent_manager {
             if let Some(user) = user_intent_manager.get_user_by_address(&user_eth).await {
                 if let Some(derived_eth_addr) = &user.derived_eth_address {
                     Self::fetch_nonce_and_log(
@@ -1353,7 +1441,7 @@ impl SigningNode {
         } else {
             return Err(anyhow!("User intent manager not available"));
         };
-        let _ = nonce_address;
+        let user_derived_address = Some(user_derived_address);
         let signed_tx = create_signed_transaction(
             &DummyTransaction {
                 to: original_tx.to.clone(),
@@ -1373,6 +1461,76 @@ impl SigningNode {
             "✅ [SIGNING] Reconstructed signed tx for batch slot {} (round {})",
             slot_id, round
         );
+        info!(
+            "🔍 [SIGNING] Raw signed tx hex for batch slot {}: {}",
+            slot_id, signed_tx_hex
+        );
+        // Recover sender address from the signed transaction for debugging
+        {
+            // Re-create the unsigned tx bytes (EIP-155 signing hash)
+            let unsigned_tx_bytes = crate::utils::transaction::create_transaction_for_signing(
+                &crate::chain_abstraction::EthereumTransaction {
+                    to: original_tx.to.clone(),
+                    value: original_tx.value.clone(),
+                    nonce: original_tx.nonce,
+                    gas_limit: original_tx.gas_limit,
+                    gas_price: original_tx.gas_price.clone(),
+                    chain_id: original_tx.chain_id,
+                    data: original_tx.data.clone(),
+                },
+            );
+            let mut hasher = sha3::Keccak256::new();
+            hasher.update(&unsigned_tx_bytes);
+            let tx_hash = hasher.finalize();
+            info!(
+                "🔍 [SIGNING] Unsigned tx hash for batch slot {}: 0x{}",
+                slot_id, hex::encode(&tx_hash)
+            );
+            info!(
+                "🔍 [SIGNING] Signature r: 0x{}, s: 0x{}, v: {} (recovery_id: {})",
+                hex::encode(r), hex::encode(s), v, recovery_id
+            );
+            if let Ok(msg) = Message::from_digest_slice(&tx_hash) {
+                let secp = Secp256k1::new();
+                let recid_for_recover = (v - 35 - chain_id * 2) as u8;
+                if let Ok(rid) = secp256k1::ecdsa::RecoveryId::from_i32(recid_for_recover as i32) {
+                    let mut sig_bytes_64 = [0u8; 64];
+                    sig_bytes_64[0..32].copy_from_slice(r);
+                    sig_bytes_64[32..64].copy_from_slice(s);
+                    if let Ok(rec_sig) = RecoverableSignature::from_compact(&sig_bytes_64, rid) {
+                        match secp.recover_ecdsa(&msg, &rec_sig) {
+                            Ok(pubkey) => {
+                                let pub_bytes = pubkey.serialize_uncompressed();
+                                let mut keccak = sha3::Keccak256::new();
+                                keccak.update(&pub_bytes[1..]);
+                                let hash = keccak.finalize();
+                                let recovered_addr = format!("0x{}", hex::encode(&hash[12..]));
+                                info!(
+                                    "🔍 [SIGNING] Recovered sender address for batch slot {}: {}",
+                                    slot_id, recovered_addr
+                                );
+                                if let Some(derived) = &user_derived_address {
+                                    if recovered_addr.to_lowercase() != derived.to_lowercase() {
+                                        error!(
+                                            "❌ [SIGNING] ADDRESS MISMATCH for batch slot {}! Recovered: {} vs Expected derived: {}",
+                                            slot_id, recovered_addr, derived
+                                        );
+                                    } else {
+                                        info!(
+                                            "✅ [SIGNING] Address match confirmed for batch slot {}",
+                                            slot_id
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [SIGNING] Failed to recover sender from signature for batch slot {}: {}", slot_id, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(Some(signed_tx_hex))
     }
 
@@ -1576,7 +1734,28 @@ impl SigningNode {
 
         for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
             let signing_key = match key_opt {
-                Some(scalar) => Self::derive_secp_secret(&scalar)?,
+                Some(scalar) => {
+                    let scalar_bytes = scalar.to_bytes();
+                    info!(
+                        "🔑 [TICS_UTV_BATCH] Intent {} (user {}): tweaked_share scalar_fingerprint=0x{} (no-nonce path)",
+                        intent_hash, user_eth, hex::encode(&scalar_bytes[..8])
+                    );
+                    let secp_key = Self::derive_secp_secret(&scalar)?;
+                    {
+                        let secp = Secp256k1::new();
+                        let pk = PublicKey::from_secret_key(&secp, &secp_key);
+                        let pk_uncompressed = pk.serialize_uncompressed();
+                        let mut keccak = sha3::Keccak256::new();
+                        keccak.update(&pk_uncompressed[1..]);
+                        let hash = keccak.finalize();
+                        let signing_addr = format!("0x{}", hex::encode(&hash[12..]));
+                        info!(
+                            "🔑 [TICS_UTV_BATCH] Intent {} (user {}): signing_key derives ETH address: {} (no-nonce path)",
+                            intent_hash, user_eth, signing_addr
+                        );
+                    }
+                    secp_key
+                }
                 None => {
                     warn!(
                         "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",
@@ -1713,7 +1892,29 @@ impl SigningNode {
         if has_dkg {
             for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
                 let signing_key = match key_opt {
-                    Some(scalar) => Self::derive_secp_secret(&scalar)?,
+                    Some(scalar) => {
+                        let scalar_bytes = scalar.to_bytes();
+                        info!(
+                            "🔑 [TICS_UTV_BATCH] Intent {} (user {}): tweaked_share scalar_fingerprint=0x{}",
+                            intent_hash, user_eth, hex::encode(&scalar_bytes[..8])
+                        );
+                        let secp_key = Self::derive_secp_secret(&scalar)?;
+                        // Derive the ETH address this signing key corresponds to
+                        {
+                            let secp = Secp256k1::new();
+                            let pk = PublicKey::from_secret_key(&secp, &secp_key);
+                            let pk_uncompressed = pk.serialize_uncompressed();
+                            let mut keccak = sha3::Keccak256::new();
+                            keccak.update(&pk_uncompressed[1..]);
+                            let hash = keccak.finalize();
+                            let signing_addr = format!("0x{}", hex::encode(&hash[12..]));
+                            info!(
+                                "🔑 [TICS_UTV_BATCH] Intent {} (user {}): signing_key derives ETH address: {}",
+                                intent_hash, user_eth, signing_addr
+                            );
+                        }
+                        secp_key
+                    }
                     None => {
                         warn!(
                             "⚠️ [TICS_UTV_BATCH] No signing key for intent {} (user {}), skipping",

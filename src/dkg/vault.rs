@@ -25,69 +25,21 @@ impl DKGNode {
         &self,
         tweak_scalar: Scalar,
     ) -> Result<ProjectivePoint> {
-        let commitments = self.storage.get_all_commitments().await?;
-
-        let p_base = if commitments.is_empty() {
-            // Observer nodes don't have DKG commitments — use final_public_key directly.
-            // Mathematically: p_base = sum(C0[i]) = final_public_key, so the result is identical.
-            match self.storage.get_final_public().await? {
-                Some(final_pk) => {
-                    info!("🔑 [DKG] Using final_public_key as base for user key derivation (observer path)");
-                    final_pk
-                }
-                None => {
-                    return Err(anyhow!("No commitments available and no final_public_key — cannot derive user group key"));
-                }
+        // Always use the stored final_public_key (the correct sum of all C0 commitments
+        // from the original DKG). Commitments may be partially deleted when peers disconnect,
+        // so recalculating from commitments can produce a wrong base key.
+        let p_base = match self.storage.get_final_public().await? {
+            Some(final_pk) => {
+                info!("🔑 [DKG] Using stored final_public_key as base for user key derivation");
+                final_pk
             }
-        } else {
-            let peer_indices = self.storage.get_peer_indices().await?;
-            if peer_indices.is_empty() {
-                return Err(anyhow!("No peer indices available in database"));
+            None => {
+                return Err(anyhow!("No final_public_key available — cannot derive user group key"));
             }
-
-            let mut solver_with_indices: Vec<(String, usize)> = commitments
-                .keys()
-                .filter_map(|sid| peer_indices.get(sid).map(|&idx| (sid.clone(), idx)))
-                .collect();
-            solver_with_indices.sort_by_key(|(_, idx)| *idx);
-
-            info!(
-                "🔢 [DKG] Processing commitments in peer index order: {:?}",
-                solver_with_indices
-                    .iter()
-                    .map(|(sid, idx)| format!("{sid}:{idx}"))
-                    .collect::<Vec<_>>()
-            );
-
-            let mut base = ProjectivePoint::IDENTITY;
-            let mut added = 0usize;
-            for (sid, _) in &solver_with_indices {
-                if let Some(comms) = commitments.get(sid) {
-                    if let Some(c0) = comms.first() {
-                        base += ProjectivePoint::from(*c0);
-                        added += 1;
-                    } else {
-                        warn!("⚠️ [DKG] Solver {} has no C0 (index 0 missing)", sid);
-                    }
-                }
-            }
-
-            if added == 0 {
-                return Err(anyhow!(
-                    "No C0 found in any solver commitments; cannot derive base group key"
-                ));
-            }
-
-            base
         };
 
         let tweak_point = ProjectivePoint::GENERATOR * tweak_scalar;
         let p_user = p_base + tweak_point;
-
-        if let Some(stored) = self.storage.get_final_public().await? {
-            let delta = p_user + (-stored);
-            info!("🔄 [DKG] Δ vs stored final_public_key: {:?}", delta);
-        }
 
         Ok(p_user)
     }

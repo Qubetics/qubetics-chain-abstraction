@@ -1,9 +1,11 @@
 use anyhow::Result;
 use libp2p::PeerId;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
+use crate::database::primitives::keys;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
+use crate::types::user_intent::UserRegistration;
 use crate::types::vrf::VrfRoundSyncRequest;
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, VrfDomain};
@@ -77,7 +79,9 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    /// Handle a batch of database entries
+    /// Handle a batch of database entries (DB_SYNC path — only USER_REGISTRATION entries).
+    /// Applies the same merge logic as STATE_SYNC: never overwrite existing users
+    /// that already have a valid tweaked_secret_share.
     pub async fn handle_database_batch(
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
@@ -94,12 +98,51 @@ impl MpcNetworkLayer {
             batch_index, entries_count, is_last_batch
         );
 
-        // Convert entries to tuple format
-        let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
-            entries.into_iter().map(|e| (e.key, e.value)).collect();
+        // DB_SYNC exports USER_REGISTRATION entries which may contain the exporting
+        // node's tweaked_secret_share (unlike STATE_SYNC which strips it).
+        // We must merge carefully: never overwrite a local user that already has a valid share.
+        let mut import_entries = Vec::new();
+        let mut skipped = 0usize;
+        for entry in entries {
+            let key_str = String::from_utf8_lossy(&entry.key).to_string();
+            match self.db.get_string::<UserRegistration>(&key_str) {
+                Ok(Some(existing_user)) if existing_user.tweaked_secret_share.is_some() => {
+                    // Local user has valid tweaked share — SKIP to preserve it
+                    info!(
+                        "🛡️ [DB_SYNC] Preserving existing user {} (has valid tweaked_secret_share)",
+                        key_str
+                    );
+                    skipped += 1;
+                }
+                _ => {
+                    // Strip tweaked_secret_share from incoming entry (it belongs to the exporting node)
+                    match bincode::deserialize::<UserRegistration>(&entry.value) {
+                        Ok(mut incoming_user) => {
+                            incoming_user.tweaked_secret_share = None;
+                            if let Ok(stripped_bytes) = bincode::serialize(&incoming_user) {
+                                import_entries.push((entry.key, stripped_bytes));
+                            } else {
+                                import_entries.push((entry.key, entry.value));
+                            }
+                        }
+                        Err(_) => {
+                            import_entries.push((entry.key, entry.value));
+                        }
+                    }
+                }
+            }
+        }
 
-        // Import batch into database
-        self.db.import_batch_async(db_entries).await?;
+        if skipped > 0 {
+            info!(
+                "🛡️ [DB_SYNC] Preserved {} existing user(s) with valid tweaked shares",
+                skipped
+            );
+        }
+
+        if !import_entries.is_empty() {
+            self.db.import_batch_async(import_entries).await?;
+        }
 
         // Update sync state
         self.db_sync_state.complete_batch(entries_count);
@@ -139,6 +182,18 @@ impl MpcNetworkLayer {
                 "📊 [DB_SYNC] Total synced: {} entries from peer {}",
                 self.db_sync_state.entries_synced, peer_id
             );
+
+            // Compute tweaked shares for newly imported users (those with None).
+            if let Some(ref uim) = self.user_intent_manager {
+                match uim.refresh_missing_user_tweaked_shares().await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("✅ [DB_SYNC] Computed tweaked shares for {} new user(s)", count);
+                        }
+                    }
+                    Err(e) => warn!("⚠️ [DB_SYNC] Failed to compute tweaked shares: {}", e),
+                }
+            }
 
             // Request round sync after database sync completes
             if !self.vrf_round_requested {
@@ -228,7 +283,6 @@ impl MpcNetworkLayer {
 
         // Purge stale pending entries before importing fresh state from peer.
         // Only transient/pending prefixes are purged — static data (users, intents, DKG) is additive.
-        use crate::database::primitives::keys;
         let pending_prefixes = [
             keys::PENDING_TRANSACTION,
             keys::PENDING_DISCONNECTION,
@@ -270,6 +324,8 @@ impl MpcNetworkLayer {
     }
 
     /// Handle a state sync batch: import, then request next batch or next prefix or finish.
+    /// For USER_REGISTRATION entries: only import users that don't already exist locally
+    /// (preserves existing tweaked_secret_share from original DKG signing).
     pub async fn handle_state_sync_batch(
         &mut self,
         swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
@@ -280,11 +336,77 @@ impl MpcNetworkLayer {
         is_last_batch: bool,
     ) -> Result<()> {
         let count = entries.len();
-        let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
-            entries.into_iter().map(|e| (e.key, e.value)).collect();
 
-        if !db_entries.is_empty() {
-            self.db.import_batch_async(db_entries).await?;
+        if prefix == keys::USER_REGISTRATION {
+            // For user entries: merge — only import NEW users, never overwrite existing ones.
+            // Existing users already have the correct tweaked_secret_share computed from
+            // the original DKG; overwriting would destroy it (peer strips tweaked_secret_share).
+            let mut new_entries = Vec::new();
+            let mut skipped = 0usize;
+            for entry in entries {
+                let key_str = String::from_utf8_lossy(&entry.key).to_string();
+                // Check if this user already exists locally with a valid tweaked share
+                match self.db.get_string::<UserRegistration>(&key_str) {
+                    Ok(Some(existing_user)) if existing_user.tweaked_secret_share.is_some() => {
+                        // Local user has valid tweaked share — SKIP import to preserve it
+                        info!(
+                            "🛡️ [STATE_SYNC] Preserving existing user {} (has valid tweaked_secret_share)",
+                            key_str
+                        );
+                        skipped += 1;
+
+                        // However, merge intent_hashes from the peer that might be newer
+                        match bincode::deserialize::<UserRegistration>(&entry.value) {
+                            Ok(incoming_user) => {
+                                let mut merged_user = existing_user;
+                                let mut intents_added = 0usize;
+                                for (hash, status) in incoming_user.intent_hashes {
+                                    if !merged_user.intent_hashes.contains_key(&hash) {
+                                        merged_user.intent_hashes.insert(hash, status);
+                                        intents_added += 1;
+                                    }
+                                }
+                                if intents_added > 0 {
+                                    info!(
+                                        "📋 [STATE_SYNC] Merged {} new intent(s) for existing user {}",
+                                        intents_added, key_str
+                                    );
+                                    if let Ok(merged_bytes) = bincode::serialize(&merged_user) {
+                                        new_entries.push((entry.key, merged_bytes));
+                                        skipped -= 1; // This user will be written (merged, not skipped)
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [STATE_SYNC] Failed to deserialize incoming user {}: {}", key_str, e);
+                            }
+                        }
+                    }
+                    _ => {
+                        // User doesn't exist locally or has no tweaked share — import from peer
+                        info!("📥 [STATE_SYNC] Importing user {} (new or missing tweaked share)", key_str);
+                        new_entries.push((entry.key, entry.value));
+                    }
+                }
+            }
+
+            if skipped > 0 {
+                info!(
+                    "🛡️ [STATE_SYNC] Preserved {} existing user(s) with valid tweaked shares",
+                    skipped
+                );
+            }
+
+            if !new_entries.is_empty() {
+                self.db.import_batch_async(new_entries).await?;
+            }
+        } else {
+            // Non-user entries: import as-is (blind overwrite is fine)
+            let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
+                entries.into_iter().map(|e| (e.key, e.value)).collect();
+            if !db_entries.is_empty() {
+                self.db.import_batch_async(db_entries).await?;
+            }
         }
 
         self.state_sync_state.complete_batch(count);
@@ -329,6 +451,21 @@ impl MpcNetworkLayer {
             "🎉 [STATE_SYNC] State sync completed! Total entries synced: {}",
             self.state_sync_state.entries_synced
         );
+
+        // Compute tweaked_secret_share ONLY for newly imported users (those with None).
+        // Existing users already have valid tweaked shares preserved during merge above.
+        if let Some(ref uim) = self.user_intent_manager {
+            match uim.refresh_missing_user_tweaked_shares().await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("✅ [STATE_SYNC] Computed tweaked shares for {} new user(s) after sync", count);
+                    } else {
+                        info!("✅ [STATE_SYNC] No new users need tweaked share computation");
+                    }
+                }
+                Err(e) => warn!("⚠️ [STATE_SYNC] Failed to compute tweaked shares for new users: {}", e),
+            }
+        }
 
         if !self.vrf_round_requested {
             let current_round = self

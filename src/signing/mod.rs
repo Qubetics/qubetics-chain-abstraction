@@ -4537,6 +4537,81 @@ impl SigningNode {
         canonical_signature_bytes[32..64].copy_from_slice(&s);
         let recid_u8 = recovery_id.to_i32() as u8;
 
+        // Verify aggregated signature against user's group public key
+        {
+            // Get the tx_bytes and user_eth for this slot to compute the digest
+            let slot_data = {
+                let batch = self.pending.user_to_vault_tics_batch.read().await;
+                batch.get(&round).and_then(|entries| {
+                    entries.iter().find(|(h, ..)| h == &slot_id).map(|(_, user_eth, _chain_tx, tx_bytes)| {
+                        (user_eth.clone(), tx_bytes.clone())
+                    })
+                })
+            };
+            if let Some((user_eth, tx_bytes)) = slot_data {
+                // Compute the message digest (keccak256 of unsigned tx bytes)
+                use sha3::Digest;
+                let mut hasher = sha3::Keccak256::new();
+                hasher.update(&tx_bytes);
+                let tx_hash = hasher.finalize();
+
+                info!(
+                    "🔍 [SIGNING] Verifying aggregated signature for slot {} against user {} group key (digest: 0x{})",
+                    slot_id, user_eth, hex::encode(&tx_hash)
+                );
+
+                // Recover the public key from the aggregated signature
+                if let Ok(msg) = Message::from_digest_slice(&tx_hash) {
+                    let secp = Secp256k1::new();
+                    if let Ok(recovered_pk) = secp.recover_ecdsa(&msg, &aggregated_signature) {
+                        let recovered_pk_hex = hex::encode(recovered_pk.serialize());
+                        let pk_uncompressed = recovered_pk.serialize_uncompressed();
+                        let mut keccak = sha3::Keccak256::new();
+                        keccak.update(&pk_uncompressed[1..]);
+                        let hash = keccak.finalize();
+                        let recovered_addr = format!("0x{}", hex::encode(&hash[12..]));
+
+                        info!(
+                            "🔍 [SIGNING] Aggregated signature for slot {} recovers to pubkey: 0x{}, ETH address: {}",
+                            slot_id, recovered_pk_hex, recovered_addr
+                        );
+
+                        // Compare with user's expected group key and derived address
+                        if let Some(ref uim) = self.user_intent_manager {
+                            if let Some(user) = uim.get_user_by_address(&user_eth).await {
+                                if let Some(ref expected_derived) = user.derived_eth_address {
+                                    if recovered_addr.to_lowercase() == expected_derived.to_lowercase() {
+                                        info!(
+                                            "✅ [SIGNING] Aggregated signature verification PASSED for slot {}: recovered {} matches derived {}",
+                                            slot_id, recovered_addr, expected_derived
+                                        );
+                                    } else {
+                                        error!(
+                                            "❌ [SIGNING] Aggregated signature verification FAILED for slot {}: recovered {} != derived {}",
+                                            slot_id, recovered_addr, expected_derived
+                                        );
+                                    }
+                                }
+                                if let Some(ref ugk) = user.user_group_key {
+                                    use k256::elliptic_curve::sec1::ToEncodedPoint;
+                                    let expected_pk_hex = hex::encode(ugk.0.to_encoded_point(true).as_bytes());
+                                    info!(
+                                        "🔍 [SIGNING] User {} group key: 0x{}, recovered pubkey: 0x{}",
+                                        user_eth, expected_pk_hex, recovered_pk_hex
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING] Could not recover public key from aggregated signature for slot {}",
+                            slot_id
+                        );
+                    }
+                }
+            }
+        }
+
         // TICS UserToVault only
         if let Ok(Some(signed_tx_hex)) = self
             .reconstruct_signed_ethereum_transaction_for_batch_slot(

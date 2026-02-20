@@ -2257,6 +2257,28 @@ impl MpcNetworkLayer {
                                 "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
+                            // Revert intent status back to Pending so they can be
+                            // re-picked in the next epoch_3 cycle.
+                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                if let Err(revert_err) = user_intent_manager
+                                    .update_intent_status(
+                                        user_eth_addr,
+                                        intent_hash,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [TICS_UTV_BATCH] Failed to revert intent {} to Pending: {}",
+                                        intent_hash, revert_err
+                                    );
+                                } else {
+                                    info!(
+                                        "🔄 [TICS_UTV_BATCH] Reverted intent {} to Pending after batch signing failure",
+                                        intent_hash
+                                    );
+                                }
+                            }
                         } else {
                             info!(
                                 "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots, coordinated: {})",
@@ -2569,6 +2591,28 @@ impl MpcNetworkLayer {
                                 "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
+                            // Revert intent status back to Pending so they can be
+                            // re-picked in the next epoch_3 cycle.
+                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                if let Err(revert_err) = user_intent_manager
+                                    .update_intent_status(
+                                        user_eth_addr,
+                                        intent_hash,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [BTC_UTV_BATCH] Failed to revert intent {} to Pending: {}",
+                                        intent_hash, revert_err
+                                    );
+                                } else {
+                                    info!(
+                                        "🔄 [BTC_UTV_BATCH] Reverted intent {} to Pending after batch signing failure",
+                                        intent_hash
+                                    );
+                                }
+                            }
                         } else {
                             info!(
                                 "✅ [BTC_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
