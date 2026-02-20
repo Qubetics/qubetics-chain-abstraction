@@ -14,11 +14,13 @@ impl DKGNode {
     pub async fn compute_and_store_all_share_pubkeys(&self) -> Result<()> {
         info!("🔑 [SHARE_PUBKEYS] === Computing and storing all share public keys ===");
 
-        let commitments = self.storage.get_all_commitments().await?;
+        // Use original commitments (permanently stored during DKG, never deleted on disconnect)
+        // to ensure correct aggregation even after network topology changes.
+        let commitments = self.storage.get_all_original_commitments().await?;
         let peer_indices = self.storage.get_peer_indices().await?;
 
         if commitments.is_empty() {
-            return Err(anyhow!("No commitments available - DKG may not be complete"));
+            return Err(anyhow!("No original commitments available - DKG may not be complete"));
         }
 
         // Get vault tweak scalar

@@ -95,15 +95,34 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys skips this peer
-        let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
-        if let Err(e) = self.db.delete_string(&commitment_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
-                peer_id, e
+        // Only delete commitments for non-invulnerable peers (observers).
+        // Invulnerable DKG signers' commitments must be preserved — they are needed
+        // for share pubkey computation and user key derivation even while the signer
+        // is temporarily offline. Signers always rejoin; deleting their commitments
+        // causes wrong aggregated polynomials and address mismatches.
+        let is_invulnerable = self
+            .db
+            .get_string::<Vec<String>>(keys::DKG_INVULNERABLES)
+            .ok()
+            .flatten()
+            .map(|inv| inv.contains(&peer_id.to_string()))
+            .unwrap_or(false);
+
+        if is_invulnerable {
+            info!(
+                "🛡️ [DISCONNECT] Preserving commitments for invulnerable signer {} (DKG commitments never deleted for signers)",
+                peer_id
             );
         } else {
-            info!("✅ [DISCONNECT] Removed commitments for peer {} from database", peer_id);
+            let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
+            if let Err(e) = self.db.delete_string(&commitment_key) {
+                warn!(
+                    "⚠️ [DISCONNECT] Failed to remove commitments for peer {}: {}",
+                    peer_id, e
+                );
+            } else {
+                info!("✅ [DISCONNECT] Removed commitments for observer peer {} from database", peer_id);
+            }
         }
 
         // Update network parameters
