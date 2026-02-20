@@ -1063,7 +1063,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                 // - All others: DKG address balance on target chain >= target_amount
                 let network_address = if is_btc_to_tics {
                     std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                        .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string())
+                        .unwrap_or_else(|_| "0xf798258Eae04159B4aFD8B47749A7E77c4d0Fff0".to_string())
                 } else {
                     // Use DKG group key to derive the network address on the target chain
                     match dkg_storage.get_final_public().await {
@@ -1589,7 +1589,7 @@ async fn fetch_solver_liquidity_from_contract(
     let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
         .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
     let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+        .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
     let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
         .unwrap_or_else(|_| "9029".to_string())
         .parse::<u64>()
@@ -1665,7 +1665,7 @@ async fn fetch_solver_unclaimed_rewards_from_contract(
     let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
         .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
     let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+        .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
     let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
         .unwrap_or_else(|_| "9029".to_string())
         .parse::<u64>()
@@ -2060,7 +2060,7 @@ pub(crate) async fn handle_claim_reward(
         let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+            .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
         let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
             .unwrap_or_else(|_| "9029".to_string())
             .parse::<u64>()
@@ -2422,7 +2422,7 @@ pub(crate) async fn handle_withdraw_liquidity(
 
     let (minimum_liquidity_tics, minimum_liquidity_btc) = if wants_tics || wants_btc {
         let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+            .unwrap_or_else(|_| "0x500A8aD4b9508e2a976a9653EdE00D9eE0a814CE".to_string());
         let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL")
             .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
         let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")

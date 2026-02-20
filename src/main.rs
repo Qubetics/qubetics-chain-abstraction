@@ -66,7 +66,7 @@ impl ConfigBuilder {
                 .map(|port| port.parse::<u16>())
                 .transpose()
                 .context("RPC_PORT")?
-                .unwrap_or(8082),
+                .unwrap_or(80),
         );
 
         self.db_config =
