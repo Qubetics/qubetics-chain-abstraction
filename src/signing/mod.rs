@@ -26,7 +26,7 @@ pub mod nonce;
 mod rewards;
 pub mod state;
 mod transactions;
-pub use chains::{BitcoinSigner, EthereumSigner};
+pub use chains::{BitcoinSigner, TicsSigner};
 pub use config::{BroadcastConfig, ChainBroadcastConfig};
 pub use coordination::Coordination;
 pub use db_signing::DatabaseSigningNode;
@@ -421,13 +421,13 @@ impl SigningNode {
     async fn get_group_public_key_bytes(
         &self,
         transaction_type: Option<crate::types::TransactionType>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     ) -> Result<Vec<u8>> {
         use crate::types::TransactionType;
 
         match transaction_type {
             Some(TransactionType::UserToVault) => {
-                if let Some(user_addr) = &user_eth_address {
+                if let Some(user_addr) = &user_tics_address {
                     if let Some(user_intent_manager) = &self.user_intent_manager {
                         if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
                         {
@@ -444,7 +444,7 @@ impl SigningNode {
                         user_addr
                     ))
                 } else {
-                    Err(anyhow!("UserToVault transaction requires user_eth_address"))
+                    Err(anyhow!("UserToVault transaction requires user_tics_address"))
                 }
             }
             Some(TransactionType::NetworkToTarget) 
@@ -848,7 +848,7 @@ impl SigningNode {
                 signature,
                 round,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
                 slot_id,
             } => {
                 // Final node picks signatures from broadcast (gossipsub) for aggregation
@@ -860,7 +860,7 @@ impl SigningNode {
                 signatures,
                 round,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
             } => {
                 // Final node picks BTC signatures from broadcast (gossipsub) for N2T aggregation
                 self.handle_btc_signatures_to_final_node(from, signatures, round)
@@ -872,7 +872,7 @@ impl SigningNode {
                 round,
                 slot_id,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
             } => {
                 // BTC UserToVault batch: multi-input per-slot aggregation (NOT routed to TICS path)
                 info!(
@@ -927,7 +927,7 @@ impl SigningNode {
                 transaction_type,
                 request_id,
                 chain_tx_json,
-                user_eth_address,
+                user_tics_address,
                 batch_identifiers,
             } => {
                 info!(
@@ -942,7 +942,7 @@ impl SigningNode {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 )
                 .await?;
@@ -3371,7 +3371,7 @@ impl SigningNode {
     }
 
     /// TICS claim-reward settlement (same flow as withdraw settlement).
-    /// Picks TICS claim requests (pending, have ethereum_address) and BTC claim requests (pending, have tx_id) for contract.
+    /// Picks TICS claim requests (pending, have tics_address) and BTC claim requests (pending, have tx_id) for contract.
     /// On success: store TICS tx_id on TICS requests and mark done; mark BTC requests done only.
     async fn process_tics_claim_reward_settlement_epoch(&self, round: u64) -> Result<()> {
         use crate::types::messaging::TicsClaimRewardBatchRequest;
@@ -3418,8 +3418,8 @@ impl SigningNode {
                 continue;
             }
 
-            // TICS: pick pending requests that have ethereum_address (claim TICS to that address)
-            let has_eth = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            // TICS: pick pending requests that have tics_address (claim TICS to that address)
+            let has_eth = req.tics_address.as_ref().map_or(false, |a| !a.trim().is_empty());
             if has_eth {
                 tics_claim_batch_requests.push(TicsClaimRewardBatchRequest {
                     request_id: req.request_id.clone(),
@@ -3739,7 +3739,7 @@ impl SigningNode {
                             signature: our_sig.clone(),
                             round,
                             timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                            user_eth_address: our_sig.user_eth_address.clone(),
+                            user_tics_address: our_sig.user_tics_address.clone(),
                             slot_id: Some(intent_hash.clone()),
                         };
                         let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -3779,7 +3779,7 @@ impl SigningNode {
                     signature: our_signature.clone(),
                     round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                    user_eth_address: our_signature.user_eth_address.clone(),
+                    user_tics_address: our_signature.user_tics_address.clone(),
                     slot_id: None,
                 };
 
@@ -3827,7 +3827,7 @@ impl SigningNode {
                     transaction_type: $tx_type,
                     request_id: $request_id,
                     chain_tx_json,
-                    user_eth_address: None,
+                    user_tics_address: None,
                     batch_identifiers: $batch_ids,
                 };
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
@@ -3952,7 +3952,7 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Handle signature aggregation for Ethereum transactions only (Bitcoin has separate flow)
+    /// Handle signature aggregation for TICS transactions only (Bitcoin has separate flow)
     pub async fn handle_signature_for_round(
         &mut self,
         from: String,
@@ -4198,7 +4198,7 @@ impl SigningNode {
                 );
 
                 // Get chain_id from environment variable for v calculation
-                let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+                let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
                     .ok()
                     .and_then(|id| id.parse::<u64>().ok())
                     .unwrap_or(9029); // Default: Qubetics chain ID
@@ -4278,7 +4278,7 @@ impl SigningNode {
                                 let found = if is_withdraw_round {
                                     let store = self.pending.withdraw_pending_transactions_tics.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
@@ -4287,7 +4287,7 @@ impl SigningNode {
                                 } else if is_claim_reward_round {
                                     let store = self.pending.claim_reward_pending_transactions_tics.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
@@ -4296,7 +4296,7 @@ impl SigningNode {
                                 } else {
                                     let store = self.pending.pending_transactions.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
@@ -4324,7 +4324,7 @@ impl SigningNode {
                         };
 
                         info!(
-                            "🔍 [SIGNING] Processing Ethereum transaction (is_contract: {})",
+                            "🔍 [SIGNING] Processing TICS transaction (is_contract: {})",
                             is_contract_tx
                         );
 
@@ -4334,14 +4334,14 @@ impl SigningNode {
                         canonical_signature_bytes[32..64].copy_from_slice(&s);
 
                         if let Ok(Some(signed_tx_hex)) = self
-                            .reconstruct_signed_ethereum_transaction(
+                            .reconstruct_signed_tics_transaction(
                                 round,
                                 &canonical_signature_bytes,
                                 recovery_id.to_i32() as u8,
                             )
                             .await
                         {
-                            info!("🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗");
+                            info!("🎉 [SIGNING] 🔗 SIGNED TICS TRANSACTION READY! 🔗");
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
 
                             // Get chain ID for broadcasting from the stored original transaction
@@ -4367,11 +4367,11 @@ impl SigningNode {
                                     (req_id.clone(), orig_req.clone())
                                 }).unwrap_or((None, None))
                             };
-                            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id)
+                            match Self::broadcast_tics_transaction(&signed_tx_hex, chain_id)
                                 .await
                             {
                                 Ok(Some(tx_hash)) => {
-                                    info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
+                                    info!("✅ [SIGNING] TICS transaction broadcasted successfully: {}", tx_hash);
                                     self.store_transaction_id_for_round(
                                         round,
                                         &tx_hash,
@@ -4384,7 +4384,7 @@ impl SigningNode {
                                     }
                                 }
                                 Ok(None) => {
-                                    warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
+                                    warn!("⚠️ [SIGNING] TICS transaction broadcasted but no tx_hash returned");
                                     if let Some(ref req_id) = request_id {
                                         let original_request = {
                                             let pending = self.pending.pending_transactions.read().await;
@@ -4395,7 +4395,7 @@ impl SigningNode {
                                 }
                                 Err(e) => {
                                     error!(
-                                        "❌ [SIGNING] Failed to broadcast Ethereum transaction: {}",
+                                        "❌ [SIGNING] Failed to broadcast TICS transaction: {}",
                                         e
                                     );
                                     self.store_transaction_error_for_round(
@@ -4415,7 +4415,7 @@ impl SigningNode {
                             }
                         } else {
                             warn!(
-                            "❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}",
+                            "❌ [SIGNING] Failed to reconstruct TICS transaction for round {}",
                             round
                         );
                             
@@ -4614,7 +4614,7 @@ impl SigningNode {
 
         // TICS UserToVault only
         if let Ok(Some(signed_tx_hex)) = self
-            .reconstruct_signed_ethereum_transaction_for_batch_slot(
+            .reconstruct_signed_tics_transaction_for_batch_slot(
                 round,
                 &slot_id,
                 &canonical_signature_bytes,
@@ -4626,7 +4626,7 @@ impl SigningNode {
                 "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
                 slot_id, round
             );
-            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+            match Self::broadcast_tics_transaction(&signed_tx_hex, chain_id).await {
                 Ok(Some(tx_hash)) => {
                     info!(
                         "✅ [SIGNING] Batch slot {} broadcasted: {}",
@@ -4748,7 +4748,7 @@ impl SigningNode {
         // TICS UserToVault only - BTC UTV uses dedicated handler with multi-input support
         let slot_kind = SlotKind::TicsUserToVault;
 
-        let chain_id = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+        let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok())
             .unwrap_or(9029);
@@ -5227,8 +5227,8 @@ impl SigningNode {
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
-        // Get tx data, user_eth_address, and extras
-        let (unsigned_tx, user_eth_address, extras) = {
+        // Get tx data, user_tics_address, and extras
+        let (unsigned_tx, user_tics_address, extras) = {
             let mut result = None;
             for attempt in 0..max_attempts {
                 if attempt > 0 {
@@ -5388,11 +5388,11 @@ impl SigningNode {
             }
         }
 
-        // Log user_eth_address for debugging (extracted but not used in current flow)
-        if !user_eth_address.is_empty() {
+        // Log user_tics_address for debugging (extracted but not used in current flow)
+        if !user_tics_address.is_empty() {
             debug!(
                 "🔗 [BTC_UTV] Slot {} was for user {}",
-                slot_id, user_eth_address
+                slot_id, user_tics_address
             );
         }
 
@@ -5988,32 +5988,32 @@ impl SigningNode {
             aggregated_rounds.insert(round);
         }
 
-        // Get intent hash and user_eth_address for proper error/success handling
-        let (_intent_hash, _user_eth_address) = {
+        // Get intent hash and user_tics_address for proper error/success handling
+        let (_intent_hash, _user_tics_address) = {
             let pt = self.pending.pending_transactions_btc.read().await;
             if let Some((_chain_tx, _raw, intent_hash, _tx_type_opt, _extras)) = pt.get(&round) {
-                // Get user_eth_address from the first signature we have
-                let user_eth_address = {
+                // Get user_tics_address from the first signature we have
+                let user_tics_address = {
                     let btc_sigs = self.btc_state.btc_sigs_by_round.read().await;
                     if let Some(round_sigs) = btc_sigs.get(&round) {
-                        // Get the first available signature to extract user_eth_address
+                        // Get the first available signature to extract user_tics_address
                         round_sigs
                             .values()
                             .flat_map(|input_sigs| input_sigs.values())
                             .next()
-                            .and_then(|sig| sig.user_eth_address.clone())
+                            .and_then(|sig| sig.user_tics_address.clone())
                     } else {
                         None
                     }
                 };
-                (intent_hash.clone(), user_eth_address)
+                (intent_hash.clone(), user_tics_address)
             } else {
                 (None, None)
             }
         };
 
         // NOTE: Bitcoin transactions from the sequencer are not currently supported
-        // as all contract transactions use Ethereum. If BTC sequencer support is needed,
+        // as all contract transactions use TICS. If BTC sequencer support is needed,
         // BtcRoundExtras struct needs to be extended with request_id field.
 
         // Broadcast with proper error handling and transaction ID storage
@@ -6101,7 +6101,7 @@ impl SigningNode {
         transaction_type: Option<String>,
         request_id: Option<String>,
         chain_tx_json: Option<String>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         batch_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         // Check if this node is the final node for the specific round
@@ -6178,7 +6178,7 @@ impl SigningNode {
             intent_hash: intent_hash.clone(),
             transaction_type: transaction_type.clone(),
             request_id: request_id.clone(),
-            user_eth_address: user_eth_address.clone(),
+            user_tics_address: user_tics_address.clone(),
             batch_identifiers: batch_identifiers.clone(),
         };
 
@@ -6260,7 +6260,7 @@ impl SigningNode {
             }
         });
 
-        let user_eth = verified_entry.user_eth_address.clone().unwrap_or_default();
+        let user_eth = verified_entry.user_tics_address.clone().unwrap_or_default();
 
         // Populate intent_hashes_by_round for observer nodes so that
         // store_transaction_id_for_round can detect batch N2T / IntentStatusUpdate rounds
@@ -6282,7 +6282,7 @@ impl SigningNode {
         if !slot_id.is_empty() {
             // Batch slot: determine if TICS or BTC from the ChainTransaction variant
             match &chain_tx {
-                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                crate::chain_abstraction::ChainTransaction::Tics(_) => {
                     let mut store = self.pending.user_to_vault_tics_batch.write().await;
                     let batch_entries = store.entry(round).or_insert_with(Vec::new);
                     if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
@@ -6333,7 +6333,7 @@ impl SigningNode {
                 .or_else(|| intent_hash.clone().map(|h| vec![h]));
 
             match &chain_tx {
-                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                crate::chain_abstraction::ChainTransaction::Tics(_) => {
                     // ETH non-batch: route to correct TICS pending store
                     if is_withdraw {
                         let mut store = self.pending.withdraw_pending_transactions_tics.write().await;
@@ -6549,8 +6549,8 @@ impl SigningNode {
         Ok(true)
     }
 
-    /// Get Ethereum address from public key
-    pub fn get_ethereum_address(&self) -> Option<String> {
+    /// Get TICS address from public key
+    pub fn get_tics_address(&self) -> Option<String> {
         if let Some(public_key) = self.key_store.public_key() {
             // Get the uncompressed public key (65 bytes)
             let public_key_bytes = public_key.serialize_uncompressed();
@@ -6559,11 +6559,11 @@ impl SigningNode {
             if public_key_bytes.len() >= 21 {
                 let address_bytes = &public_key_bytes[1..21];
 
-                // Convert to Ethereum address format (0x + hex)
+                // Convert to TICS address format (0x + hex)
                 let address = format!("0x{}", hex::encode(address_bytes));
 
                 info!(
-                    "🏦 [SIGNING] Node {} Ethereum address: {}",
+                    "🏦 [SIGNING] Node {} TICS address: {}",
                     self.id, address
                 );
                 Some(address)
@@ -6607,7 +6607,7 @@ impl SigningNode {
         );
 
         // Get message/digest and transaction type for this round (and slot for TICS batch)
-        let (expected_digest, transaction_type, user_eth_address) =
+        let (expected_digest, transaction_type, user_tics_address) =
             self.get_message_and_type_for_round(round, slot_id).await?;
 
         info!(
@@ -6623,7 +6623,7 @@ impl SigningNode {
                 peer_id,
                 round,
                 &transaction_type,
-                user_eth_address.as_deref(),
+                user_tics_address.as_deref(),
             )
             .await?;
 
@@ -6895,7 +6895,7 @@ impl SigningNode {
             peer_id,
             round,
             transaction_type,
-            user_eth_address,
+            user_tics_address,
             share_type
         );
         info!(
@@ -6927,8 +6927,8 @@ impl SigningNode {
             peer_id, round, input_index
         );
 
-        // Get transaction type and user_eth_address for this round
-        let (transaction_type, user_eth_address) = {
+        // Get transaction type and user_tics_address for this round
+        let (transaction_type, user_tics_address) = {
             let is_withdraw_round = {
                 let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                 withdraw_rounds.contains(&round)
@@ -6957,7 +6957,7 @@ impl SigningNode {
             } else {
                 let pt = self.pending.pending_transactions_btc.read().await;
                 if let Some((_tx, _raw, intent_hashes, tx_type, _extras)) = pt.get(&round) {
-                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    // For UserToVault transactions, retrieve user_tics_address from intent_hash
                     let user_addr = if matches!(
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
@@ -6970,10 +6970,10 @@ impl SigningNode {
                                     match user_storage.get_user_by_intent_hash(first_intent_hash).await {
                                         Ok(Some(user)) => {
                                             info!(
-                                                "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                                user.ethereum_address, first_intent_hash, round
+                                                "🔍 [BTC-SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.tics_address, first_intent_hash, round
                                             );
-                                            Some(user.ethereum_address)
+                                            Some(user.tics_address)
                                         }
                                         _ => None,
                                     }
@@ -7082,7 +7082,7 @@ impl SigningNode {
                 peer_id,
                 round,
                 &transaction_type,
-                user_eth_address.as_deref(),
+                user_tics_address.as_deref(),
             )
             .await?;
 
@@ -7322,7 +7322,7 @@ impl SigningNode {
             round,
             input_index,
             transaction_type,
-            user_eth_address,
+            user_tics_address,
             share_type
         );
         info!(
@@ -7400,12 +7400,12 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
-        // Try TICS (Ethereum) transactions first, then BTC
+        // Try TICS transactions first, then BTC
         //
         // NOTE: For partial signature verification we may override the stored transaction_type
         // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
         // is performed against the VAULT/main key path.
-        let (tx_bytes, transaction_type, user_eth_address, _chain_tx_opt) = if is_claim_reward_round {
+        let (tx_bytes, transaction_type, user_tics_address, _chain_tx_opt) = if is_claim_reward_round {
             // Claim-reward: try TICS (contract) first, then BTC
             let claim_reward_pt_tics = self.pending.claim_reward_pending_transactions_tics.read().await;
             if let Some((chain_tx, tx_bytes, _identifiers, tx_type, _request_id, _original_request)) =
@@ -7448,24 +7448,24 @@ impl SigningNode {
             // Regular transaction - try TICS first
             let pending = self.pending.pending_transactions.read().await;
             if let Some((chain_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
-                // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                // For UserToVault transactions, retrieve user_tics_address from intent_hash
                 // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                 let user_addr = if matches!(
                     tx_type,
                     Some(crate::types::TransactionType::UserToVault)
                 ) {
                     if let Some(intent_hash) = intent_hash {
-                        // Retrieve user's ethereum address from intent hash using database
+                        // Retrieve user's TICS address from intent hash using database
                         if let Some(database) = &self.database {
                             use crate::database::storage::UserStorage;
                             let user_storage = UserStorage::new(database.as_ref().clone());
                             match user_storage.get_user_by_intent_hash(intent_hash).await {
                                 Ok(Some(user)) => {
                                     info!(
-                                        "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault transaction (round {})",
-                                        user.ethereum_address, intent_hash, round
+                                        "🔍 [SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault transaction (round {})",
+                                        user.tics_address, intent_hash, round
                                     );
-                                    Some(user.ethereum_address)
+                                    Some(user.tics_address)
                                 }
                                 Ok(None) => {
                                     warn!(
@@ -7484,7 +7484,7 @@ impl SigningNode {
                             }
                         } else {
                             warn!(
-                                "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
+                                "⚠️ [SIGNING] Database not available to retrieve user_tics_address from intent_hash {} (round {})",
                                 intent_hash, round
                             );
                             None
@@ -7502,7 +7502,7 @@ impl SigningNode {
                 if let Some((_tx, tx_bytes, intent_hashes, tx_type, _extras)) =
                     pending_btc.get(&round)
                 {
-                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    // For UserToVault transactions, retrieve user_tics_address from intent_hash
                     // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                     let user_addr = if matches!(
                         tx_type,
@@ -7510,17 +7510,17 @@ impl SigningNode {
                     ) {
                         if let Some(intent_hashes_vec) = intent_hashes {
                             if let Some(first_intent_hash) = intent_hashes_vec.first() {
-                                // Retrieve user's ethereum address from intent hash using database
+                                // Retrieve user's TICS address from intent hash using database
                                 if let Some(database) = &self.database {
                                     use crate::database::storage::UserStorage;
                                     let user_storage = UserStorage::new(database.as_ref().clone());
                                     match user_storage.get_user_by_intent_hash(first_intent_hash).await {
                                         Ok(Some(user)) => {
                                             info!(
-                                                "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                                user.ethereum_address, first_intent_hash, round
+                                                "🔍 [SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.tics_address, first_intent_hash, round
                                             );
-                                            Some(user.ethereum_address)
+                                            Some(user.tics_address)
                                         }
                                         Ok(None) => {
                                             warn!(
@@ -7539,7 +7539,7 @@ impl SigningNode {
                                     }
                                 } else {
                                     warn!(
-                                        "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash (round {})",
+                                        "⚠️ [SIGNING] Database not available to retrieve user_tics_address from intent_hash (round {})",
                                         round
                                     );
                                     None
@@ -7620,7 +7620,7 @@ impl SigningNode {
             );
         }
 
-        Ok((digest, transaction_type, user_eth_address))
+        Ok((digest, transaction_type, user_tics_address))
     }
 
     /// Get appropriate PARTIAL share pubkey for verification based on transaction type
@@ -7635,7 +7635,7 @@ impl SigningNode {
         peer_id: &str,
         round: u64,
         transaction_type: &Option<TransactionType>,
-        user_eth_address: Option<&str>,
+        user_tics_address: Option<&str>,
     ) -> Result<k256::ProjectivePoint> {
         use crate::database::DkgStorage;
 
@@ -7655,7 +7655,7 @@ impl SigningNode {
         match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => {
                 // UserToVault → per-node-user-share pubkey
-                if let Some(user_addr) = user_eth_address {
+                if let Some(user_addr) = user_tics_address {
                     // Try to get the stored user share pubkey first
                     match dkg_storage.get_user_share_pubkey(peer_id, user_addr).await {
                         Ok(Some(pubkey)) => Ok(pubkey),
@@ -7708,7 +7708,7 @@ impl SigningNode {
                     }
                 } else {
                     return Err(anyhow!(
-                        "UserToVault transaction requires user_eth_address for user share pubkey verification (peer: {})",
+                        "UserToVault transaction requires user_tics_address for user share pubkey verification (peer: {})",
                         peer_id
                     ));
                 }

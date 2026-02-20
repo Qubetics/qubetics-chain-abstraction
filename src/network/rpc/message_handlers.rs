@@ -66,7 +66,7 @@ impl MpcNetworkLayer {
                 {
                     if let Err(e) = user_intent_manager
                         .update_intent_status(
-                            &user.ethereum_address,
+                            &user.tics_address,
                             intent_hash,
                             crate::types::IntentStatus::Solved,
                         )
@@ -80,7 +80,7 @@ impl MpcNetworkLayer {
                     } else {
                         info!(
                             "✅ [INTENT_STATUS_UPDATE] Marked intent {} as Solved for user {}",
-                            intent_hash, user.ethereum_address
+                            intent_hash, user.tics_address
                         );
                     }
                 } else {
@@ -567,7 +567,7 @@ impl MpcNetworkLayer {
                 };
                 if let Some(mut req) = maybe_req {
                     let is_tics_req = req
-                        .ethereum_address
+                        .tics_address
                         .as_ref()
                         .map_or(false, |a| !a.trim().is_empty());
                     if is_tics_req {
@@ -614,7 +614,7 @@ impl MpcNetworkLayer {
                 };
                 for (key, mut req) in entries {
                     let is_tics_req = req
-                        .ethereum_address
+                        .tics_address
                         .as_ref()
                         .map_or(false, |a| !a.trim().is_empty());
                     if is_tics_req {

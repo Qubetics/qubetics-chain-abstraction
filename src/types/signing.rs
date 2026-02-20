@@ -7,7 +7,7 @@ pub struct ECDSASignature {
     pub signer_id: String,
     pub recovery_id: u8,
     /// Optional ETH address context
-    pub user_eth_address: Option<String>,
+    pub user_tics_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +54,7 @@ pub enum SigningMessage {
         signature: ECDSASignature,
         round: u64,
         timestamp: u128,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         /// For TICS UserToVault batch: intent_hash slot. When set, store/aggregate by (round, slot_id).
         slot_id: Option<String>,
     },
@@ -63,7 +63,7 @@ pub enum SigningMessage {
         signatures: Vec<BtcIndexedSignature>,
         round: u64,
         timestamp: u128,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     },
     /// BTC UserToVault batch: per-slot multi-input signatures.
     /// Each slot (intent) can have multiple inputs (UTXOs).
@@ -73,7 +73,7 @@ pub enum SigningMessage {
         round: u64,
         slot_id: String, // intent_hash - identifies which slot in the batch
         timestamp: u128,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     },
     SignedMessage {
         from: String,
@@ -103,7 +103,7 @@ pub enum SigningMessage {
         chain_tx_json: Option<String>,
         /// User ETH address associated with this slot (for batch slot reconstruction).
         #[serde(default)]
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         /// Full batch identifiers for withdraw/claim-reward batches.
         /// Each entry is "request_id|solver_address". Needed so observer final nodes
         /// can broadcast tx_id updates for ALL requests in the batch after broadcast.

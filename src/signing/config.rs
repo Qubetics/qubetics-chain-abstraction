@@ -39,9 +39,9 @@ impl Default for BroadcastConfig {
         let is_testnet = network_cfg::network_type().is_testnet();
         let mut chain_configs = HashMap::new();
 
-        // Default Ethereum configuration
+        // Default TICS configuration
         chain_configs.insert(
-            "ethereum".to_string(),
+            "tics".to_string(),
             ChainBroadcastConfig {
                 enabled: true,
                 rpc_url: String::new(),
@@ -112,13 +112,13 @@ impl BroadcastConfig {
         }
 
         // Load chain-specific configurations
-        if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+        if let Some(eth_config) = config.chain_configs.get_mut("tics") {
             eth_config.rpc_url = network_cfg::qubetics_rpc_url_from_env()
                 .expect("Unable to determine MPC_ETHEREUM_RPC_URL for Qubetics chain");
         }
 
-        if let Ok(chain_id) = std::env::var("MPC_ETHEREUM_CHAIN_ID") {
-            if let Some(eth_config) = config.chain_configs.get_mut("ethereum") {
+        if let Ok(chain_id) = std::env::var("MPC_TICS_CHAIN_ID") {
+            if let Some(eth_config) = config.chain_configs.get_mut("tics") {
                 eth_config.chain_id = chain_id.parse().unwrap_or(9029);
             }
         }

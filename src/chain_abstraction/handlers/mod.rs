@@ -6,10 +6,10 @@ use crate::types::DummyTransaction;
 use crate::chain_abstraction::transactions::{ChainSignature, ChainTransaction};
 
 pub mod bitcoin;
-pub mod ethereum;
+pub mod tics;
 
 pub use bitcoin::BitcoinChainHandler;
-pub use ethereum::EthereumChainHandler;
+pub use tics::TicsChainHandler;
 
 /// Trait for chain-specific operations used by signing nodes
 pub trait ChainHandler: Send + Sync {
@@ -39,7 +39,7 @@ pub trait ChainHandler: Send + Sync {
     /// Convert from legacy DummyTransaction (for backward compatibility)
     fn from_dummy_transaction(&self, dummy_tx: &DummyTransaction) -> Result<ChainTransaction>;
 
-    /// Get chain-specific parameters (e.g., chain ID for Ethereum)
+    /// Get chain-specific parameters (e.g., chain ID for TICS)
     fn get_chain_params(&self) -> HashMap<String, String>;
 
     /// Downcast to concrete type for type-specific operations

@@ -237,7 +237,7 @@ impl ChainHandler for BitcoinChainHandler {
 
     fn create_transaction_bytes_contract(&self, transaction: &ChainTransaction) -> Result<Vec<u8>> {
         match transaction {
-            ChainTransaction::Ethereum(eth_tx) => {
+            ChainTransaction::Tics(eth_tx) => {
                 if let Some(data) = &eth_tx.data {
                     let contract_tx = ContractTransaction {
                         to: eth_tx.to.clone(),
@@ -260,7 +260,7 @@ impl ChainHandler for BitcoinChainHandler {
                 }
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid transaction type for Ethereum handler"
+                "Invalid transaction type for Bitcoin handler"
             )),
         }
     }

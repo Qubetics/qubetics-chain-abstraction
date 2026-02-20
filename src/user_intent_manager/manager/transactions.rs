@@ -84,7 +84,7 @@ impl UserIntentManager {
                     // Update intent status to Solved
                     if let Err(e) = self
                         .user_storage
-                        .update_intent_status(&user.ethereum_address, intent_hash, IntentStatus::Solved)
+                        .update_intent_status(&user.tics_address, intent_hash, IntentStatus::Solved)
                         .await
                     {
                         error!(
@@ -96,7 +96,7 @@ impl UserIntentManager {
                         info!(
                             "✅ [DB_USER_REGISTRY] Marked intent {} as Solved for user {} (TICS transaction)",
                             intent_hash,
-                            user.ethereum_address
+                            user.tics_address
                         );
                     }
                 } else {
@@ -268,7 +268,7 @@ impl UserIntentManager {
 
     /// Get intents that have not yet completed UserToVault (no user_to_network_tx_id),
     /// filtered by source chain. Used by the final node to pick a batch for TICS/BTC UserToVault signing.
-    /// Returns (intent_hash, intent, user_eth_address) for each intent; only intents with a
+    /// Returns (intent_hash, intent, user_tics_address) for each intent; only intents with a
     /// registered user are included.
     /// - `batched_only`: None or Some(false) → only intents with status Pending are included.
     /// - `batched_only`: Some(true) → only intents with status Batched and no user_to_network_tx_id are included.
@@ -332,7 +332,7 @@ impl UserIntentManager {
                     if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
                         let _ = self
                             .update_intent_status(
-                                &user.ethereum_address,
+                                &user.tics_address,
                                 &intent_hash,
                                 IntentStatus::Rejected,
                             )
@@ -364,7 +364,7 @@ impl UserIntentManager {
                     }
                 }
                 seen_source_addresses.insert(source_addr_lower);
-                out.push((intent_hash, intent, user.ethereum_address));
+                out.push((intent_hash, intent, user.tics_address));
             }
         }
         out

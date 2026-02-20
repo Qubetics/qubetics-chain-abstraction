@@ -42,7 +42,7 @@ pub struct TicsWithdrawBatchRequest {
 }
 
 /// Per-request metadata for TICS claim-reward batches (mirrors TicsWithdrawBatchRequest).
-/// - TICS: pending claims with ethereum_address; contract pays TICS; on success store tx_id and mark done.
+/// - TICS: pending claims with tics_address; contract pays TICS; on success store tx_id and mark done.
 /// - BTC: pending claims that already have tx_id; include to register on contract; on success mark done only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TicsClaimRewardBatchRequest {
@@ -67,8 +67,8 @@ pub enum ChannelMessage {
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
-        /// User's Ethereum address - required for UserToVault deposits
-        user_eth_address: String,
+        /// User's TICS address - required for UserToVault deposits
+        user_tics_address: String,
         transaction_type: TransactionType,
         amount: u128,
         /// Pre-computed target amount (converted from source amount via price feed).
@@ -302,7 +302,7 @@ pub enum ChannelMessage {
         request: PendingWithdrawRequest,
     },
     UserRegistration {
-        ethereum_address: String,
+        tics_address: String,
         node_id: String,
     },
     ScheduledDKGStart,
@@ -387,8 +387,8 @@ pub enum GossipsubMessage {
     DepositIntent {
         intent: DepositIntent,
         intent_id: String,
-        /// User's Ethereum address - required for UserToVault deposits
-        user_eth_address: String,
+        /// User's TICS address - required for UserToVault deposits
+        user_tics_address: String,
         /// Note: Gossiped DepositIntent is always processed as UserToVault
         amount: u128,
         /// Signature over the serialized intent (required for gossip-level verification)
@@ -434,7 +434,7 @@ pub enum GossipsubMessage {
         nonce_tuple_id: Option<String>,
     },
     UserRegistration {
-        ethereum_address: String,
+        tics_address: String,
         timestamp: i64,
         node_id: String,
     },

@@ -47,12 +47,12 @@ async function testGetMainAddresses() {
     log(`   Status: ${response.data.status}`, 'cyan');
     log(`   Message: ${response.data.message}`, 'cyan');
     
-    if (response.data.ethereum_address) {
-      log(`   Ethereum Address: ${response.data.ethereum_address}`, 'green');
+    if (response.data.tics_address) {
+      log(`   TICS Address: ${response.data.tics_address}`, 'green');
     } else {
-      log(`   Ethereum Address: Not available`, 'yellow');
+      log(`   TICS Address: Not available`, 'yellow');
     }
-    
+
     if (response.data.btc_address) {
       log(`   Bitcoin Address: ${response.data.btc_address}`, 'green');
     } else {
@@ -103,12 +103,12 @@ async function testGetVaultAddresses() {
     log(`   Status: ${response.data.status}`, 'cyan');
     log(`   Message: ${response.data.message}`, 'cyan');
     
-    if (response.data.ethereum_address) {
-      log(`   Ethereum Address: ${response.data.ethereum_address}`, 'green');
+    if (response.data.tics_address) {
+      log(`   TICS Address: ${response.data.tics_address}`, 'green');
     } else {
-      log(`   Ethereum Address: Not available`, 'yellow');
+      log(`   TICS Address: Not available`, 'yellow');
     }
-    
+
     if (response.data.btc_address) {
       log(`   Bitcoin Address: ${response.data.btc_address}`, 'green');
     } else {

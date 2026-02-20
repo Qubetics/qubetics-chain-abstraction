@@ -3,7 +3,7 @@ use once_cell::sync::OnceCell;
 
 /// Environment variable that selects the operational network.
 pub const NETWORK_ENV_KEY: &str = "NETWORK_TYPE";
-/// Optional RPC override for Qubetics/Ethereum endpoints.
+/// Optional RPC override for Qubetics/TICS endpoints.
 pub const ETH_RPC_ENV_KEY: &str = "MPC_ETHEREUM_RPC_URL";
 
 static NETWORK_TYPE: OnceCell<NetworkType> = OnceCell::new();

@@ -18,7 +18,7 @@ pub use chain::bitcoin::{
     BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
     BitcoinWitnessInput, BitcoinWitnessUtxo, SpendKind, UtxoStatus,
 };
-pub use chain::ethereum::{encode_hex_to_bytes, RlpEncoder};
+pub use chain::tics::{encode_hex_to_bytes, RlpEncoder};
 pub use consensus::{ConsensusMessage, ConsensusResult};
 pub use deterministic_selection::{
     DeterministicSelectionMessage, DeterministicSelectionResult, FinalNodeSelection,

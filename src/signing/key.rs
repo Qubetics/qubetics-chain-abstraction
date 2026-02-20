@@ -74,7 +74,7 @@ impl KeyStore {
         self.public_key = Some(public_key);
 
         info!(
-            "🔐 [SIGNING] Node {} private key set from scalar with proper Ethereum conversion",
+            "🔐 [SIGNING] Node {} private key set from scalar with proper TICS conversion",
             id
         );
         Ok(())
@@ -141,12 +141,12 @@ impl KeyStore {
     pub async fn get_group_public_key_bytes(
         &self,
         transaction_type: Option<TransactionType>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         user_intent_manager: Option<&Arc<UserIntentManager>>,
     ) -> Result<Vec<u8>> {
         match transaction_type {
             Some(TransactionType::UserToVault) => {
-                if let Some(user_addr) = &user_eth_address {
+                if let Some(user_addr) = &user_tics_address {
                     if let Some(user_intent_manager) = user_intent_manager {
                         if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
                         {
@@ -175,7 +175,7 @@ impl KeyStore {
                         ))
                     }
                 } else {
-                    Err(anyhow!("UserToVault transaction requires user_eth_address"))
+                    Err(anyhow!("UserToVault transaction requires user_tics_address"))
                 }
             }
             Some(TransactionType::NetworkToTarget)

@@ -63,9 +63,9 @@ mod tests {
     async fn parallel_deposit_chain_handlers_remain_isolated() {
         let evm_handler = tokio::spawn(async {
             let chain_id =
-                crate::utils::transaction::get_chain_id_from_name("ethereum").expect("chain id");
+                crate::utils::transaction::get_chain_id_from_name("tics").expect("chain id");
             let handler: Arc<dyn ChainHandler> =
-                ChainHandlerFactory::create_ethereum_handler(chain_id).into();
+                ChainHandlerFactory::create_tics_handler(chain_id).into();
             handler
         });
 
@@ -83,7 +83,7 @@ mod tests {
         let evm_handler = evm_handler.expect("evm task");
         let btc_handler = btc_handler.expect("btc task");
 
-        assert_eq!(evm_handler.chain_type(), "ethereum");
+        assert_eq!(evm_handler.chain_type(), "tics");
         assert_eq!(btc_handler.chain_type(), "bitcoin");
         assert!(!Arc::ptr_eq(&evm_handler, &btc_handler));
     }
@@ -2151,7 +2151,7 @@ impl MpcNetworkLayer {
             ChannelMessage::DepositIntent {
                 intent,
                 intent_id,
-                user_eth_address,
+                user_tics_address,
                 transaction_type,
                 amount,
                 target_amount,
@@ -2212,7 +2212,7 @@ impl MpcNetworkLayer {
                     // Store the intent itself
                     if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
                         if let Err(e) = uim
-                            .store_intent_hash(intent_hash_bytes, &user_eth_address, &intent)
+                            .store_intent_hash(intent_hash_bytes, &user_tics_address, &intent)
                             .await
                         {
                             warn!(
@@ -2236,7 +2236,7 @@ impl MpcNetworkLayer {
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
                     intent: intent.clone(),
                     intent_id: intent_id.clone(),
-                    user_eth_address: user_eth_address.clone(),
+                    user_tics_address: user_tics_address.clone(),
                     amount,
                     signature: signature.clone(),
                 };
@@ -2495,12 +2495,12 @@ impl MpcNetworkLayer {
             }
             
             ChannelMessage::UserRegistration {
-                ethereum_address,
+                tics_address,
                 node_id,
             } => {
                 info!(
                     "👤 [NETWORK] Broadcasting user registration: {} from node {}",
-                    ethereum_address, node_id
+                    tics_address, node_id
                 );
 
                 // Directly update commitments locally using the stored HMAC constant
@@ -2508,7 +2508,7 @@ impl MpcNetworkLayer {
                     (&self.user_intent_manager, &self.dkg_node)
                 {
                     if let Some(reg) = user_intent_manager
-                        .get_user_by_address(&ethereum_address)
+                        .get_user_by_address(&tics_address)
                         .await
                     {
                         if let Some(tweak_scalar) =
@@ -2521,50 +2521,50 @@ impl MpcNetworkLayer {
                             {
                                 Ok(group_key) => {
                                     if let Err(e) = user_intent_manager
-                                        .set_user_group_key(&ethereum_address, group_key)
+                                        .set_user_group_key(&tics_address, group_key)
                                         .await
                                     {
-                                        warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
+                                        warn!("❌ [NETWORK] Failed to store user group key for {}: {}", tics_address, e);
                                     } else {
-                                        info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                        info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", tics_address);
                                         // Log the derived addresses
                                         if let Some(user) = user_intent_manager
-                                            .get_user_by_address(&ethereum_address)
+                                            .get_user_by_address(&tics_address)
                                             .await
                                         {
                                             if let Some(eth_addr) = &user.derived_eth_address {
                                                 info!(
                                                     "📬 [NETWORK] Derived ETH address for {}: {}",
-                                                    ethereum_address, eth_addr
+                                                    tics_address, eth_addr
                                                 );
                                             }
                                             if let Some(btc_addr) = &user.derived_btc_address {
                                                 info!(
                                                     "📬 [NETWORK] Derived BTC address for {}: {}",
-                                                    ethereum_address, btc_addr
+                                                    tics_address, btc_addr
                                                 );
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
+                                    warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", tics_address, e);
                                 }
                             }
                         }
                     } else {
                         warn!(
                             "❌ [NETWORK] Invalid HMAC tweak scalar for {}",
-                            ethereum_address
+                            tics_address
                         );
                     }
                 } else {
-                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for {}", ethereum_address);
+                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for {}", tics_address);
                 }
 
                 // Create and broadcast user registration message via gossipsub (same pattern as deposit intent)
                 let user_reg_msg = GossipsubMessage::UserRegistration {
-                    ethereum_address: ethereum_address.clone(),
+                    tics_address: tics_address.clone(),
                     timestamp: chrono::Utc::now().timestamp(),
                     node_id: node_id.clone(),
                 };
@@ -2960,7 +2960,7 @@ impl MpcNetworkLayer {
                 })?;
             let gas_limit = estimated_gas + (estimated_gas / 10);
 
-            let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
+            let nonce = crate::utils::transaction::fetch_tics_nonce(&from_address, chain_id)
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e)
@@ -3010,14 +3010,14 @@ impl MpcNetworkLayer {
                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                 let contract_chain_handler =
                     signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+                let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
                 eth_signer
                     .sign_contract_message(
                         contract_tx_bytes,
                         &contract_chain_handler,
                         &contract_tx,
                         None,
-                        None, // user_eth_address (not applicable)
+                        None, // user_tics_address (not applicable)
                         intent_hashes.clone(),
                         // Use the main DKG share as an explicit signing key override.
                         secret_share,
@@ -3205,19 +3205,19 @@ impl MpcNetworkLayer {
         )
         .await?;
 
-        // Expect an Ethereum transaction
+        // Expect a TICS transaction
         let eth_tx = match chain_tx {
-            crate::chain_abstraction::ChainTransaction::Ethereum(tx) => tx,
+            crate::chain_abstraction::ChainTransaction::Tics(tx) => tx,
             _ => {
                 warn!(
-                    "❌ [ADD_LIQUIDITY_BATCH] Batch transaction is not an Ethereum transaction"
+                    "❌ [ADD_LIQUIDITY_BATCH] Batch transaction is not a TICS transaction"
                 );
                 return Ok(());
             }
         };
 
         info!(
-            "✅ [ADD_LIQUIDITY_BATCH] Built batchTransfer Ethereum transaction: nonce={}, gas_limit={}",
+            "✅ [ADD_LIQUIDITY_BATCH] Built batchTransfer TICS transaction: nonce={}, gas_limit={}",
             eth_tx.nonce, eth_tx.gas_limit
         );
 
@@ -3228,7 +3228,7 @@ impl MpcNetworkLayer {
                 self.node_manager.get_active_nodes().into_iter().collect();
             signing_node.set_available_nodes(available_nodes);
             signing_node.set_chain_handler(
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                crate::chain_abstraction::ChainHandlerFactory::create_tics_handler(
                     eth_tx.chain_id,
                 )
                 .into(),
@@ -3260,7 +3260,7 @@ impl MpcNetworkLayer {
                     &contract_tx,
                 );
             let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-            let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+            let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
 
             // Pass request_ids as intent_hashes for tracking through signing flow
             // When transaction succeeds/fails, these IDs will be used to update status
@@ -3270,7 +3270,7 @@ impl MpcNetworkLayer {
                     &contract_chain_handler,
                     &contract_tx,
                     vault_tweaked_share.clone(),
-                    None,     // user_eth_address (not applicable)
+                    None,     // user_tics_address (not applicable)
                     request_ids.clone(),   // Pass request_ids for tracking
                     vault_tweaked_share,
                     None,     // request_id

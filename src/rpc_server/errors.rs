@@ -31,7 +31,7 @@ impl RpcError {
             RpcError::InvalidAddress(msg) => ErrorResponse {
                 status: "error".to_string(),
                 error_code: "INVALID_ADDRESS".to_string(),
-                message: "Invalid Ethereum address format".to_string(),
+                message: "Invalid TICS address format".to_string(),
                 details: Some(msg.clone()),
             },
             RpcError::MissingFields(msg) => ErrorResponse {
@@ -112,7 +112,7 @@ impl RpcError {
 
 impl warp::reject::Reject for RpcError {}
 
-pub(crate) fn validate_ethereum_address(address: &str) -> Result<String, RpcError> {
+pub(crate) fn validate_tics_address(address: &str) -> Result<String, RpcError> {
     if address.trim().is_empty() {
         return Err(RpcError::InvalidAddress(
             "Address cannot be empty".to_string(),

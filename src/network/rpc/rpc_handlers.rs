@@ -826,7 +826,7 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_eth_address, batch_identifiers) =
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_tics_address, batch_identifiers) =
             match signing_message {
                 SigningMessage::TransactionDataForFinalNode {
                     from,
@@ -836,7 +836,7 @@ impl MpcNetworkLayer {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 } => (
                     from,
@@ -846,7 +846,7 @@ impl MpcNetworkLayer {
                     request_id,
                     round,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 ),
                 _ => {
@@ -875,7 +875,7 @@ impl MpcNetworkLayer {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 )
                 .await

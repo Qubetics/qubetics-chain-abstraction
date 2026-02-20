@@ -38,7 +38,7 @@ fn test_scalar(val: u64) -> Scalar {
 fn make_user_with_tweaked_share(addr: &str, share: Scalar) -> UserRegistration {
     UserRegistration {
         user_id: format!("user_{}", addr),
-        ethereum_address: addr.to_string(),
+        tics_address: addr.to_string(),
         tweaked_secret_share: Some(SerializableScalar(share)),
         hmac_constant: [0x42u8; 32],
         user_group_key: None,
@@ -53,7 +53,7 @@ fn make_user_with_tweaked_share(addr: &str, share: Scalar) -> UserRegistration {
 fn make_user_without_share(addr: &str) -> UserRegistration {
     UserRegistration {
         user_id: format!("user_{}", addr),
-        ethereum_address: addr.to_string(),
+        tics_address: addr.to_string(),
         tweaked_secret_share: None,
         hmac_constant: [0x42u8; 32],
         user_group_key: None,
@@ -96,7 +96,7 @@ async fn register_user_stores_in_database() {
     let user = user_storage.get_user(ADDR_1).await.unwrap();
     assert!(user.is_some());
     let u = user.unwrap();
-    assert_eq!(u.ethereum_address, ADDR_1);
+    assert_eq!(u.tics_address, ADDR_1);
 }
 
 #[tokio::test]
@@ -363,7 +363,7 @@ fn user_registration_with_all_fields_populated() {
     let bytes = bincode::serialize(&user).unwrap();
     let deserialized: UserRegistration = bincode::deserialize(&bytes).unwrap();
 
-    assert_eq!(user.ethereum_address, deserialized.ethereum_address);
+    assert_eq!(user.tics_address, deserialized.tics_address);
     assert!(deserialized.tweaked_secret_share.is_some());
     assert_eq!(deserialized.derived_eth_address, Some("0xderived_eth".to_string()));
     assert_eq!(deserialized.derived_btc_address, Some("tb1q_derived_btc".to_string()));
@@ -375,7 +375,7 @@ fn user_registration_with_all_fields_populated() {
 fn user_registration_minimal_fields() {
     let user = UserRegistration {
         user_id: "minimal".to_string(),
-        ethereum_address: ADDR_1.to_string(),
+        tics_address: ADDR_1.to_string(),
         tweaked_secret_share: None,
         hmac_constant: [0u8; 32],
         user_group_key: None,

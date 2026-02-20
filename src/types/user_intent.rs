@@ -61,7 +61,7 @@ impl IntentTransactionIds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistration {
     pub user_id: String,
-    pub ethereum_address: String,
+    pub tics_address: String,
     pub hmac_constant: [u8; 32],
     pub tweaked_secret_share: Option<SerializableScalar>,
     pub user_group_key: Option<SerializablePoint>,

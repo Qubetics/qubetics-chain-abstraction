@@ -45,7 +45,7 @@ const MIN_CLAIM_TICS_WEI: u64 = 1_000_000_000_000_000_000;
 
 pub(crate) async fn handle_deposit_intent(
     intent: DepositIntent,
-    user_eth_address: Option<String>,
+    user_tics_address: Option<String>,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     transaction_type: TransactionType,
     _dkg_storage: Arc<DkgStorage>,
@@ -53,7 +53,7 @@ pub(crate) async fn handle_deposit_intent(
     target_amount: u128,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request");
-    if let Some(addr) = &user_eth_address {
+    if let Some(addr) = &user_tics_address {
         info!("📝 HTTP: User eth address provided for signing: {}", addr);
     }
 
@@ -72,7 +72,7 @@ pub(crate) async fn handle_deposit_intent(
     let deposit_intent_msg = ChannelMessage::DepositIntent {
         intent: intent.clone(),
         intent_id: intent_id.clone(),
-        user_eth_address: user_eth_address
+        user_tics_address: user_tics_address
             .as_ref()
             .map(|s| s.clone())
             .unwrap_or_else(|| "unknown".to_string()),
@@ -189,7 +189,7 @@ fn withdraw_error_response(
         solver_address,
         liquidity_btc: liquidity_btc.clone(),
         liquidity_tics: liquidity_tics.clone(),
-        ethereum_address: req.ethereum_address.clone(),
+        tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         tics_withdraw_tx_id: None,
         btc_withdraw_tx_id: None,
@@ -207,20 +207,20 @@ pub(crate) async fn handle_register_user(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "👤 HTTP: Received user registration request for address: {}",
-        request.ethereum_address
+        request.tics_address
     );
 
     // Input validation
-    let addr_cs = match super::errors::validate_ethereum_address(&request.ethereum_address) {
+    let addr_cs = match super::errors::validate_tics_address(&request.tics_address) {
         Ok(normalized) => normalized,
         Err(e) => {
             error!(
                 "❌ HTTP: Address validation failed for '{}': {:?}",
-                request.ethereum_address, e
+                request.tics_address, e
             );
             let error_response = EnhancedUserRegistrationResponse {
                 status: "error".to_string(),
-                message: "Invalid Ethereum address".to_string(),
+                message: "Invalid TICS address".to_string(),
                 derived_eth_address: None,
                 derived_btc_address: None,
                 error: Some(e.to_error_response()),
@@ -229,7 +229,7 @@ pub(crate) async fn handle_register_user(
         }
     };
 
-    // Signature verification - verify that the user controls the Ethereum address
+    // Signature verification - verify that the user controls the TICS address
     // This is required to prevent address squatting attacks
     let (signature, message) = match (&request.signature, &request.message) {
         (Some(sig), Some(msg)) => (sig, msg),
@@ -242,7 +242,7 @@ pub(crate) async fn handle_register_user(
                 derived_btc_address: None,
                 error: Some(
                     RpcError::InvalidRequest(
-                        "Signature and message are required for user registration to prove ownership of the Ethereum address".to_string()
+                        "Signature and message are required for user registration to prove ownership of the TICS address".to_string()
                     )
                     .to_error_response(),
                 ),
@@ -322,7 +322,7 @@ pub(crate) async fn handle_register_user(
         }
     };
 
-    // Verify that recovered address matches the provided ethereum_address
+    // Verify that recovered address matches the provided tics_address
     if recovered_addr_cs.to_lowercase() != addr_cs.to_lowercase() {
         error!(
             "❌ Signature verification failed: recovered address {} does not match provided address {}",
@@ -344,7 +344,7 @@ pub(crate) async fn handle_register_user(
     }
 
     // Validate message format and timestamp to prevent replay attacks
-    // Expected format: "register:{ethereum_address}:{timestamp}"
+    // Expected format: "register:{tics_address}:{timestamp}"
     let parts: Vec<&str> = message.split(':').collect();
     if parts.len() != 3 || parts[0] != "register" {
         warn!("⚠️ Invalid message format, expected: register:{{address}}:{{timestamp}}");
@@ -507,7 +507,7 @@ pub(crate) async fn handle_register_user(
             }
 
             let user_reg_msg = ChannelMessage::UserRegistration {
-                ethereum_address: addr_cs.clone(),
+                tics_address: addr_cs.clone(),
                 node_id: node_id.to_string(),
             };
 
@@ -919,11 +919,9 @@ pub(crate) async fn handle_user_mpc_deposit(
                 // Compute target amount for all directions (same-chain and cross-chain)
                 let src_is_tics = req.msg.source_chain.eq_ignore_ascii_case("tics")
                     || req.msg.source_chain.eq_ignore_ascii_case("qubetics")
-                    || req.msg.source_chain.eq_ignore_ascii_case("ethereum")
                     || req.msg.source_chain.eq_ignore_ascii_case("evm");
                 let dst_is_tics = req.msg.target_chain.eq_ignore_ascii_case("tics")
                     || req.msg.target_chain.eq_ignore_ascii_case("qubetics")
-                    || req.msg.target_chain.eq_ignore_ascii_case("ethereum")
                     || req.msg.target_chain.eq_ignore_ascii_case("evm");
                 let src_is_btc = req.msg.source_chain.eq_ignore_ascii_case("btc")
                     || req.msg.source_chain.eq_ignore_ascii_case("bitcoin");
@@ -1141,8 +1139,8 @@ pub(crate) async fn handle_user_mpc_deposit(
         }
     };
 
-    // UserToVault always requires user_eth_address
-    let user_eth_address = user_registration.ethereum_address.clone();
+    // UserToVault always requires user_tics_address
+    let user_tics_address = user_registration.tics_address.clone();
 
     // For UserToVault, transaction confirmation would be on source chain
     if let Some(ref tx_id) = req.tx_id {
@@ -1155,7 +1153,7 @@ pub(crate) async fn handle_user_mpc_deposit(
 
     match handle_deposit_intent(
         req.msg.clone(),
-        Some(user_eth_address),
+        Some(user_tics_address),
         message_tx,
         transaction_type,
         dkg_storage.clone(),
@@ -1167,7 +1165,7 @@ pub(crate) async fn handle_user_mpc_deposit(
         Ok(_) => {
             info!(
                 "✅ Deposit intent processed successfully for user: {}",
-                user_registration.ethereum_address
+                user_registration.tics_address
             );
         }
         Err(e) => {
@@ -1309,25 +1307,25 @@ pub(crate) async fn handle_get_intent_details(
 }
 
 pub(crate) async fn handle_get_user_info(
-    ethereum_address: String,
+    tics_address: String,
     user_intent_manager: Arc<UserIntentManager>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "🔍 HTTP: Received user info request for address: {}",
-        ethereum_address
+        tics_address
     );
 
-    let addr_cs = match super::errors::validate_ethereum_address(&ethereum_address) {
+    let addr_cs = match super::errors::validate_tics_address(&tics_address) {
         Ok(normalized) => normalized,
         Err(e) => {
             error!(
                 "❌ HTTP: Address validation failed for '{}': {:?}",
-                ethereum_address, e
+                tics_address, e
             );
             let error_response = UserInfoResponse {
                 status: "error".to_string(),
                 user_id: None,
-                ethereum_address: None,
+                tics_address: None,
                 has_tweaked_share: None,
                 has_user_group_key: None,
                 derived_eth_address: None,
@@ -1351,7 +1349,7 @@ pub(crate) async fn handle_get_user_info(
             let response = UserInfoResponse {
                 status: "success".to_string(),
                 user_id: Some(registration.user_id),
-                ethereum_address: Some(registration.ethereum_address),
+                tics_address: Some(registration.tics_address),
                 has_tweaked_share: Some(registration.tweaked_secret_share.is_some()),
                 has_user_group_key: Some(registration.user_group_key.is_some()),
                 derived_eth_address: registration.derived_eth_address,
@@ -1368,7 +1366,7 @@ pub(crate) async fn handle_get_user_info(
             let error_response = UserInfoResponse {
                 status: "error".to_string(),
                 user_id: None,
-                ethereum_address: None,
+                tics_address: None,
                 has_tweaked_share: None,
                 has_user_group_key: None,
                 derived_eth_address: None,
@@ -1886,7 +1884,7 @@ pub(crate) async fn handle_get_solver_rewards(
             request_id: r.request_id,
             status: r.status,
             tx_id: r.tx_id,
-            ethereum_address: r.ethereum_address,
+            tics_address: r.tics_address,
             btc_address: r.btc_address,
         })
         .collect();
@@ -1922,17 +1920,17 @@ pub(crate) async fn handle_claim_reward(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}",
-        req.ethereum_address, req.btc_address
+        req.tics_address, req.btc_address
     );
-    if req.ethereum_address.is_none() && req.btc_address.is_none() {
+    if req.tics_address.is_none() && req.btc_address.is_none() {
         return Ok(warp::reply::json(&ClaimRewardResponse {
             status: "error".to_string(),
-            ethereum_address: None,
+            tics_address: None,
             btc_address: None,
             reward_btc: None,
             reward_tics: None,
             message: "At least one address must be provided".to_string(),
-            error_message: Some("Both ethereum_address and btc_address cannot be None".to_string()),
+            error_message: Some("Both tics_address and btc_address cannot be None".to_string()),
             tics_reward_tx_id: None,
             btc_reward_tx_id: None,
         }));
@@ -1944,7 +1942,7 @@ pub(crate) async fn handle_claim_reward(
             warn!("❌ Invalid signature format: {}", e);
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
@@ -1967,7 +1965,7 @@ pub(crate) async fn handle_claim_reward(
                 );
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -1988,7 +1986,7 @@ pub(crate) async fn handle_claim_reward(
             warn!("❌ Invalid solver address format: {}", e);
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
@@ -2022,7 +2020,7 @@ pub(crate) async fn handle_claim_reward(
                 );
                     return Ok(warp::reply::json(&ClaimRewardResponse {
                         status: "error".to_string(),
-                        ethereum_address: req.ethereum_address.clone(),
+                        tics_address: req.tics_address.clone(),
                         btc_address: req.btc_address.clone(),
                         reward_btc: None,
                         reward_tics: None,
@@ -2043,7 +2041,7 @@ pub(crate) async fn handle_claim_reward(
             );
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
@@ -2071,7 +2069,7 @@ pub(crate) async fn handle_claim_reward(
                 warn!("⚠️ [CLAIM_REWARD] Invalid SOLVER_CONTRACT_ADDRESS: {}", e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2093,7 +2091,7 @@ pub(crate) async fn handle_claim_reward(
                 warn!("⚠️ [CLAIM_REWARD] Contract client failed: {}", e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2110,7 +2108,7 @@ pub(crate) async fn handle_claim_reward(
                 warn!("⚠️ [CLAIM_REWARD] SolverManagerContract::new failed: {}", e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2126,7 +2124,7 @@ pub(crate) async fn handle_claim_reward(
             Err(_) => {
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2146,7 +2144,7 @@ pub(crate) async fn handle_claim_reward(
                 );
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2160,7 +2158,7 @@ pub(crate) async fn handle_claim_reward(
                 warn!("⚠️ [CLAIM_REWARD] get_solver_id failed for {}: {}", normalized_address, e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2180,7 +2178,7 @@ pub(crate) async fn handle_claim_reward(
                 warn!("⚠️ [CLAIM_REWARD] get_solvers_unclaimed_rewards failed: {}", e);
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     reward_btc: None,
                     reward_tics: None,
@@ -2196,7 +2194,7 @@ pub(crate) async fn handle_claim_reward(
             .map(|r| (r.1, r.2))
             .unwrap_or((U256::zero(), U256::zero()));
         let wants_btc = req.btc_address.is_some();
-        let wants_tics = req.ethereum_address.is_some();
+        let wants_tics = req.tics_address.is_some();
         let btc_dust = U256::from(DUST_LIMIT_SATS);
         let min_tics = U256::from(MIN_CLAIM_TICS_WEI);
         if wants_btc && btc_unclaimed <= btc_dust {
@@ -2206,7 +2204,7 @@ pub(crate) async fn handle_claim_reward(
             );
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
@@ -2223,7 +2221,7 @@ pub(crate) async fn handle_claim_reward(
             );
             return Ok(warp::reply::json(&ClaimRewardResponse {
                 status: "error".to_string(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 reward_btc: None,
                 reward_tics: None,
@@ -2239,7 +2237,7 @@ pub(crate) async fn handle_claim_reward(
     let pending = PendingClaimRewardRequest {
         request_id: request_id.clone(),
         solver_address: normalized_address.clone(),
-        ethereum_address: req.ethereum_address.clone(),
+        tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         message: req.message.clone(),
         signature: req.signature.clone(),
@@ -2269,7 +2267,7 @@ pub(crate) async fn handle_claim_reward(
 
     Ok(warp::reply::json(&ClaimRewardResponse {
         status: "success".to_string(),
-        ethereum_address: req.ethereum_address.clone(),
+        tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         reward_btc: None,
         reward_tics: None,
@@ -2304,7 +2302,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 solver_address: "".to_string(),
                 liquidity_btc: None,
                 liquidity_tics: None,
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
@@ -2330,7 +2328,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     solver_address: "".to_string(),
                     liquidity_btc: None,
                     liquidity_tics: None,
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
@@ -2358,7 +2356,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 solver_address,
                 liquidity_btc: None,
                 liquidity_tics: None,
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
@@ -2381,7 +2379,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     solver_address: normalized_address,
                     liquidity_btc: None,
                     liquidity_tics: None,
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
@@ -2402,7 +2400,7 @@ pub(crate) async fn handle_withdraw_liquidity(
             solver_address: normalized_address,
             liquidity_btc: None,
             liquidity_tics: None,
-            ethereum_address: req.ethereum_address.clone(),
+            tics_address: req.tics_address.clone(),
             btc_address: req.btc_address.clone(),
             tics_withdraw_tx_id: None,
             btc_withdraw_tx_id: None,
@@ -2551,7 +2549,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     solver_address: normalized_address.clone(),
                     liquidity_btc: liquidity_btc_str.clone(),
                     liquidity_tics: liquidity_tics_str.clone(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
@@ -2579,7 +2577,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     solver_address: normalized_address.clone(),
                     liquidity_btc: liquidity_btc_str.clone(),
                     liquidity_tics: liquidity_tics_str.clone(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
@@ -2602,7 +2600,7 @@ pub(crate) async fn handle_withdraw_liquidity(
             solver_address: normalized_address.clone(),
             liquidity_btc: liquidity_btc_str.clone(),
             liquidity_tics: liquidity_tics_str.clone(),
-            ethereum_address: req.ethereum_address.clone(),
+            tics_address: req.tics_address.clone(),
             btc_address: req.btc_address.clone(),
             tics_withdraw_tx_id: None,
             btc_withdraw_tx_id: None,
@@ -2611,14 +2609,14 @@ pub(crate) async fn handle_withdraw_liquidity(
         }));
     }
 
-    if withdraw_tics_amount.is_some() && req.ethereum_address.is_none() {
-        let msg = "Ethereum address is required to withdraw TICS liquidity".to_string();
+    if withdraw_tics_amount.is_some() && req.tics_address.is_none() {
+        let msg = "TICS address is required to withdraw TICS liquidity".to_string();
         return Ok(warp::reply::json(&WithdrawLiquidityResponse {
             status: "error".to_string(),
             solver_address: normalized_address.clone(),
             liquidity_btc: liquidity_btc_str.clone(),
             liquidity_tics: liquidity_tics_str.clone(),
-            ethereum_address: req.ethereum_address.clone(),
+            tics_address: req.tics_address.clone(),
             btc_address: req.btc_address.clone(),
             tics_withdraw_tx_id: None,
             btc_withdraw_tx_id: None,
@@ -2634,7 +2632,7 @@ pub(crate) async fn handle_withdraw_liquidity(
             solver_address: normalized_address.clone(),
             liquidity_btc: liquidity_btc_str.clone(),
             liquidity_tics: liquidity_tics_str.clone(),
-            ethereum_address: req.ethereum_address.clone(),
+            tics_address: req.tics_address.clone(),
             btc_address: req.btc_address.clone(),
             tics_withdraw_tx_id: None,
             btc_withdraw_tx_id: None,
@@ -2670,7 +2668,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                     solver_address: normalized_address.clone(),
                     liquidity_btc: liquidity_btc_str.clone(),
                     liquidity_tics: liquidity_tics_str.clone(),
-                    ethereum_address: req.ethereum_address.clone(),
+                    tics_address: req.tics_address.clone(),
                     btc_address: req.btc_address.clone(),
                     tics_withdraw_tx_id: None,
                     btc_withdraw_tx_id: None,
@@ -2692,7 +2690,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 solver_address: normalized_address.clone(),
                 liquidity_btc: liquidity_btc_str.clone(),
                 liquidity_tics: liquidity_tics_str.clone(),
-                ethereum_address: req.ethereum_address.clone(),
+                tics_address: req.tics_address.clone(),
                 btc_address: req.btc_address.clone(),
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
@@ -2717,7 +2715,7 @@ pub(crate) async fn handle_withdraw_liquidity(
             solver_address: normalized_address.clone(),
             liquidity_btc: liquidity_btc_str.clone(),
             liquidity_tics: liquidity_tics_str.clone(),
-            ethereum_address: req.ethereum_address.clone(),
+            tics_address: req.tics_address.clone(),
             btc_address: req.btc_address.clone(),
             tics_withdraw_tx_id: None,
             btc_withdraw_tx_id: None,
@@ -2732,7 +2730,7 @@ pub(crate) async fn handle_withdraw_liquidity(
         solver_address: normalized_address.clone(),
         asset: asset.clone(),
         amount: amount.clone(),
-        ethereum_address: req.ethereum_address.clone(),
+        tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         message: req.message.clone(),
         tx_id: None,
@@ -2766,7 +2764,7 @@ pub(crate) async fn handle_withdraw_liquidity(
         solver_address: normalized_address,
         liquidity_btc: liquidity_btc_str,
         liquidity_tics: liquidity_tics_str,
-        ethereum_address: req.ethereum_address.clone(),
+        tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         tics_withdraw_tx_id: None,
         btc_withdraw_tx_id: None,
@@ -3022,7 +3020,7 @@ pub(crate) async fn handle_log_partial_pubkeys(
             .map(|(user_addr, pubkey)| {
                 let pubkey_bytes = pubkey.to_affine().to_encoded_point(true);
                 crate::types::rpc_server::UserSharePubkeyInfo {
-                    user_eth_address: user_addr,
+                    user_tics_address: user_addr,
                     share_pubkey: hex::encode(pubkey_bytes.as_bytes()),
                 }
             })
@@ -3051,7 +3049,7 @@ pub(crate) async fn handle_log_partial_pubkeys(
     for user_info in &user_share_pubkeys {
         info!(
             "     User: {} -> Pubkey: 0x{}",
-            user_info.user_eth_address, user_info.share_pubkey
+            user_info.user_tics_address, user_info.share_pubkey
         );
     }
     info!("✅ [RPC] === Finished logging partial pubkeys ===");

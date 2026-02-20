@@ -390,7 +390,7 @@ fn ecdsa_signature_serialization_roundtrip() {
                         49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64],
         signer_id: "node-1".to_string(),
         recovery_id: 0,
-        user_eth_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
+        user_tics_address: Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
     };
 
     let serialized = serde_json::to_string(&sig).unwrap();
@@ -399,7 +399,7 @@ fn ecdsa_signature_serialization_roundtrip() {
     assert_eq!(sig.signature, deserialized.signature);
     assert_eq!(sig.signer_id, deserialized.signer_id);
     assert_eq!(sig.recovery_id, deserialized.recovery_id);
-    assert_eq!(sig.user_eth_address, deserialized.user_eth_address);
+    assert_eq!(sig.user_tics_address, deserialized.user_tics_address);
 }
 
 // ===================================================================
