@@ -3,7 +3,8 @@
 use anyhow::Result;
 use libp2p::swarm::{ConnectionError, SwarmEvent};
 use libp2p::{
-    gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage, PeerId,
+    gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage,
+    Multiaddr, PeerId,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
@@ -72,6 +73,40 @@ impl MpcNetworkLayer {
                 self.handle_connection_closed(peer_id, num_established, cause)
                     .await;
             }
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                warn!(
+                    "❌ [DIAL] Outbound connection failed to {:?}: {:?}",
+                    peer_id, error
+                );
+                // Record the failed peer's bootstrap/seed/CLI addresses for hourly retry.
+                // Match by peer_id embedded in the multiaddr (/p2p/<peer_id> component).
+                // If peer_id is None (unknown), record ALL unconnected bootstrap addresses.
+                let all_known_addrs: Vec<Multiaddr> = self
+                    .bootstrap_addresses
+                    .iter()
+                    .chain(self.discovery_seeds.iter())
+                    .cloned()
+                    .collect();
+
+                for addr in &all_known_addrs {
+                    let should_record = match peer_id {
+                        Some(pid) => addr.iter().any(|proto| {
+                            matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == pid)
+                        }),
+                        None => true, // Unknown peer — record all unconnected addresses
+                    };
+
+                    if should_record {
+                        self.failed_dial_addresses
+                            .entry(addr.clone())
+                            .or_insert_with(std::time::Instant::now);
+                        info!(
+                            "📝 [DIAL] Recorded failed address for hourly retry: {}",
+                            addr
+                        );
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -87,6 +122,21 @@ impl MpcNetworkLayer {
         use libp2p::core::ConnectedPoint;
 
         let remote_addr = endpoint.get_remote_address();
+
+        // Clear this peer from the failed-dial retry list (connection succeeded)
+        let removed_count = self.failed_dial_addresses.len();
+        self.failed_dial_addresses.retain(|addr, _| {
+            !addr.iter().any(|proto| {
+                matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
+            })
+        });
+        let cleared = removed_count - self.failed_dial_addresses.len();
+        if cleared > 0 {
+            info!(
+                "✅ [RECONNECT] Cleared {} address(es) from retry list — peer {} connected",
+                cleared, peer_id
+            );
+        }
 
         // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
 

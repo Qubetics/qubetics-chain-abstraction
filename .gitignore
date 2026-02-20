@@ -11,6 +11,7 @@ node*/*
 /Audit-report
 chain-abstraction-contracts
 new-contracts/
+*.zip
 
 # macOS
 .DS_Store

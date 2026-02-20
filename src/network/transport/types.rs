@@ -246,6 +246,8 @@ pub struct MpcNetworkLayer {
     pub(crate) peer_invalidation_pending: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// Counter for global clock ticks — used for periodic peer list sync (every 3rd tick)
     pub(crate) clock_tick_count: u64,
+    /// Addresses that failed to connect — retried every hour for up to 24 hours
+    pub(crate) failed_dial_addresses: HashMap<Multiaddr, std::time::Instant>,
 }
 
 impl MpcNetworkLayer {
