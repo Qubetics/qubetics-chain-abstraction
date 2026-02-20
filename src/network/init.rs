@@ -106,6 +106,7 @@ impl MpcNetworkLayer {
             outbound_retry: Arc::new(Mutex::new(HashMap::new())),
             peer_invalidation_pending: Arc::new(Mutex::new(HashMap::new())),
             clock_tick_count: 0,
+            failed_dial_addresses: HashMap::new(),
         };
 
         this.bootstrap_peer_ids = this

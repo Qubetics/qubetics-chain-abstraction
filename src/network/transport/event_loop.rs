@@ -37,6 +37,7 @@ impl MpcNetworkLayer {
         let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
+        let mut reconnect_timer = tokio::time::interval(Duration::from_secs(3600)); // 1 hour
 
         // Global clock timer - reads interval from environment variable
         let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
@@ -133,6 +134,37 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                _ = reconnect_timer.tick() => {
+                    // Retry failed outbound connections — give up after 24 hours
+                    let max_retry_duration = Duration::from_secs(24 * 3600);
+                    let now = std::time::Instant::now();
+
+                    // Remove addresses older than 24 hours
+                    self.failed_dial_addresses.retain(|addr, first_failure| {
+                        if now.duration_since(*first_failure) > max_retry_duration {
+                            warn!("⏰ [RECONNECT] Giving up on {} after 24 hours of retries", addr);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    // Retry remaining addresses
+                    let addrs_to_retry: Vec<Multiaddr> = self.failed_dial_addresses.keys().cloned().collect();
+                    if !addrs_to_retry.is_empty() {
+                        info!(
+                            "🔄 [RECONNECT] Retrying {} failed address(es) (hourly reconnect)",
+                            addrs_to_retry.len()
+                        );
+                        for addr in addrs_to_retry {
+                            info!("🔄 [RECONNECT] Retrying dial to: {}", addr);
+                            if let Err(e) = swarm.dial(addr.clone()) {
+                                warn!("❌ [RECONNECT] Retry dial failed for {}: {}", addr, e);
+                            }
+                        }
+                    }
+                }
+
                 // Contract sequencer removed - contract transactions are executed directly
                 // Network transaction sequencer removed - will be replaced with pool approach
             };
@@ -140,7 +172,7 @@ impl MpcNetworkLayer {
     }
 
     /// Dial addresses provided via command line arguments
-    fn dial_command_line_addresses(&self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+    fn dial_command_line_addresses(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
         let args: Vec<String> = std::env::args().collect();
         if args.len() >= 2 {
             // Parse all addresses from command line arguments
@@ -166,6 +198,9 @@ impl MpcNetworkLayer {
                     info!("  {}. {}", i + 1, addr);
                     if let Err(e) = swarm.dial(addr.clone()) {
                         error!("Failed to dial address {}: {}", addr, e);
+                        self.failed_dial_addresses
+                            .entry(addr.clone())
+                            .or_insert_with(std::time::Instant::now);
                     } else {
                         info!("Successfully initiated dial to: {}", addr);
                     }
@@ -175,7 +210,7 @@ impl MpcNetworkLayer {
     }
 
     /// Dial any configured seed addresses to accelerate mesh convergence
-    fn dial_seed_addresses(&self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+    fn dial_seed_addresses(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
         let mut dialed = std::collections::HashSet::new();
 
         for addr in self
@@ -190,6 +225,9 @@ impl MpcNetworkLayer {
             info!("Dialing configured seed: {}", addr);
             if let Err(e) = swarm.dial(addr.clone()) {
                 warn!("Failed to dial seed {}: {}", addr, e);
+                self.failed_dial_addresses
+                    .entry(addr.clone())
+                    .or_insert_with(std::time::Instant::now);
             }
         }
     }
