@@ -10,7 +10,14 @@ impl UserIntentManager {
         // Access latest final secret share from DKG storage
         let dkg_storage = self.database_module.dkg_storage();
         let final_secret_share = match dkg_storage.get_final_secret().await? {
-            Some(s) => s,
+            Some(s) => {
+                let share_bytes = s.to_bytes();
+                info!(
+                    "🔑 [DB_USER_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (used for tweaked share recomputation)",
+                    hex::encode(&share_bytes[..8])
+                );
+                s
+            }
             None => {
                 return Err(anyhow::anyhow!(
                     "No final secret share found in DKG storage"
@@ -35,6 +42,13 @@ impl UserIntentManager {
                 address, user.user_id
             );
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
+            let tweaked_bytes = new_tweaked.0.to_bytes();
+            info!(
+                "🔑 [DB_USER_REGISTRY] Recomputed tweaked share for {}: scalar_fingerprint=0x{}, hmac_constant=0x{}",
+                address,
+                hex::encode(&tweaked_bytes[..8]),
+                hex::encode(&user.hmac_constant[..8])
+            );
             user.tweaked_secret_share = Some(new_tweaked);
 
             // Persist updated user
@@ -59,6 +73,79 @@ impl UserIntentManager {
             failure_count
         );
         Ok(())
+    }
+
+    /// Compute tweaked secret shares ONLY for users that are missing them (tweaked_secret_share = None).
+    /// This is used after state sync to compute shares for newly imported users without
+    /// touching existing users that already have valid shares from the original DKG signing.
+    /// Observer nodes (no DKG final secret) skip computation — they hold user data for RPC queries only.
+    pub async fn refresh_missing_user_tweaked_shares(&self) -> Result<usize> {
+        info!("🔄 [DB_USER_REGISTRY] Computing tweaked shares for users with missing shares only");
+
+        let dkg_storage = self.database_module.dkg_storage();
+        let final_secret_share = match dkg_storage.get_final_secret().await? {
+            Some(s) => {
+                let share_bytes = s.to_bytes();
+                info!(
+                    "🔑 [DB_USER_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (for new user share computation)",
+                    hex::encode(&share_bytes[..8])
+                );
+                s
+            }
+            None => {
+                // Observer node — no DKG secret, cannot compute tweaked shares.
+                // This is expected: observer nodes store user data for RPC queries
+                // but never participate in signing.
+                info!(
+                    "ℹ️ [DB_USER_REGISTRY] No DKG final secret — this is an observer node. \
+                     User data imported for RPC queries; tweaked shares not computed."
+                );
+                return Ok(0);
+            }
+        };
+
+        let users: HashMap<String, UserRegistration> = self.user_storage.get_all_users().await?;
+        let total = users.len();
+        let mut computed_count: usize = 0;
+        let mut already_have: usize = 0;
+
+        for (address, mut user) in users.into_iter() {
+            if user.tweaked_secret_share.is_some() {
+                // User already has a valid tweaked share — do NOT touch it
+                already_have += 1;
+                continue;
+            }
+
+            // User is missing tweaked share (newly synced) — compute it
+            info!(
+                "🧮 [DB_USER_REGISTRY] Computing tweaked share for new user {} (user_id: {})",
+                address, user.user_id
+            );
+            let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
+            let tweaked_bytes = new_tweaked.0.to_bytes();
+            info!(
+                "🔑 [DB_USER_REGISTRY] Computed tweaked share for {}: scalar_fingerprint=0x{}, hmac_constant=0x{}",
+                address,
+                hex::encode(&tweaked_bytes[..8]),
+                hex::encode(&user.hmac_constant[..8])
+            );
+            user.tweaked_secret_share = Some(new_tweaked);
+
+            if let Err(e) = self.user_storage.store_user(&address, &user).await {
+                error!(
+                    "❌ [DB_USER_REGISTRY] Failed to store tweaked share for {}: {}",
+                    address, e
+                );
+            } else {
+                computed_count += 1;
+            }
+        }
+
+        info!(
+            "🎉 [DB_USER_REGISTRY] Completed refresh_missing: {} total users, {} already had shares, {} newly computed",
+            total, already_have, computed_count
+        );
+        Ok(computed_count)
     }
 
     /// Register a new user
@@ -113,7 +200,20 @@ impl UserIntentManager {
 
         // 5) Process DKG share if provided
         if let Some(share) = dkg_secret_share {
+            let share_bytes = share.to_bytes();
+            info!(
+                "🔑 [DB_USER_REGISTRY] Computing tweaked share for {} at registration: dkg_share_fingerprint=0x{}, hmac_constant=0x{}",
+                addr_cs,
+                hex::encode(&share_bytes[..8]),
+                hex::encode(&registration.hmac_constant[..8])
+            );
             let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
+            let tweaked_bytes = tweaked_share.0.to_bytes();
+            info!(
+                "🔑 [DB_USER_REGISTRY] Initial tweaked share for {}: scalar_fingerprint=0x{}",
+                addr_cs,
+                hex::encode(&tweaked_bytes[..8])
+            );
             registration.tweaked_secret_share = Some(tweaked_share);
         }
 

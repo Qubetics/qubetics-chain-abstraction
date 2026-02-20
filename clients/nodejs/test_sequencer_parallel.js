@@ -869,7 +869,7 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "35000000000000000000";  // 12 TICS
+    const amount = "5000000000000000000";  // 12 TICS
     // const amount = "700";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });

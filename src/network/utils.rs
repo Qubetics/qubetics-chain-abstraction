@@ -2,7 +2,7 @@ use anyhow::Result;
 use libp2p::identity::Keypair;
 use libp2p::PeerId;
 use std::sync::Arc;
-use tracing::{info, debug, warn};
+use tracing::{info, warn};
 
 use crate::database::{keys, KeyStore};
 
@@ -111,22 +111,43 @@ impl MpcNetworkLayer {
                     Some(user) => {
                         if let Some(tweaked_share) = &user.tweaked_secret_share {
                             let share_scalar = tweaked_share.0;
-                            // Derive pubkey from this scalar for debug
+                            let share_bytes = share_scalar.to_bytes();
+                            // Derive pubkey and ETH address from this scalar for debug
                             let secp = secp256k1::Secp256k1::new();
-                            let sk = secp256k1::SecretKey::from_slice(&share_scalar.to_bytes())
+                            let sk = secp256k1::SecretKey::from_slice(&share_bytes)
                                 .unwrap_or_else(|_| {
                                     secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap()
                                 });
-                            let _pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                            let pk_uncompressed = pk.serialize_uncompressed();
+                            let pk_hash = {
+                                use sha3::Digest;
+                                let mut hasher = sha3::Keccak256::new();
+                                hasher.update(&pk_uncompressed[1..]);
+                                hasher.finalize()
+                            };
+                            let derived_addr = format!("0x{}", hex::encode(&pk_hash[12..]));
 
-                            debug!(
-                                "✅ [NETWORK] Found user's tweaked share for: {}",
-                                eth_address
+                            info!(
+                                "✅ [NETWORK] Found tweaked share for user {}: scalar_fingerprint=0x{}, hmac_constant=0x{}, derived_signing_addr={}",
+                                eth_address,
+                                hex::encode(&share_bytes[..8]),
+                                hex::encode(&user.hmac_constant[..8]),
+                                derived_addr
                             );
+                            if let Some(ref expected_derived) = user.derived_eth_address {
+                                info!(
+                                    "🔍 [NETWORK] User {} expected derived address: {}, signing key derives to: {}",
+                                    eth_address, expected_derived, derived_addr
+                                );
+                            }
 
                             Some(share_scalar)
                         } else {
-                            // No tweaked share stored for this user; fall back to network DKG share.
+                            warn!(
+                                "⚠️ [NETWORK] User {} has NO tweaked_secret_share (None) — signing will be skipped",
+                                eth_address
+                            );
                             None
                         }
                     }
@@ -145,7 +166,11 @@ impl MpcNetworkLayer {
 
             if let Some(dkg_node) = &self.dkg_node {
                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                    info!("✅ [NETWORK] Found network's DKG share");
+                    let share_bytes = secret_share.to_bytes();
+                    info!(
+                        "✅ [NETWORK] Found network's DKG share: scalar_fingerprint=0x{}",
+                        hex::encode(&share_bytes[..8])
+                    );
                     Some(secret_share)
                 } else {
                     warn!("❌ [NETWORK] DKG not completed yet, no secret share available");

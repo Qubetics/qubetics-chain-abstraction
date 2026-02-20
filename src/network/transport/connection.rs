@@ -82,26 +82,20 @@ impl MpcNetworkLayer {
             );
         }
 
-        // Also remove from peer_indices HashMap
+        // Remove from in-memory peer_indices HashMap (transient; will be restored from DB on reconnect).
+        // IMPORTANT: Do NOT delete the peer_index:{peer_id} key from the database!
+        // That key holds the original DKG index assigned during key generation.
+        // Lagrange interpolation requires exactly those indices to aggregate signatures correctly.
+        // Deleting and reassigning a new index (max+1) would produce wrong Lagrange coefficients
+        // and invalid threshold signatures.
         if let Some(removed_index) = self.peer_discovery.peer_indices.remove(&peer_id) {
             info!(
-                "✅ [DISCONNECT] Removed peer {} (index {}) from peer_indices HashMap",
+                "✅ [DISCONNECT] Removed peer {} (index {}) from in-memory peer_indices (DB key preserved for DKG)",
                 peer_id, removed_index
             );
         }
 
-        // Remove from database as well (peer index and commitments so share_pubkey recompute doesn't fail)
-        let peer_index_key = format!("{}{}", keys::PEER_INDEX, peer_id);
-        if let Err(e) = self.db.delete_string(&peer_index_key) {
-            warn!(
-                "⚠️ [DISCONNECT] Failed to remove peer {} from database: {}",
-                peer_id, e
-            );
-        } else {
-            info!("✅ [DISCONNECT] Removed peer {} from database", peer_id);
-        }
-
-        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys doesn't look up their (deleted) index
+        // Remove disconnected peer's commitments so compute_and_store_all_share_pubkeys skips this peer
         let commitment_key = format!("{}{}", keys::DKG_COMMITMENT, peer_id);
         if let Err(e) = self.db.delete_string(&commitment_key) {
             warn!(

@@ -45,6 +45,8 @@ impl MpcNetworkLayer {
     /// Assign and persist peer index
     pub(crate) fn assign_and_persist_index(&mut self, pid: &PeerId) -> usize {
         if let Some(idx) = self.get_index_from_db(pid) {
+            // Restore in-memory mapping (may have been removed on disconnect)
+            self.peer_discovery.peer_indices.insert(*pid, idx);
             return idx;
         }
         // Determine next index strictly from DB state
