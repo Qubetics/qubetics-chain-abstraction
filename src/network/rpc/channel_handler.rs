@@ -3141,10 +3141,10 @@ impl MpcNetworkLayer {
             return Err(anyhow!("No chain_ids found in batch"));
         }
 
-        // For now, assume all requests in a batch are for the same chain
-        // (can be extended to process per-chain sub-batches later)
-        let chain_id = chain_ids[0];
-        info!("💧 [ADD_LIQUIDITY_BATCH] Target chain_id: {}, chain_type: {}", chain_id, chain_types[0]);
+        // The addLiquidityBatch smart contract lives on Qubetics (chain 9029).
+        // chain_ids[] holds the *asset* chain (e.g. 0 for BTC), not the target chain.
+        let chain_id: u64 = 9029;
+        info!("💧 [ADD_LIQUIDITY_BATCH] Contract chain_id: {}, first asset chain_id: {}, chain_type: {}", chain_id, chain_ids[0], chain_types[0]);
 
         // Parse amounts to U256
         let amounts_u256: Vec<U256> = amounts
