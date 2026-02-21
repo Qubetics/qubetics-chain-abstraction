@@ -30,7 +30,7 @@ const ABI = [
   "function getOnboardNonce(address) view returns (uint256)",
   "function getValidateNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
-  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
+  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType, string txId)[])",
   "function validateSolverId(uint256,bytes)",
   "function isSolverActive(string) view returns (bool)",
   "function isSolverIdValidated(string) view returns (bool)",
@@ -457,7 +457,8 @@ async function main() {
       solverId: "12D3KooWKofvyRENFGUQKp2UAFVJRBEFVwgh2sXkkp3amPQNPvNJ",
       // Use a string for large values to avoid JS number overflow
       amount: "10000000000000000000",
-      chainType: 1  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
+      chainType: 1,  // ⚠️ IMPORTANT: 0 = BTC, 1 = EVM (NOT the chain ID!)
+      txId: '',
     }
   ];
   await testAddLiquidityBatch(deposits);

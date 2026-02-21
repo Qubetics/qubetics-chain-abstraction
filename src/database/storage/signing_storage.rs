@@ -4,7 +4,7 @@ use crate::types::ECDSASignature;
 use anyhow::Result;
 use secp256k1::PublicKey;
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Database-backed signing storage
 #[derive(Clone)]
@@ -27,8 +27,8 @@ impl SigningStorage {
         let key = key_utils::public_key_key(node_id);
         let public_key_bytes = public_key.serialize().to_vec();
         self.db.put_string(&key, &public_key_bytes)?;
-        info!(
-            "✅ [SIGNING_STORAGE] Stored public key for node: {}",
+        debug!(
+            "[SIGNING_STORAGE] Stored public key for node: {}",
             node_id
         );
         Ok(())
@@ -84,8 +84,8 @@ impl SigningStorage {
     pub async fn store_signature(&self, node_id: &str, signature: &ECDSASignature) -> Result<()> {
         let key = key_utils::signature_key(node_id);
         self.db.put_string(&key, signature)?;
-        info!(
-            "✅ [SIGNING_STORAGE] Stored signature for node: {}",
+        debug!(
+            "[SIGNING_STORAGE] Stored signature for node: {}",
             node_id
         );
         Ok(())
@@ -133,8 +133,8 @@ impl SigningStorage {
     ) -> Result<()> {
         let key = key_utils::signature_round_key(round, node_id);
         self.db.put_string(&key, signature)?;
-        info!(
-            "✅ [SIGNING_STORAGE] Stored signature for round {} node: {}",
+        debug!(
+            "[SIGNING_STORAGE] Stored signature for round {} node: {}",
             round, node_id
         );
         Ok(())
@@ -189,8 +189,8 @@ impl SigningStorage {
     pub async fn store_final_node_for_round(&self, round: u64, node_id: &str) -> Result<()> {
         let key = key_utils::final_node_round_key(round);
         self.db.put_string(&key, &node_id.to_string())?;
-        info!(
-            "✅ [SIGNING_STORAGE] Stored final node for round {}: {}",
+        debug!(
+            "[SIGNING_STORAGE] Stored final node for round {}: {}",
             round, node_id
         );
         Ok(())
@@ -241,8 +241,8 @@ impl SigningStorage {
         let key = key_utils::pending_transaction_key(round);
         let tx_data = (transaction.clone(), tx_bytes.to_vec());
         self.db.put_string(&key, &tx_data)?;
-        info!(
-            "✅ [SIGNING_STORAGE] Stored pending transaction for round: {}",
+        debug!(
+            "[SIGNING_STORAGE] Stored pending transaction for round: {}",
             round
         );
         Ok(())
@@ -293,8 +293,8 @@ impl SigningStorage {
     pub async fn delete_pending_transaction(&self, round: u64) -> Result<()> {
         let key = key_utils::pending_transaction_key(round);
         self.db.delete_string(&key)?;
-        info!(
-            "🗑️ [SIGNING_STORAGE] Deleted pending transaction for round: {}",
+        debug!(
+            "[SIGNING_STORAGE] Deleted pending transaction for round: {}",
             round
         );
         Ok(())
@@ -310,8 +310,8 @@ impl SigningStorage {
             self.db.delete_string(&key)?;
         }
 
-        info!(
-            "🧹 [SIGNING_STORAGE] Cleared {} signatures for round {}",
+        debug!(
+            "[SIGNING_STORAGE] Cleared {} signatures for round {}",
             key_count, round
         );
         Ok(())
@@ -327,7 +327,64 @@ impl SigningStorage {
     pub async fn mark_round_aggregated(&self, round: u64) -> Result<()> {
         let key = format!("aggregated_round:{round}");
         self.db.put_string(&key, &true)?;
-        info!("✅ [SIGNING_STORAGE] Marked round {} as aggregated", round);
+        debug!("[SIGNING_STORAGE] Marked round {} as aggregated", round);
         Ok(())
+    }
+
+    /// Sweep database-stored signatures and final-node entries for rounds older than `cutoff`.
+    /// This prevents unbounded growth of the `sig_round:*`, `final_node:*`, and
+    /// `aggregated_round:*` key families in RocksDB.
+    pub async fn sweep_rounds_before(&self, cutoff: u64) -> Result<usize> {
+        let mut total_deleted = 0usize;
+
+        // Sweep sig_round:* entries
+        let sig_keys = self.db.get_keys_with_prefix(crate::database::keys::SIGNATURE_ROUND)?;
+        for key in &sig_keys {
+            // key format: "sig_round:{round}:{node_id}"
+            if let Some(rest) = key.strip_prefix(crate::database::keys::SIGNATURE_ROUND) {
+                if let Some(round_str) = rest.split(':').next() {
+                    if let Ok(round) = round_str.parse::<u64>() {
+                        if round < cutoff {
+                            let _ = self.db.delete_string(key);
+                            total_deleted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sweep final_node:* entries
+        let fn_keys = self.db.get_keys_with_prefix(crate::database::keys::FINAL_NODE_ROUND)?;
+        for key in &fn_keys {
+            if let Some(round_str) = key.strip_prefix(crate::database::keys::FINAL_NODE_ROUND) {
+                if let Ok(round) = round_str.parse::<u64>() {
+                    if round < cutoff {
+                        let _ = self.db.delete_string(key);
+                        total_deleted += 1;
+                    }
+                }
+            }
+        }
+
+        // Sweep aggregated_round:* entries
+        let agg_keys = self.db.get_keys_with_prefix("aggregated_round:")?;
+        for key in &agg_keys {
+            if let Some(round_str) = key.strip_prefix("aggregated_round:") {
+                if let Ok(round) = round_str.parse::<u64>() {
+                    if round < cutoff {
+                        let _ = self.db.delete_string(key);
+                        total_deleted += 1;
+                    }
+                }
+            }
+        }
+
+        if total_deleted > 0 {
+            debug!(
+                "[SIGNING_STORAGE] Swept {} DB entries for rounds < {}",
+                total_deleted, cutoff
+            );
+        }
+        Ok(total_deleted)
     }
 }

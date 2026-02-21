@@ -117,7 +117,7 @@ const ABI = [
   "function getOnboardNonce(address) view returns (uint256)",
   "function getValidateNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
-  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
+  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType, string txId)[])",
   "function validateSolverId(uint256,bytes)",
   "function isSolverActive(string) view returns (bool)",
   "function isSolverIdValidated(string) view returns (bool)",
@@ -305,6 +305,7 @@ async function addLiquidity(solverWallet, config) {
       solverId: config.solverId,
       amount: config.evmLiquidityAmount,
       chainType: 1,  // 1 = TICS
+      txId: '',
     }]);
 
     console.log(`    [TICS] Tx: ${tx.hash}`);
@@ -326,6 +327,7 @@ async function addLiquidity(solverWallet, config) {
       solverId: config.solverId,
       amount: config.btcLiquidityAmount,
       chainType: 0,  // 0 = BTC
+      txId: '',
     }]);
 
     console.log(`    [BTC]  Tx: ${tx.hash}`);

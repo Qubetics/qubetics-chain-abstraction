@@ -179,12 +179,8 @@ impl NodeContext {
             .with_level(true)
             .with_thread_ids(false)
             .with_thread_names(false);
-        let stderr_layer = fmt::layer::<_>()
-            .with_writer(std::io::stderr)
-            .with_target(true)
-            .with_level(true)
-            .with_thread_ids(false)
-            .with_thread_names(false);
+        // Removed stderr_layer — stdout + file is sufficient;
+        // 3-layer writes (file+stdout+stderr) caused redundant I/O overhead.
 
         let env_filter = EnvFilter::builder()
             .with_default_directive(LevelFilter::INFO.into())
@@ -195,7 +191,6 @@ impl NodeContext {
             .with(env_filter)
             .with(file_layer)
             .with(stdout_layer)
-            .with(stderr_layer)
             .init();
 
         Ok(())

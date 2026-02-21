@@ -63,9 +63,9 @@ mod tests {
     async fn parallel_deposit_chain_handlers_remain_isolated() {
         let evm_handler = tokio::spawn(async {
             let chain_id =
-                crate::utils::transaction::get_chain_id_from_name("ethereum").expect("chain id");
+                crate::utils::transaction::get_chain_id_from_name("tics").expect("chain id");
             let handler: Arc<dyn ChainHandler> =
-                ChainHandlerFactory::create_ethereum_handler(chain_id).into();
+                ChainHandlerFactory::create_tics_handler(chain_id).into();
             handler
         });
 
@@ -83,7 +83,7 @@ mod tests {
         let evm_handler = evm_handler.expect("evm task");
         let btc_handler = btc_handler.expect("btc task");
 
-        assert_eq!(evm_handler.chain_type(), "ethereum");
+        assert_eq!(evm_handler.chain_type(), "tics");
         assert_eq!(btc_handler.chain_type(), "bitcoin");
         assert!(!Arc::ptr_eq(&evm_handler, &btc_handler));
     }
@@ -108,7 +108,8 @@ use crate::{
 };
 
 use crate::network::transport::types::{
-    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_WITHDRAW_LIQUIDITY,
+    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_PLATFORM_FEE,
+    TOPIC_WITHDRAW_LIQUIDITY,
 };
 use crate::protocols::DKGStatus;
 
@@ -349,8 +350,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "intent-batch-broadcast".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "intent-batches";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -412,8 +413,8 @@ impl MpcNetworkLayer {
                 };
 
                 let topic =
-                    crate::network::transport::types::TOPIC_TICS_USER_TO_VAULT_BATCH.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                    crate::network::transport::types::TOPIC_INTENT_BATCHES;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -478,8 +479,8 @@ impl MpcNetworkLayer {
                 };
 
                 let topic =
-                    crate::network::transport::types::TOPIC_BTC_USER_TO_VAULT_BATCH.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                    crate::network::transport::types::TOPIC_INTENT_BATCHES;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -552,8 +553,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "btc-intent-manager-tx-update".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "intent-batches";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -622,8 +623,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -685,8 +686,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -714,6 +715,194 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [BTC_CLAIM_REWARD] No peers available for broadcasting BtcClaimRewardBatch"
+                    );
+                }
+            }
+            ChannelMessage::BtcClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcClaimPlatformFeeBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                    nonce_tuple_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to serialize BtcClaimPlatformFeeBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to process local BtcClaimPlatformFeeBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to publish BtcClaimPlatformFeeBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_CLAIM_PLATFORM_FEE] No peers available for broadcasting BtcClaimPlatformFeeBatch"
+                    );
+                }
+            }
+            ChannelMessage::ClaimPlatformFeeTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                info!(
+                    "📡 [CLAIM_PLATFORM_FEE_TXID] Received claim-platform-fee txid broadcast: txid={}, network={}, batch_id={}, requests={}",
+                    txid, network, batch_id, requests.len()
+                );
+
+                let gossip_msg = crate::types::GossipsubMessage::ClaimPlatformFeeTxIdBroadcast {
+                    txid,
+                    network,
+                    batch_id,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to serialize ClaimPlatformFeeTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to process local ClaimPlatformFeeTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to publish ClaimPlatformFeeTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_PLATFORM_FEE_TXID] No peers available for broadcasting ClaimPlatformFeeTxIdBroadcast"
+                    );
+                }
+            }
+            ChannelMessage::TicsClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::TicsClaimPlatformFeeBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                    nonce_tuple_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to serialize TicsClaimPlatformFeeBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to process local TicsClaimPlatformFeeBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to publish TicsClaimPlatformFeeBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_PLATFORM_FEE] No peers available for broadcasting TicsClaimPlatformFeeBatch"
                     );
                 }
             }
@@ -746,8 +935,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "peer-invalidation-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "peer-status";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -810,8 +999,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -873,8 +1062,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -940,8 +1129,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1013,8 +1202,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1064,8 +1253,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_WITHDRAW_LIQUIDITY.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_WITHDRAW_LIQUIDITY;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1101,6 +1290,62 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::PendingClaimPlatformFeeRequestBroadcast { request } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg =
+                    crate::types::GossipsubMessage::PendingClaimPlatformFeeRequestBroadcast {
+                        request: request.clone(),
+                    };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [PLATFORM_FEE] Failed to serialize PendingClaimPlatformFeeRequestBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [PLATFORM_FEE] Failed to process local PendingClaimPlatformFeeRequestBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [PLATFORM_FEE] Failed to publish PendingClaimPlatformFeeRequestBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "📡 [PLATFORM_FEE] Published PendingClaimPlatformFeeRequestBroadcast (request_id={}) to {} peers",
+                            request.request_id, peer_count
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [PLATFORM_FEE] No peers available for broadcasting PendingClaimPlatformFeeRequestBroadcast"
+                    );
+                }
+            }
             ChannelMessage::PendingClaimRewardRequestBroadcast { request } => {
                 use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
 
@@ -1119,8 +1364,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1191,8 +1436,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "solver-add-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "solver-add-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -2151,7 +2396,7 @@ impl MpcNetworkLayer {
             ChannelMessage::DepositIntent {
                 intent,
                 intent_id,
-                user_eth_address,
+                user_tics_address,
                 transaction_type,
                 amount,
                 target_amount,
@@ -2212,7 +2457,7 @@ impl MpcNetworkLayer {
                     // Store the intent itself
                     if let Ok(intent_hash_bytes) = hex::decode(&intent_hash) {
                         if let Err(e) = uim
-                            .store_intent_hash(intent_hash_bytes, &user_eth_address, &intent)
+                            .store_intent_hash(intent_hash_bytes, &user_tics_address, &intent)
                             .await
                         {
                             warn!(
@@ -2236,7 +2481,7 @@ impl MpcNetworkLayer {
                 let deposit_intent_msg = GossipsubMessage::DepositIntent {
                     intent: intent.clone(),
                     intent_id: intent_id.clone(),
-                    user_eth_address: user_eth_address.clone(),
+                    user_tics_address: user_tics_address.clone(),
                     amount,
                     signature: signature.clone(),
                 };
@@ -2244,7 +2489,7 @@ impl MpcNetworkLayer {
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
 
                 // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("deposit-intents");
+                let topic = gossipsub::IdentTopic::new("user-operations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
             }
@@ -2315,7 +2560,7 @@ impl MpcNetworkLayer {
                 // Process locally first (like add_liquidity / peerinv:) so this node updates DB too
                 {
                     use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
-                    let topic_hash = IdentTopic::new("transaction-id-sync");
+                    let topic_hash = IdentTopic::new("transaction-sync");
                     let gossip_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
                         intent_hashes: intent_hashes.clone(),
                         transaction_id: transaction_id.clone(),
@@ -2352,7 +2597,7 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic_str = "transaction-id-sync";
+                let topic_str = "transaction-sync";
                 let topic = gossipsub::IdentTopic::new(topic_str);
 
                 // CRITICAL FIX: Register TransactionIdBroadcast for retry tracking
@@ -2438,6 +2683,8 @@ impl MpcNetworkLayer {
                     signed_payload: String,
                     timestamp_ms: i64,
                     status: String,
+                    #[serde(default)]
+                    tx_id: Option<String>,
                 }
                 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
 
@@ -2495,12 +2742,12 @@ impl MpcNetworkLayer {
             }
             
             ChannelMessage::UserRegistration {
-                ethereum_address,
+                tics_address,
                 node_id,
             } => {
                 info!(
                     "👤 [NETWORK] Broadcasting user registration: {} from node {}",
-                    ethereum_address, node_id
+                    tics_address, node_id
                 );
 
                 // Directly update commitments locally using the stored HMAC constant
@@ -2508,7 +2755,7 @@ impl MpcNetworkLayer {
                     (&self.user_intent_manager, &self.dkg_node)
                 {
                     if let Some(reg) = user_intent_manager
-                        .get_user_by_address(&ethereum_address)
+                        .get_user_by_address(&tics_address)
                         .await
                     {
                         if let Some(tweak_scalar) =
@@ -2521,50 +2768,50 @@ impl MpcNetworkLayer {
                             {
                                 Ok(group_key) => {
                                     if let Err(e) = user_intent_manager
-                                        .set_user_group_key(&ethereum_address, group_key)
+                                        .set_user_group_key(&tics_address, group_key)
                                         .await
                                     {
-                                        warn!("❌ [NETWORK] Failed to store user group key for {}: {}", ethereum_address, e);
+                                        warn!("❌ [NETWORK] Failed to store user group key for {}: {}", tics_address, e);
                                     } else {
-                                        info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", ethereum_address);
+                                        info!("🔑 [NETWORK] Stored user-specific group key and derived addresses for {}", tics_address);
                                         // Log the derived addresses
                                         if let Some(user) = user_intent_manager
-                                            .get_user_by_address(&ethereum_address)
+                                            .get_user_by_address(&tics_address)
                                             .await
                                         {
                                             if let Some(eth_addr) = &user.derived_eth_address {
                                                 info!(
                                                     "📬 [NETWORK] Derived ETH address for {}: {}",
-                                                    ethereum_address, eth_addr
+                                                    tics_address, eth_addr
                                                 );
                                             }
                                             if let Some(btc_addr) = &user.derived_btc_address {
                                                 info!(
                                                     "📬 [NETWORK] Derived BTC address for {}: {}",
-                                                    ethereum_address, btc_addr
+                                                    tics_address, btc_addr
                                                 );
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", ethereum_address, e);
+                                    warn!("❌ [NETWORK] Failed to derive user-specific group key for {}: {}", tics_address, e);
                                 }
                             }
                         }
                     } else {
                         warn!(
                             "❌ [NETWORK] Invalid HMAC tweak scalar for {}",
-                            ethereum_address
+                            tics_address
                         );
                     }
                 } else {
-                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for {}", ethereum_address);
+                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for {}", tics_address);
                 }
 
                 // Create and broadcast user registration message via gossipsub (same pattern as deposit intent)
                 let user_reg_msg = GossipsubMessage::UserRegistration {
-                    ethereum_address: ethereum_address.clone(),
+                    tics_address: tics_address.clone(),
                     timestamp: chrono::Utc::now().timestamp(),
                     node_id: node_id.clone(),
                 };
@@ -2572,9 +2819,72 @@ impl MpcNetworkLayer {
                     .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
 
                 // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("user-registrations");
+                let topic = gossipsub::IdentTopic::new("user-operations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
+            }
+
+            ChannelMessage::AdminRegistration {
+                tics_address,
+                node_id,
+            } => {
+                info!(
+                    "👤 [NETWORK] Broadcasting admin registration: {} from node {}",
+                    tics_address, node_id
+                );
+
+                // Derive admin group key and store derived addresses locally
+                if let (Some(user_intent_manager), Some(dkg_node)) =
+                    (&self.user_intent_manager, &self.dkg_node)
+                {
+                    if let Some(reg) = user_intent_manager
+                        .get_admin_by_address(&tics_address)
+                        .await
+                    {
+                        if let Some(tweak_scalar) =
+                            k256::Scalar::from_repr_vartime(reg.hmac_constant.into())
+                        {
+                            match dkg_node
+                                .derive_user_specific_group_key_from_commitments(tweak_scalar)
+                                .await
+                            {
+                                Ok(group_key) => {
+                                    if let Err(e) = user_intent_manager
+                                        .set_admin_group_key(&tics_address, group_key)
+                                        .await
+                                    {
+                                        warn!("❌ [NETWORK] Failed to store admin group key for {}: {}", tics_address, e);
+                                    } else {
+                                        info!("🔑 [NETWORK] Stored admin-specific group key and derived addresses for {}", tics_address);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("❌ [NETWORK] Failed to derive admin-specific group key for {}: {}", tics_address, e);
+                                }
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "❌ [NETWORK] Admin not found for HMAC tweak: {}",
+                            tics_address
+                        );
+                    }
+                } else {
+                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for admin {}", tics_address);
+                }
+
+                // Broadcast admin registration via gossipsub
+                let admin_reg_msg = GossipsubMessage::AdminRegistration {
+                    tics_address: tics_address.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    node_id: node_id.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&admin_reg_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize admin registration: {}", e))?;
+
+                let topic = gossipsub::IdentTopic::new("user-operations");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted admin registration to P2P network");
             }
 
             ChannelMessage::ScheduledDKGStart => {
@@ -2634,12 +2944,13 @@ impl MpcNetworkLayer {
                 signed_payload,
                 timestamp_ms,
                 status,
+                tx_id,
             } => {
                 use libp2p::gossipsub::IdentTopic;
 
                 info!(
-                    "💧 [ADD_LIQUIDITY] Processing solver_add_liquidity request for request_id={} solver_id={} solver_address={} amount={} chain_id={}",
-                    request_id, solver_id, solver_address, amount, chain_id
+                    "💧 [ADD_LIQUIDITY] Processing solver_add_liquidity request for request_id={} solver_id={} solver_address={} amount={} chain_id={} tx_id={:?}",
+                    request_id, solver_id, solver_address, amount, chain_id, tx_id
                 );
 
                 // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
@@ -2663,6 +2974,8 @@ impl MpcNetworkLayer {
                     signed_payload: String,
                     timestamp_ms: i64,
                     status: String,
+                    #[serde(default)]
+                    tx_id: Option<String>,
                 }
 
                 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
@@ -2677,6 +2990,7 @@ impl MpcNetworkLayer {
                     signed_payload: signed_payload.clone(),
                     timestamp_ms,
                     status: status.clone(),
+                    tx_id: tx_id.clone(),
                 };
 
                 // Use request_id as the unique key identifier
@@ -2700,6 +3014,7 @@ impl MpcNetworkLayer {
                     signed_payload: signed_payload.clone(),
                     timestamp_ms,
                     status: status.clone(),
+                    tx_id: tx_id.clone(),
                 };
 
                 let msg_bytes =
@@ -2816,7 +3131,7 @@ impl MpcNetworkLayer {
                             "⚠️ [BTC_INTENT_MANAGER] No stored target_amount for cross-chain intent {}; computing fallback",
                             intent_hash
                         );
-                        match crate::rpc_server::utils::fetch_crypto_prices().await {
+                        match crate::rpc_server::utils::fetch_crypto_prices(Some(intent.timestamp)).await {
                             Ok(prices) => {
                                 match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
                                     source_amount,
@@ -2960,7 +3275,7 @@ impl MpcNetworkLayer {
                 })?;
             let gas_limit = estimated_gas + (estimated_gas / 10);
 
-            let nonce = crate::utils::transaction::fetch_ethereum_nonce(&from_address, chain_id)
+            let nonce = crate::utils::transaction::fetch_tics_nonce(&from_address, chain_id)
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to fetch nonce for {}: {}", from_address, e)
@@ -3010,14 +3325,14 @@ impl MpcNetworkLayer {
                     crate::utils::transaction::create_transaction_for_signing_contract(&contract_tx);
                 let contract_chain_handler =
                     signing_node.get_contract_chain_handler().clone();
-                let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+                let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
                 eth_signer
                     .sign_contract_message(
                         contract_tx_bytes,
                         &contract_chain_handler,
                         &contract_tx,
                         None,
-                        None, // user_eth_address (not applicable)
+                        None, // user_tics_address (not applicable)
                         intent_hashes.clone(),
                         // Use the main DKG share as an explicit signing key override.
                         secret_share,
@@ -3025,6 +3340,7 @@ impl MpcNetworkLayer {
                         None,
                         None, // tics_withdraw_identifiers (not applicable)
                         None, // tics_claim_reward_identifiers (not applicable)
+                        None, // tics_claim_platform_fee_identifiers (not applicable)
                         nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
@@ -3087,12 +3403,15 @@ impl MpcNetworkLayer {
             signed_payload: String,
             timestamp_ms: i64,
             status: String,
+            #[serde(default)]
+            tx_id: Option<String>,
         }
 
         let mut solver_ids: Vec<String> = Vec::new();
         let mut amounts: Vec<String> = Vec::new();
         let mut chain_ids: Vec<u64> = Vec::new();
         let mut chain_types: Vec<u8> = Vec::new();
+        let mut tx_ids: Vec<String> = Vec::new();
 
         for request_id in &request_ids {
             let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
@@ -3121,9 +3440,10 @@ impl MpcNetworkLayer {
                     }
                 };
                 chain_types.push(chain_type);
+                tx_ids.push(record.tx_id.clone().unwrap_or_default());
 
                 // Keep status as "Pending" - it will be marked "Completed" on success
-                info!("📦 [ADD_LIQUIDITY_BATCH] Processing request {} (status: {})", request_id, record.status);
+                info!("📦 [ADD_LIQUIDITY_BATCH] Processing request {} (status: {}, tx_id: {:?})", request_id, record.status, record.tx_id);
             } else {
                 warn!("⚠️ [ADD_LIQUIDITY_BATCH] Request {} not found in RocksDB, skipping", request_id);
             }
@@ -3141,10 +3461,10 @@ impl MpcNetworkLayer {
             return Err(anyhow!("No chain_ids found in batch"));
         }
 
-        // For now, assume all requests in a batch are for the same chain
-        // (can be extended to process per-chain sub-batches later)
-        let chain_id = chain_ids[0];
-        info!("💧 [ADD_LIQUIDITY_BATCH] Target chain_id: {}, chain_type: {}", chain_id, chain_types[0]);
+        // The addLiquidityBatch smart contract lives on Qubetics (chain 9029).
+        // chain_ids[] holds the *asset* chain (e.g. 0 for BTC), not the target chain.
+        let chain_id: u64 = 9029;
+        info!("💧 [ADD_LIQUIDITY_BATCH] Contract chain_id: {}, first asset chain_id: {}, chain_type: {}", chain_id, chain_ids[0], chain_types[0]);
 
         // Parse amounts to U256
         let amounts_u256: Vec<U256> = amounts
@@ -3200,24 +3520,25 @@ impl MpcNetworkLayer {
             &solver_ids,
             &amounts_u256,
             &chain_types,
+            &tx_ids,
             &solver_contract_address,
             chain_id,
         )
         .await?;
 
-        // Expect an Ethereum transaction
+        // Expect a TICS transaction
         let eth_tx = match chain_tx {
-            crate::chain_abstraction::ChainTransaction::Ethereum(tx) => tx,
+            crate::chain_abstraction::ChainTransaction::Tics(tx) => tx,
             _ => {
                 warn!(
-                    "❌ [ADD_LIQUIDITY_BATCH] Batch transaction is not an Ethereum transaction"
+                    "❌ [ADD_LIQUIDITY_BATCH] Batch transaction is not a TICS transaction"
                 );
                 return Ok(());
             }
         };
 
         info!(
-            "✅ [ADD_LIQUIDITY_BATCH] Built batchTransfer Ethereum transaction: nonce={}, gas_limit={}",
+            "✅ [ADD_LIQUIDITY_BATCH] Built batchTransfer TICS transaction: nonce={}, gas_limit={}",
             eth_tx.nonce, eth_tx.gas_limit
         );
 
@@ -3228,7 +3549,7 @@ impl MpcNetworkLayer {
                 self.node_manager.get_active_nodes().into_iter().collect();
             signing_node.set_available_nodes(available_nodes);
             signing_node.set_chain_handler(
-                crate::chain_abstraction::ChainHandlerFactory::create_ethereum_handler(
+                crate::chain_abstraction::ChainHandlerFactory::create_tics_handler(
                     eth_tx.chain_id,
                 )
                 .into(),
@@ -3260,7 +3581,7 @@ impl MpcNetworkLayer {
                     &contract_tx,
                 );
             let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
-            let mut eth_signer = crate::signing::EthereumSigner::new(&mut signing_node);
+            let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
 
             // Pass request_ids as intent_hashes for tracking through signing flow
             // When transaction succeeds/fails, these IDs will be used to update status
@@ -3270,13 +3591,14 @@ impl MpcNetworkLayer {
                     &contract_chain_handler,
                     &contract_tx,
                     vault_tweaked_share.clone(),
-                    None,     // user_eth_address (not applicable)
+                    None,     // user_tics_address (not applicable)
                     request_ids.clone(),   // Pass request_ids for tracking
                     vault_tweaked_share,
                     None,     // request_id
                     None,     // original_request
                     None,     // tics_withdraw_identifiers (not applicable)
                     None,     // tics_claim_reward_identifiers (not applicable)
+                    None,     // tics_claim_platform_fee_identifiers (not applicable)
                     nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                 )
                 .await?;

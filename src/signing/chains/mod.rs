@@ -1,6 +1,6 @@
 mod bitcoin;
 pub mod bitcoin_batch;
-mod ethereum;
+mod tics;
 
 pub use bitcoin::BitcoinSigner;
-pub use ethereum::EthereumSigner;
+pub use tics::TicsSigner;

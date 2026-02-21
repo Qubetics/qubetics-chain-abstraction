@@ -17,20 +17,22 @@ use crate::{
 use super::{
     errors::RpcError,
     handlers::{
-        handle_add_liquidity, handle_check_peer_connection, handle_claim_reward,
-        handle_get_dkg_status, handle_get_intent_details, handle_get_intents_solved_count,
-        handle_get_network_addresses, handle_get_node_id, handle_get_pending_intents_count,
-        handle_get_node_info, handle_get_solver_liquidity, handle_get_solver_rewards,
-        handle_get_status, handle_get_uptime, handle_get_user_count, handle_get_user_info,
-        handle_heartbeat, handle_log_partial_pubkeys, handle_register_user, handle_rejoin_status,
-        handle_user_mpc_deposit, handle_withdraw_liquidity,
+        handle_add_liquidity, handle_check_peer_connection, handle_claim_platform_fee,
+        handle_claim_reward, handle_get_dkg_status, handle_get_intent_details,
+        handle_get_intents_solved_count, handle_get_network_addresses, handle_get_node_id,
+        handle_get_pending_intents_count, handle_get_node_info, handle_get_solver_liquidity,
+        handle_get_solver_rewards, handle_get_status, handle_get_uptime, handle_get_user_count,
+        handle_get_admin_info, handle_get_user_info, handle_heartbeat, handle_log_partial_pubkeys,
+        handle_register_admin,
+        handle_register_user, handle_rejoin_status, handle_user_mpc_deposit,
+        handle_withdraw_liquidity,
     },
     rate_limiter::RateLimiter,
 };
 use crate::types::rpc_server::{
-    AddLiquidityRequest, ClaimRewardRequest, GetSolverRewardsRequest, RequestContext,
-    SolverLiquidityRequest, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
-    UserRegistrationRequest, WithdrawLiquidityRequest,
+    AddLiquidityRequest, AdminRegistrationRequest, ClaimPlatformFeeRequest, ClaimRewardRequest,
+    GetSolverRewardsRequest, RequestContext, SolverLiquidityRequest, UserMpcDepositRequest,
+    UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
 };
 
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
@@ -130,6 +132,20 @@ pub async fn start_http_server(
         .and(with_auth())
         .and_then(handle_register_user);
 
+    let register_admin = warp::path("register_admin")
+        .and(warp::post())
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
+        .and(limited_json_body::<AdminRegistrationRequest>())
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
+        .and(with_message_tx(message_tx.clone()))
+        .and(with_node_id(node_id.clone()))
+        .and(with_auth())
+        .and_then(handle_register_admin);
+
     let user_mpc_deposit = warp::path("user_mpc_deposit")
         .and(warp::post())
         .and(with_rate_limit(
@@ -221,12 +237,33 @@ pub async fn start_http_server(
         .and(with_auth())
         .and_then(handle_withdraw_liquidity);
 
+    let claim_platform_fee = warp::path("claim_platform_fee")
+        .and(warp::post())
+        .and(with_rate_limit(
+            ip_rate_limiter.clone(),
+            global_rate_limiter.clone(),
+        ))
+        .and(limited_json_body::<ClaimPlatformFeeRequest>())
+        .and(with_message_tx(message_tx.clone()))
+        .and(with_database(database.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and(with_dkg_storage(dkg_storage.clone()))
+        .and(with_auth())
+        .and_then(handle_claim_platform_fee);
+
     let get_user_info = warp::path("user_info")
         .and(warp::path::param())
         .and(warp::get())
         .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
         .and(with_user_intent_manager(user_intent_manager.clone()))
         .and_then(handle_get_user_info);
+
+    let get_admin_info = warp::path("admin_info")
+        .and(warp::path::param())
+        .and(warp::get())
+        .and(with_get_global_rate_limit(get_global_rate_limiter.clone()))
+        .and(with_user_intent_manager(user_intent_manager.clone()))
+        .and_then(handle_get_admin_info);
 
     let get_intent_details = warp::path("intent_details")
         .and(warp::path::param())
@@ -323,7 +360,9 @@ pub async fn start_http_server(
         .and_then(handle_check_peer_connection);
 
     let routes = register_user
+        .or(register_admin)
         .or(get_user_info)
+        .or(get_admin_info)
         .or(get_intent_details)
         .or(get_node_id)
         .or(get_node_info)
@@ -335,6 +374,7 @@ pub async fn start_http_server(
         .or(claim_reward)
         .or(add_liquidity)
         .or(withdraw_liquidity)
+        .or(claim_platform_fee)
         .or(heartbeat)
         .or(uptime)
         .or(log_partial_pubkeys)

@@ -75,7 +75,7 @@ async function testRegisterUser(ethereumAddress, wallet) {
   try {
     log(`\n🔵 Registering address: ${ethereumAddress}`, 'blue');
 
-    // Create registration message: "register:{ethereum_address}:{timestamp}"
+    // Create registration message: "register:{tics_address}:{timestamp}"
     const timestamp = Math.floor(Date.now() / 1000);
     const message = `register:${ethereumAddress}:${timestamp}`;
     log(`📝 Registration message: ${message}`, 'cyan');
@@ -87,7 +87,7 @@ async function testRegisterUser(ethereumAddress, wallet) {
     const response = await axios.post(
       `${RPC_BASE_URL}/register_user`,
       {
-        ethereum_address: ethereumAddress,
+        tics_address: ethereumAddress,
         signature: signature,
         message: message
       },
@@ -137,7 +137,7 @@ async function testGetUserInfo(ethereumAddress) {
     log(`✅ User info retrieved!`, 'green');
     log(`📊 User Info:`, 'cyan');
     log(`   User ID: ${response.data.user_id}`, 'cyan');
-    log(`   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
+    log(`   TICS Address: ${response.data.tics_address}`, 'cyan');
     log(`   HMAC Constant: ${response.data.hmac_constant}`, 'cyan');
     log(`   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
     log(`   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');

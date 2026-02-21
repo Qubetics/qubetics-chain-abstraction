@@ -40,7 +40,7 @@ pub struct ReceivedTxData {
     pub intent_hash: Option<String>,
     pub transaction_type: Option<String>,
     pub request_id: Option<String>,
-    pub user_eth_address: Option<String>,
+    pub user_tics_address: Option<String>,
     /// Full batch identifiers for withdraw/claim-reward batches ("request_id|solver_address").
     pub batch_identifiers: Option<Vec<String>>,
 }
@@ -68,6 +68,9 @@ impl Default for SignatureStore {
     }
 }
 
+/// Maximum number of recent rounds to keep in memory for signature data.
+const MAX_SIGNATURE_ROUNDS_IN_MEMORY: usize = 1000;
+
 impl SignatureStore {
     pub fn new() -> Self {
         Self {
@@ -78,6 +81,52 @@ impl SignatureStore {
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
             aggregated_round_slots: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    /// Sweep old round data, keeping only the latest `MAX_SIGNATURE_ROUNDS_IN_MEMORY` rounds.
+    /// Call this periodically (e.g. every N clock ticks) to prevent unbounded memory growth.
+    pub async fn sweep_old_rounds(&self) {
+        // Determine the cutoff round from signatures_by_round
+        let cutoff = {
+            let map = self.signatures_by_round.read().await;
+            if map.len() <= MAX_SIGNATURE_ROUNDS_IN_MEMORY {
+                return; // nothing to sweep
+            }
+            let mut rounds: Vec<u64> = map.keys().copied().collect();
+            rounds.sort_unstable();
+            // Keep the top MAX_SIGNATURE_ROUNDS_IN_MEMORY rounds
+            rounds[rounds.len() - MAX_SIGNATURE_ROUNDS_IN_MEMORY]
+        };
+
+        // Sweep signatures_by_round
+        {
+            let mut map = self.signatures_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+
+        // Sweep final_nodes_by_round
+        {
+            let mut map = self.final_nodes_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+
+        // Sweep aggregated_rounds
+        {
+            let mut set = self.aggregated_rounds.write().await;
+            set.retain(|&round| round >= cutoff);
+        }
+
+        // Sweep signatures_by_round_slot (keyed by (round, slot_id))
+        {
+            let mut map = self.signatures_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+
+        // Sweep aggregated_round_slots
+        {
+            let mut set = self.aggregated_round_slots.write().await;
+            set.retain(|&(round, _)| round >= cutoff);
         }
     }
 }
@@ -138,6 +187,26 @@ pub struct PendingStore {
         >,
     >,
     pub claim_reward_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// BTC claim-platform-fee batch: same shape as claim_reward_pending_transactions_btc.
+    pub claim_platform_fee_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    pub claim_platform_fee_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// TICS claim-platform-fee batch: same shape as claim_reward_pending_transactions_tics.
+    /// Signed with admin's tweaked share; tx-id broadcast marks requests Completed.
+    pub claim_platform_fee_pending_transactions_tics: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<Vec<String>>,     // identifiers: "request_id|admin"
+                    Option<TransactionType>, // ClaimPlatformFee
+                    Option<String>,          // unused (request_id for retry)
+                    Option<()>,              // deprecated original_request
+                ),
+            >,
+        >,
+    >,
     /// Per-round list of intent hashes (single intent = len 1, batch = len >1, solver-only = empty)
     pub intent_hashes_by_round: Arc<RwLock<HashMap<u64, Vec<String>>>>,
     /// TICS UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
@@ -147,7 +216,7 @@ pub struct PendingStore {
                 u64,
                 Vec<(
                     String,           // intent_hash
-                    String,           // user_eth_address
+                    String,           // user_tics_address
                     ChainTransaction,
                     Vec<u8>,          // tx_bytes
                 )>,
@@ -162,7 +231,7 @@ pub struct PendingStore {
                 u64,
                 Vec<(
                     String,              // intent_hash (slot_id)
-                    String,              // user_eth_address
+                    String,              // user_tics_address
                     ChainTransaction,    // Bitcoin tx with potentially multiple inputs
                     Vec<u8>,             // tx_bytes (serialized unsigned tx)
                     Option<BtcRoundExtras>, // BTC extras (pubkey33, signer_h160, from_kind, is_testnet)
@@ -196,11 +265,33 @@ impl PendingStore {
             claim_reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             claim_reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_platform_fee_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            claim_platform_fee_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_platform_fee_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_btc_batch: Arc::new(RwLock::new(HashMap::new())),
             received_tx_data: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        self.pending_transactions.write().await.retain(|&round, _| round >= cutoff);
+        self.pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_reward_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_reward_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_reward_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_platform_fee_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_platform_fee_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_platform_fee_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.intent_hashes_by_round.write().await.retain(|&round, _| round >= cutoff);
+        self.user_to_vault_tics_batch.write().await.retain(|&round, _| round >= cutoff);
+        self.user_to_vault_btc_batch.write().await.retain(|&round, _| round >= cutoff);
+        self.received_tx_data.write().await.retain(|&(round, _), _| round >= cutoff);
     }
 }
 
@@ -249,7 +340,7 @@ mod tests {
                     signature: vec![1u8; 65],
                     signer_id: "node-a".to_string(),
                     recovery_id: 0,
-                    user_eth_address: None,
+                    user_tics_address: None,
                 },
             );
         }
@@ -263,7 +354,7 @@ mod tests {
                     signature: vec![2u8; 65],
                     signer_id: "node-b".to_string(),
                     recovery_id: 1,
-                    user_eth_address: Some("0xabc".to_string()),
+                    user_tics_address: Some("0xabc".to_string()),
                 },
             );
         }
@@ -310,6 +401,22 @@ impl BtcAggregationState {
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        {
+            let mut map = self.btc_sigs_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_agg_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_done_inputs_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+    }
 }
 
 /// BTC UserToVault batch aggregation state.
@@ -343,6 +450,26 @@ impl BtcUtvAggregationState {
             btc_utv_agg_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_done_inputs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_completed_slots: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        {
+            let mut map = self.btc_utv_sigs_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_utv_agg_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_utv_done_inputs_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut set = self.btc_utv_completed_slots.write().await;
+            set.retain(|&(round, _)| round >= cutoff);
         }
     }
 }
@@ -389,10 +516,10 @@ impl SigningEnvironmentBuilder {
         let peer_id = coordination::derive_peer_id_from_string(&self.id);
         let coordination = Coordination::new(peer_id, self.message_tx.clone());
 
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {
@@ -404,10 +531,10 @@ impl SigningEnvironmentBuilder {
     }
 
     pub fn build_with_coordination(self, coordination: Coordination) -> SigningEnvironment {
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_ethereum_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {

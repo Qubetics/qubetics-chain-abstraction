@@ -7,7 +7,7 @@
  * later; this call returns immediately with status "success" and a request-queued message.
  *
  * Usage:
- *   # TICS withdraw (set ethereum_address for destination)
+ *   # TICS withdraw (set tics_address for destination)
  *   SOLVER_PRIVATE_KEY=0x... QUBETICS_RPC_URL=http://127.0.0.1:8083 \
  *     AMOUNT_TICS=1000000000000000000 node test_withdraw_liquidity.js
  *
@@ -132,13 +132,13 @@ async function runWithdrawLiquidityTest() {
   const payload = {
     signature,
     message,
-    ethereum_address: ETH_ADDRESS || (AMOUNT_TICS ? derivedAddress : null),
+    tics_address: ETH_ADDRESS || (AMOUNT_TICS ? derivedAddress : null),
     btc_address: AMOUNT_BTC ? BTC_ADDRESS : null,
     amount_tics: AMOUNT_TICS || null,
     amount_btc: AMOUNT_BTC || null,
   };
 
-  if ((AMOUNT_TICS && !payload.ethereum_address) || (AMOUNT_BTC && !payload.btc_address)) {
+  if ((AMOUNT_TICS && !payload.tics_address) || (AMOUNT_BTC && !payload.btc_address)) {
     console.error(
       `${colors.red}❌ ETH_ADDRESS required for TICS withdraw; BTC_ADDRESS required for BTC withdraw${colors.reset}`,
     );

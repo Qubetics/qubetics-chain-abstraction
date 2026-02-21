@@ -72,6 +72,7 @@ struct AddLiquidityBatch {
 string solverId;
 uint256 amount;
 ChainType chainType;
+string txId;
 }
 
 struct SolverUnclaimedRewards {
@@ -138,7 +139,8 @@ event LiquidityAdded(
 string solverId,
 uint256 chainId,
 uint256 amount,
-uint256 timestamp
+uint256 timestamp,
+string txId
 );
 event LiquidityRemoved(
 string solverId,
@@ -539,6 +541,7 @@ AddLiquidityBatch calldata dep = deposits[i];
 string memory solverId = dep.solverId;
 uint256 amount = dep.amount;
 ChainType chainType = dep.chainType;
+string memory txId = dep.txId;
 
 if (amount == 0) revert InvalidAmount();
 if (!solverExists[solverId]) revert SolverNotFound(solverId);
@@ -559,7 +562,8 @@ emit LiquidityAdded(
 solverId,
 chainId,
 amount,
-block.timestamp
+block.timestamp,
+txId
 );
 
 // Activate solver if now eligible

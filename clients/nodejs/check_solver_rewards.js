@@ -184,7 +184,7 @@ async function checkUnclaimedRewards() {
         unclaimed.forEach((reward, idx) => {
           console.log(`  ${colors.magenta}[${idx + 1}] Request ID: ${reward.request_id}${colors.reset}`);
           console.log(`      Status:   ${reward.status}`);
-          if (reward.ethereum_address) console.log(`      ETH Addr: ${reward.ethereum_address}`);
+          if (reward.tics_address) console.log(`      TICS Addr: ${reward.tics_address}`);
           if (reward.btc_address) console.log(`      BTC Addr: ${reward.btc_address}`);
           if (reward.tx_id) console.log(`      TX ID:    ${reward.tx_id}`);
         });

@@ -1,6 +1,7 @@
 use crate::database::{key_utils, Database};
 use crate::types::{
-    DepositIntent, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
+    AdminRegistration, DepositIntent, IntentStatus, IntentTransactionIds, TransactionStatus,
+    UserRegistration,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -24,42 +25,42 @@ impl UserStorage {
     }
 
     /// Store a user registration
-    pub async fn store_user(&self, ethereum_address: &str, user: &UserRegistration) -> Result<()> {
-        let key = key_utils::user_key(ethereum_address);
+    pub async fn store_user(&self, tics_address: &str, user: &UserRegistration) -> Result<()> {
+        let key = key_utils::user_key(tics_address);
 
         debug!(
             "[USER_STORAGE] Storing user: {}, intents: {}",
-            ethereum_address, user.intent_hashes.len()
+            tics_address, user.intent_hashes.len()
         );
 
         match self.db.put_string(&key, user) {
             Ok(()) => {
-                info!("[USER_STORAGE] Stored user registration: {}", ethereum_address);
+                info!("[USER_STORAGE] Stored user registration: {}", tics_address);
                 Ok(())
             }
             Err(e) => {
                 error!(
                     "[USER_STORAGE] Failed to store user registration for {}: {}",
-                    ethereum_address, e
+                    tics_address, e
                 );
                 Err(e)
             }
         }
     }
 
-    /// Get a user registration by ethereum address
-    pub async fn get_user(&self, ethereum_address: &str) -> Result<Option<UserRegistration>> {
-        let key = key_utils::user_key(ethereum_address);
+    /// Get a user registration by TICS address
+    pub async fn get_user(&self, tics_address: &str) -> Result<Option<UserRegistration>> {
+        let key = key_utils::user_key(tics_address);
         let user = self.db.get_string(&key)?;
         if user.is_some() {
-            debug!("🔍 [USER_STORAGE] Retrieved user: {}", ethereum_address);
+            debug!("🔍 [USER_STORAGE] Retrieved user: {}", tics_address);
         }
         Ok(user)
     }
 
     /// Check if user exists
-    pub async fn contains_user(&self, ethereum_address: &str) -> Result<bool> {
-        let key = key_utils::user_key(ethereum_address);
+    pub async fn contains_user(&self, tics_address: &str) -> Result<bool> {
+        let key = key_utils::user_key(tics_address);
         self.db.contains_string_key(&key)
     }
 
@@ -70,9 +71,9 @@ impl UserStorage {
 
         let mut users = HashMap::new();
         for (key, user) in results {
-            // Extract ethereum address from key by removing prefix
-            if let Some(ethereum_address) = key.strip_prefix(prefix) {
-                users.insert(ethereum_address.to_string(), user);
+            // Extract TICS address from key by removing prefix
+            if let Some(tics_address) = key.strip_prefix(prefix) {
+                users.insert(tics_address.to_string(), user);
             }
         }
 
@@ -83,32 +84,32 @@ impl UserStorage {
     /// Update user group key
     pub async fn update_user_group_key(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         group_key: &crate::types::SerializablePoint,
     ) -> Result<()> {
-        let key = key_utils::user_key(ethereum_address);
-        if let Some(mut user) = self.get_user(ethereum_address).await? {
+        let key = key_utils::user_key(tics_address);
+        if let Some(mut user) = self.get_user(tics_address).await? {
             user.user_group_key = Some(group_key.clone());
             self.db.put_string(&key, &user)?;
             info!(
                 "✅ [USER_STORAGE] Updated group key for user: {}",
-                ethereum_address
+                tics_address
             );
             Ok(())
         } else {
-            Err(anyhow::anyhow!("User not found: {}", ethereum_address))
+            Err(anyhow::anyhow!("User not found: {}", tics_address))
         }
     }
 
     /// Update user derived addresses
     pub async fn update_derived_addresses(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         eth_addr: Option<String>,
         btc_addr: Option<String>,
     ) -> Result<()> {
-        let key = key_utils::user_key(ethereum_address);
-        if let Some(mut user) = self.get_user(ethereum_address).await? {
+        let key = key_utils::user_key(tics_address);
+        if let Some(mut user) = self.get_user(tics_address).await? {
             if let Some(eth) = eth_addr {
                 user.derived_eth_address = Some(eth);
             }
@@ -118,18 +119,18 @@ impl UserStorage {
             self.db.put_string(&key, &user)?;
             info!(
                 "✅ [USER_STORAGE] Updated derived addresses for user: {}",
-                ethereum_address
+                tics_address
             );
             Ok(())
         } else {
-            Err(anyhow::anyhow!("User not found: {}", ethereum_address))
+            Err(anyhow::anyhow!("User not found: {}", tics_address))
         }
     }
 
     /// Store an intent hash for a user
     pub async fn store_user_intent(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
         status: IntentStatus,
     ) -> Result<()> {
@@ -137,7 +138,7 @@ impl UserStorage {
         // the user immediately without scanning. Reduces races and signature verification
         // failures when multiple UserToVault deposits are processed concurrently.
         let index_key = key_utils::intent_hash_to_user_key(intent_hash);
-        if let Err(e) = self.db.put_string(&index_key, &ethereum_address.to_string()) {
+        if let Err(e) = self.db.put_string(&index_key, &tics_address.to_string()) {
             error!(
                 "❌ [USER_STORAGE] Failed to write intent_hash->user index for {}: {}",
                 intent_hash, e
@@ -145,10 +146,10 @@ impl UserStorage {
             return Err(e);
         }
 
-        let key = key_utils::user_intent_key(ethereum_address, intent_hash);
+        let key = key_utils::user_intent_key(tics_address, intent_hash);
 
         info!("💾 [USER_STORAGE] Starting to store user intent:");
-        info!("  👤 User address: {}", ethereum_address);
+        info!("  👤 User address: {}", tics_address);
         info!("  🔗 Intent hash: {}", intent_hash);
         info!("  📊 Status: {:?}", status);
         info!("  🗄️  Database key: {}", key);
@@ -167,10 +168,10 @@ impl UserStorage {
         }
 
         // Also update the user's intent_hashes map
-        let user_key = key_utils::user_key(ethereum_address);
+        let user_key = key_utils::user_key(tics_address);
         info!("🔄 [USER_STORAGE] Updating user's intent_hashes map...");
 
-        if let Some(mut user) = self.get_user(ethereum_address).await? {
+        if let Some(mut user) = self.get_user(tics_address).await? {
             let old_count = user.intent_hashes.len();
             user.intent_hashes
                 .insert(intent_hash.to_string(), status.clone());
@@ -194,28 +195,28 @@ impl UserStorage {
         } else {
             error!(
                 "❌ [USER_STORAGE] User not found when trying to update intent_hashes: {}",
-                ethereum_address
+                tics_address
             );
-            Err(anyhow::anyhow!("User not found: {}", ethereum_address))
+            Err(anyhow::anyhow!("User not found: {}", tics_address))
         }
     }
 
     /// Get intent status for a user
     pub async fn get_user_intent_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
     ) -> Result<Option<IntentStatus>> {
-        let key = key_utils::user_intent_key(ethereum_address, intent_hash);
+        let key = key_utils::user_intent_key(tics_address, intent_hash);
         self.db.get_string(&key)
     }
 
     /// Get all intent hashes for a user
     pub async fn get_user_intent_hashes(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
     ) -> Result<Option<HashMap<String, IntentStatus>>> {
-        if let Some(user) = self.get_user(ethereum_address).await? {
+        if let Some(user) = self.get_user(tics_address).await? {
             Ok(Some(user.intent_hashes))
         } else {
             Ok(None)
@@ -231,7 +232,7 @@ impl UserStorage {
         &self,
         intent_hash: &str,
     ) -> Result<Option<UserRegistration>> {
-        // Fast path: O(1) lookup via intent_hash -> ethereum_address index
+        // Fast path: O(1) lookup via intent_hash -> tics_address index
         let index_key = key_utils::intent_hash_to_user_key(intent_hash);
         if let Ok(Some(address)) = self.db.get_string::<String>(&index_key) {
             if let user @ Some(_) = self.get_user(&address).await? {
@@ -255,35 +256,118 @@ impl UserStorage {
     /// Update intent status for a user
     pub async fn update_intent_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
         status: IntentStatus,
     ) -> Result<()> {
         // Update the separate intent status record
-        let intent_key = key_utils::user_intent_key(ethereum_address, intent_hash);
+        let intent_key = key_utils::user_intent_key(tics_address, intent_hash);
         self.db.put_string(&intent_key, &status)?;
 
         // Update the user's intent_hashes map
-        let user_key = key_utils::user_key(ethereum_address);
-        if let Some(mut user) = self.get_user(ethereum_address).await? {
+        let user_key = key_utils::user_key(tics_address);
+        if let Some(mut user) = self.get_user(tics_address).await? {
             user.intent_hashes
                 .insert(intent_hash.to_string(), status.clone());
             self.db.put_string(&user_key, &user)?;
             info!(
                 "✅ [USER_STORAGE] Updated intent status for user {}: {} -> {:?}",
-                ethereum_address, intent_hash, status
+                tics_address, intent_hash, status
             );
             Ok(())
         } else {
-            Err(anyhow::anyhow!("User not found: {}", ethereum_address))
+            Err(anyhow::anyhow!("User not found: {}", tics_address))
         }
     }
-    /// Get user registration details by Ethereum address
+    /// Get user registration details by TICS address
     pub async fn get_user_by_address(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
     ) -> Result<Option<UserRegistration>> {
-        self.get_user(ethereum_address).await
+        self.get_user(tics_address).await
+    }
+
+    // ==================== Admin Storage ====================
+
+    /// Store an admin registration (separate from users, under "admin:" prefix)
+    pub async fn store_admin(&self, tics_address: &str, admin: &AdminRegistration) -> Result<()> {
+        let key = key_utils::admin_key(tics_address);
+
+        debug!("[USER_STORAGE] Storing admin: {}", tics_address);
+
+        match self.db.put_string(&key, admin) {
+            Ok(()) => {
+                info!("[USER_STORAGE] Stored admin registration: {}", tics_address);
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "[USER_STORAGE] Failed to store admin registration for {}: {}",
+                    tics_address, e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Get an admin registration by TICS address
+    pub async fn get_admin(&self, tics_address: &str) -> Result<Option<AdminRegistration>> {
+        let key = key_utils::admin_key(tics_address);
+        let admin = self.db.get_string(&key)?;
+        if admin.is_some() {
+            debug!("[USER_STORAGE] Retrieved admin: {}", tics_address);
+        }
+        Ok(admin)
+    }
+
+    /// Check if admin exists
+    pub async fn contains_admin(&self, tics_address: &str) -> Result<bool> {
+        let key = key_utils::admin_key(tics_address);
+        self.db.contains_string_key(&key)
+    }
+
+    /// Get all admins
+    pub async fn get_all_admins(&self) -> Result<HashMap<String, AdminRegistration>> {
+        let prefix = crate::database::keys::ADMIN_REGISTRATION;
+        let results: Vec<(String, AdminRegistration)> = self.db.get_values_with_prefix(prefix)?;
+
+        let mut admins = HashMap::new();
+        for (key, admin) in results {
+            if let Some(tics_address) = key.strip_prefix(prefix) {
+                admins.insert(tics_address.to_string(), admin);
+            }
+        }
+
+        debug!("[USER_STORAGE] Retrieved {} admins", admins.len());
+        Ok(admins)
+    }
+
+    /// Update admin group key and derived addresses
+    pub async fn update_admin_group_key_and_addresses(
+        &self,
+        tics_address: &str,
+        group_key: &crate::types::SerializablePoint,
+        eth_addr: Option<String>,
+        btc_addr: Option<String>,
+    ) -> Result<()> {
+        let key = key_utils::admin_key(tics_address);
+        if let Some(mut admin) = self.get_admin(tics_address).await? {
+            admin.user_group_key = Some(group_key.clone());
+            if let Some(eth) = eth_addr {
+                admin.derived_eth_address = Some(eth);
+            }
+            if let Some(btc) = btc_addr {
+                admin.derived_btc_address = Some(btc);
+            }
+            self.db.put_string(&key, &admin)?;
+            info!(
+                "[USER_STORAGE] Updated admin group key and derived addresses: {}",
+                tics_address
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Admin not found: {}", tics_address))
+        }
     }
 }
 

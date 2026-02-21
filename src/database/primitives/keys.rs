@@ -1,5 +1,6 @@
 /// Database key prefixes for different data types
 pub const USER_REGISTRATION: &str = "user:";
+pub const ADMIN_REGISTRATION: &str = "admin:";
 pub const INTENT_REGISTRY: &str = "intent:";
 pub const USER_INTENT_HASH: &str = "user_intent:";
 pub const INTENT_TRANSACTION_IDS: &str = "intent_txids:";
@@ -40,7 +41,7 @@ pub const VRF_PEER_ROUND: &str = "vrf_peer_round:";
 pub const NODE_SHARE_PUBKEY_NETWORK: &str = "node_share_pubkey_network:";
 pub const NODE_SHARE_PUBKEY_VAULT: &str = "node_share_pubkey_vault:";
 pub const NODE_SHARE_PUBKEY_USER: &str = "node_share_pubkey_user:";
-/// Reverse index: intent_hash -> ethereum_address for O(1) get_user_by_intent_hash
+/// Reverse index: intent_hash -> tics_address for O(1) get_user_by_intent_hash
 pub const INTENT_HASH_TO_USER: &str = "intent_to_user:";
 /// Target chain amount (in smallest units) for an intent, computed from prices per node
 pub const INTENT_TARGET_AMOUNT: &str = "intent_target_amount:";
@@ -83,3 +84,6 @@ pub const SOLVER_ADD_LIQUIDITY: &str = "solver_add_liquidity:";
 pub const PENDING_WITHDRAW_LIQUIDITY: &str = "pending_withdraw_liquidity:";
 /// Pending claim reward requests (contract call)
 pub const PENDING_CLAIM_REWARD: &str = "pending_claim_reward:";
+/// Pending admin claim-platform-fee requests.
+/// Key format: "pending_claim_platform_fee:{request_id}"
+pub const PENDING_CLAIM_PLATFORM_FEE: &str = "pending_claim_platform_fee:";

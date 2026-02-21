@@ -43,7 +43,7 @@ impl<'a> BitcoinSigner<'a> {
         tx_bytes: Vec<u8>,
         chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
@@ -56,7 +56,7 @@ impl<'a> BitcoinSigner<'a> {
                 tx_bytes,
                 chain_handler,
                 original_tx,
-                user_eth_address,
+                user_tics_address,
                 intent_hashes,
                 transaction_type,
                 user_tweaked_share,
@@ -110,7 +110,7 @@ impl<'a> BitcoinSigner<'a> {
         round: u64,
         batch: Vec<(
             String,           // intent_hash (slot_id)
-            String,           // user_eth_address
+            String,           // user_tics_address
             ChainTransaction, // Bitcoin tx (potentially multi-input)
             Vec<u8>,          // tx_bytes
             Option<Scalar>,   // signing_key
@@ -323,7 +323,7 @@ impl<'a> BitcoinSigner<'a> {
                         signature: sig_bytes.to_vec(),
                         signer_id: self.node.id.clone(),
                         recovery_id: recovery_id.to_i32() as u8,
-                        user_eth_address: Some(user_eth.clone()),
+                        user_tics_address: Some(user_eth.clone()),
                     };
 
                     btc_sigs.push(BtcIndexedSignature {
@@ -351,7 +351,7 @@ impl<'a> BitcoinSigner<'a> {
                     round,
                     slot_id: intent_hash.clone(),
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-                    user_eth_address: Some(user_eth.clone()),
+                    user_tics_address: Some(user_eth.clone()),
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(signature_msg);
                 let signature_data = serde_json::to_vec(&gossipsub_msg)?;
@@ -370,7 +370,7 @@ impl<'a> BitcoinSigner<'a> {
                         transaction_type: Some("UserToVault".to_string()),
                         request_id: None,
                         chain_tx_json,
-                        user_eth_address: Some(user_eth.clone()),
+                        user_tics_address: Some(user_eth.clone()),
                         batch_identifiers: None,
                     };
                     let tx_data_gossip = GossipsubMessage::Signing(tx_data_msg);
@@ -413,7 +413,7 @@ impl SigningNode {
         tx_bytes: Vec<u8>,
         _chain_handler: &Arc<dyn crate::chain_abstraction::ChainHandler>,
         original_tx: Option<BitcoinTransaction>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         intent_hashes: Vec<String>,
         transaction_type: Option<TransactionType>,
         user_tweaked_share: Option<Scalar>,
@@ -435,7 +435,7 @@ impl SigningNode {
 
         // Pull the group pubkey once; used for safety checks and legacy P2PKH reconstruction.
         let signer_pubkey33 = self
-            .get_group_public_key_bytes(transaction_type.clone(), user_eth_address.clone())
+            .get_group_public_key_bytes(transaction_type.clone(), user_tics_address.clone())
             .await?;
         if signer_pubkey33.len() != 33 {
             return Err(anyhow!(
@@ -721,7 +721,7 @@ impl SigningNode {
                         signature: comp.to_vec(), // 64 bytes r||s
                         signer_id: self.id.clone(),
                         recovery_id: recovery_id.to_i32() as u8,
-                        user_eth_address: user_eth_address.clone(),
+                        user_tics_address: user_tics_address.clone(),
                     },
                 });
             }
@@ -805,6 +805,21 @@ impl SigningNode {
 
                 info!(
                     "💾 [BTC-SIGNING] Node {} stored BTC claim-reward transaction for round {} with {} requests (inputs={})",
+                    self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
+                );
+            } else if let Some(TransactionType::ClaimPlatformFee) = transaction_type {
+                // BTC claim-platform-fee batch: encoded as "request_id|admin".
+                self.store_claim_platform_fee_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    intent_hashes.clone(),
+                    extras,
+                )
+                .await;
+
+                info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC claim-platform-fee transaction for round {} with {} requests (inputs={})",
                     self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
                 );
             } else {
@@ -1186,7 +1201,7 @@ impl SigningNode {
                 signatures,
                 round,
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                user_eth_address: None,
+                user_tics_address: None,
             };
 
             // Wrap in GossipsubMessage::Signing and broadcast (final node picks from gossipsub)
@@ -1263,7 +1278,7 @@ impl SigningNode {
                     transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
                     request_id: None,
                     chain_tx_json,
-                    user_eth_address: None,
+                    user_tics_address: None,
                     batch_identifiers: batch_ids,
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
@@ -1287,7 +1302,7 @@ impl SigningNode {
                     transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
                     request_id: None,
                     chain_tx_json,
-                    user_eth_address: None,
+                    user_tics_address: None,
                     batch_identifiers: intent_hashes.clone(),
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);
@@ -1311,7 +1326,7 @@ impl SigningNode {
                     transaction_type: tx_type.as_ref().map(|t| format!("{:?}", t)),
                     request_id: None,
                     chain_tx_json,
-                    user_eth_address: None,
+                    user_tics_address: None,
                     batch_identifiers: intent_hashes.clone(),
                 };
                 let gossipsub_msg = GossipsubMessage::Signing(tx_data_msg);

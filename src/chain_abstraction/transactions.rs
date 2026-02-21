@@ -5,9 +5,9 @@ pub use crate::types::chain::bitcoin::{
     BitcoinWitnessInput, BitcoinWitnessUtxo,
 };
 
-/// Ethereum transaction structure used across handlers and services
+/// TICS transaction structure used across handlers and services
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EthereumTransaction {
+pub struct TicsTransaction {
     pub to: String,
     pub value: String,
     pub gas_limit: u64,
@@ -18,7 +18,7 @@ pub struct EthereumTransaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EthereumSignature {
+pub struct TicsSignature {
     pub v: u64,
     pub r: Vec<u8>,
     pub s: Vec<u8>,
@@ -28,14 +28,14 @@ pub struct EthereumSignature {
 /// Generic transaction interface for different blockchain types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChainTransaction {
-    Ethereum(EthereumTransaction),
+    Tics(TicsTransaction),
     Bitcoin(BitcoinTransaction),
 }
 
 impl ChainTransaction {
-    pub fn as_ethereum(&self) -> Option<&EthereumTransaction> {
+    pub fn as_tics(&self) -> Option<&TicsTransaction> {
         match self {
-            ChainTransaction::Ethereum(tx) => Some(tx),
+            ChainTransaction::Tics(tx) => Some(tx),
             _ => None,
         }
     }
@@ -51,7 +51,7 @@ impl ChainTransaction {
 /// Chain-specific signature types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChainSignature {
-    Ethereum(EthereumSignature),
+    Tics(TicsSignature),
     Bitcoin(BitcoinSignature),
 }
 

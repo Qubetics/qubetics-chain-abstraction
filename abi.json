@@ -314,6 +314,12 @@
 				"internalType": "uint256",
 				"name": "timestamp",
 				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "txId",
+				"type": "string"
 			}
 		],
 		"name": "LiquidityAdded",
@@ -793,6 +799,11 @@
 						"internalType": "enum SolverManager.ChainType",
 						"name": "chainType",
 						"type": "uint8"
+					},
+					{
+						"internalType": "string",
+						"name": "txId",
+						"type": "string"
 					}
 				],
 				"internalType": "struct SolverManager.AddLiquidityBatch[]",

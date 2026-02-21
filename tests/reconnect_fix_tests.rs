@@ -78,7 +78,7 @@ async fn tweaked_share_survives_strip_and_refresh_cycle() {
     let original_tweaked = reg.tweaked_secret_share.clone().unwrap();
 
     // -- Simulate the state-sync export: strip tweaked_secret_share --
-    let addr_key = reg.ethereum_address.clone();
+    let addr_key = reg.tics_address.clone();
     let mut stripped = reg.clone();
     stripped.tweaked_secret_share = None;
 
@@ -176,7 +176,7 @@ async fn refresh_handles_multiple_users() {
             .expect("register_user should succeed");
 
         original_shares.insert(
-            reg.ethereum_address.clone(),
+            reg.tics_address.clone(),
             reg.tweaked_secret_share.clone().unwrap().0.to_bytes().to_vec(),
         );
 
@@ -184,7 +184,7 @@ async fn refresh_handles_multiple_users() {
         let mut stripped = reg.clone();
         stripped.tweaked_secret_share = None;
         user_storage
-            .store_user(&reg.ethereum_address, &stripped)
+            .store_user(&reg.tics_address, &stripped)
             .await
             .unwrap();
     }
@@ -247,7 +247,7 @@ async fn intent_status_reverts_from_batched_to_pending() {
         .register_user(TEST_ETH_ADDR, None, TEST_NODE_ID)
         .await
         .expect("register_user should succeed");
-    let addr = &reg.ethereum_address;
+    let addr = &reg.tics_address;
 
     // Store an intent as Pending (simulating deposit intake).
     let intent_hash = "abcd1234";
@@ -296,7 +296,7 @@ async fn multiple_intents_all_revert_on_batch_failure() {
         .register_user(TEST_ETH_ADDR, None, TEST_NODE_ID)
         .await
         .expect("register_user should succeed");
-    let addr = &reg.ethereum_address;
+    let addr = &reg.tics_address;
 
     let intent_hashes = ["intent_001", "intent_002", "intent_003"];
     let user_storage = UserStorage::new(db.clone());
@@ -349,7 +349,7 @@ async fn solved_intent_is_not_affected_by_revert() {
         .register_user(TEST_ETH_ADDR, None, TEST_NODE_ID)
         .await
         .expect("register_user should succeed");
-    let addr = &reg.ethereum_address;
+    let addr = &reg.tics_address;
 
     let solved_hash = "solved_001";
     let batched_hash = "batched_001";
@@ -402,7 +402,7 @@ async fn intent_can_be_re_batched_after_revert() {
         .register_user(TEST_ETH_ADDR, None, TEST_NODE_ID)
         .await
         .unwrap();
-    let addr = &reg.ethereum_address;
+    let addr = &reg.tics_address;
     let hash = "retry_intent";
 
     let user_storage = UserStorage::new(db.clone());
@@ -453,7 +453,7 @@ async fn intent_can_be_re_batched_after_revert() {
 fn bincode_roundtrip_strips_tweaked_share() {
     let mut user = UserRegistration {
         user_id: "test-id".to_string(),
-        ethereum_address: TEST_ETH_ADDR.to_string(),
+        tics_address: TEST_ETH_ADDR.to_string(),
         hmac_constant: [7u8; 32],
         tweaked_secret_share: Some(SerializableScalar(test_scalar())),
         user_group_key: None,
@@ -479,7 +479,7 @@ fn bincode_roundtrip_strips_tweaked_share() {
         deserialized.tweaked_secret_share.is_none(),
         "stripped share must remain None after bincode round-trip"
     );
-    assert_eq!(deserialized.ethereum_address, TEST_ETH_ADDR);
+    assert_eq!(deserialized.tics_address, TEST_ETH_ADDR);
     assert_eq!(deserialized.hmac_constant, [7u8; 32]);
 }
 
@@ -490,7 +490,7 @@ fn bincode_roundtrip_preserves_tweaked_share() {
     let scalar = test_scalar();
     let user = UserRegistration {
         user_id: "test-id".to_string(),
-        ethereum_address: TEST_ETH_ADDR.to_string(),
+        tics_address: TEST_ETH_ADDR.to_string(),
         hmac_constant: [7u8; 32],
         tweaked_secret_share: Some(SerializableScalar(scalar)),
         user_group_key: None,
@@ -536,7 +536,7 @@ async fn full_state_sync_simulation() {
     // Source node: export with tweaked_secret_share stripped (as rpc_handlers does).
     let source_user_storage = UserStorage::new(source_db.clone());
     let user = source_user_storage
-        .get_user(&reg.ethereum_address)
+        .get_user(&reg.tics_address)
         .await
         .unwrap()
         .unwrap();
@@ -548,14 +548,14 @@ async fn full_state_sync_simulation() {
     let target_user_storage = UserStorage::new(target_db.clone());
     let imported: UserRegistration = bincode::deserialize(&wire_bytes).unwrap();
     target_user_storage
-        .store_user(&imported.ethereum_address, &imported)
+        .store_user(&imported.tics_address, &imported)
         .await
         .unwrap();
 
     // Target node: verify tweaked share is None before refresh.
     let target_uim = UserIntentManager::new(target_db.clone(), chain_code);
     let before = target_uim
-        .get_user_by_address(&reg.ethereum_address)
+        .get_user_by_address(&reg.tics_address)
         .await
         .unwrap();
     assert!(
@@ -570,7 +570,7 @@ async fn full_state_sync_simulation() {
 
     // Target node: tweaked share is now restored and matches source.
     let after = target_uim
-        .get_user_by_address(&reg.ethereum_address)
+        .get_user_by_address(&reg.tics_address)
         .await
         .unwrap();
     assert!(after.tweaked_secret_share.is_some());

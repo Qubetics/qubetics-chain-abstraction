@@ -1,24 +1,28 @@
 use super::keys;
 
 /// Utility helpers for building typed database keys.
-pub fn user_key(ethereum_address: &str) -> String {
-    format!("{}{}", keys::USER_REGISTRATION, ethereum_address)
+pub fn user_key(tics_address: &str) -> String {
+    format!("{}{}", keys::USER_REGISTRATION, tics_address)
+}
+
+pub fn admin_key(tics_address: &str) -> String {
+    format!("{}{}", keys::ADMIN_REGISTRATION, tics_address)
 }
 
 pub fn intent_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_REGISTRY, intent_hash)
 }
 
-pub fn user_intent_key(ethereum_address: &str, intent_hash: &str) -> String {
+pub fn user_intent_key(tics_address: &str, intent_hash: &str) -> String {
     format!(
         "{}{}:{}",
         keys::USER_INTENT_HASH,
-        ethereum_address,
+        tics_address,
         intent_hash
     )
 }
 
-/// Reverse index key: intent_hash -> ethereum_address. Enables O(1) get_user_by_intent_hash
+/// Reverse index key: intent_hash -> tics_address. Enables O(1) get_user_by_intent_hash
 /// instead of scanning all users, reducing races and signature verification failures under load.
 pub fn intent_hash_to_user_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_HASH_TO_USER, intent_hash)
@@ -101,6 +105,6 @@ pub fn node_share_pubkey_vault_key(peer_id: &str) -> String {
     format!("{}{}", keys::NODE_SHARE_PUBKEY_VAULT, peer_id)
 }
 
-pub fn node_share_pubkey_user_key(peer_id: &str, user_eth_address: &str) -> String {
-    format!("{}{}:{}", keys::NODE_SHARE_PUBKEY_USER, peer_id, user_eth_address.to_lowercase())
+pub fn node_share_pubkey_user_key(peer_id: &str, user_tics_address: &str) -> String {
+    format!("{}{}:{}", keys::NODE_SHARE_PUBKEY_USER, peer_id, user_tics_address.to_lowercase())
 }

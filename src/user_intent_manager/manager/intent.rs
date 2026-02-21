@@ -142,18 +142,18 @@ impl UserIntentManager {
     /// Get intent hashes for a specific user
     pub async fn get_intent_hashes(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
     ) -> Option<HashMap<String, IntentStatus>> {
         match self
             .user_storage
-            .get_user_intent_hashes(ethereum_address)
+            .get_user_intent_hashes(tics_address)
             .await
         {
             Ok(hashes) => hashes,
             Err(e) => {
                 tracing::error!(
                     "Failed to get intent hashes for user {}: {}",
-                    ethereum_address,
+                    tics_address,
                     e
                 );
                 None
@@ -182,10 +182,10 @@ impl UserIntentManager {
     /// Get intent status
     pub async fn get_intent_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         intent_hash: &str,
     ) -> Option<IntentStatus> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration.intent_hashes.get(intent_hash).cloned()
         } else {
             None
@@ -195,10 +195,10 @@ impl UserIntentManager {
     /// Get all intents with a specific status for a user
     pub async fn get_intents_by_status(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         status: IntentStatus,
     ) -> Vec<(String, IntentStatus)> {
-        if let Some(registration) = self.get_user_by_address(ethereum_address).await {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
             registration
                 .intent_hashes
                 .iter()

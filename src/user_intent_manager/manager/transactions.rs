@@ -84,7 +84,7 @@ impl UserIntentManager {
                     // Update intent status to Solved
                     if let Err(e) = self
                         .user_storage
-                        .update_intent_status(&user.ethereum_address, intent_hash, IntentStatus::Solved)
+                        .update_intent_status(&user.tics_address, intent_hash, IntentStatus::Solved)
                         .await
                     {
                         error!(
@@ -96,7 +96,7 @@ impl UserIntentManager {
                         info!(
                             "✅ [DB_USER_REGISTRY] Marked intent {} as Solved for user {} (TICS transaction)",
                             intent_hash,
-                            user.ethereum_address
+                            user.tics_address
                         );
                     }
                 } else {
@@ -268,7 +268,7 @@ impl UserIntentManager {
 
     /// Get intents that have not yet completed UserToVault (no user_to_network_tx_id),
     /// filtered by source chain. Used by the final node to pick a batch for TICS/BTC UserToVault signing.
-    /// Returns (intent_hash, intent, user_eth_address) for each intent; only intents with a
+    /// Returns (intent_hash, intent, user_tics_address) for each intent; only intents with a
     /// registered user are included.
     /// - `batched_only`: None or Some(false) → only intents with status Pending are included.
     /// - `batched_only`: Some(true) → only intents with status Batched and no user_to_network_tx_id are included.
@@ -332,7 +332,7 @@ impl UserIntentManager {
                     if let Some(user) = self.get_user_by_intent_hash(&intent_hash).await {
                         let _ = self
                             .update_intent_status(
-                                &user.ethereum_address,
+                                &user.tics_address,
                                 &intent_hash,
                                 IntentStatus::Rejected,
                             )
@@ -364,7 +364,7 @@ impl UserIntentManager {
                     }
                 }
                 seen_source_addresses.insert(source_addr_lower);
-                out.push((intent_hash, intent, user.ethereum_address));
+                out.push((intent_hash, intent, user.tics_address));
             }
         }
         out
@@ -490,5 +490,74 @@ impl UserIntentManager {
             );
         }
         filtered
+    }
+
+    /// Reject intents that have been stuck in Pending or Batched status for longer than
+    /// `max_age_secs` seconds (default: 3 hours = 10800s). These intents are unlikely to
+    /// succeed and should be freed so they stop being picked for batches.
+    /// Only user-to-vault intents (those without a `user_to_network_tx_id`) are considered.
+    /// Returns the number of intents rejected.
+    pub async fn reject_stale_intents(&self, max_age_secs: u64) -> usize {
+        let now_secs = chrono::Utc::now().timestamp() as u128;
+        let users = match self.user_storage.get_all_users().await {
+            Ok(u) => u,
+            Err(e) => {
+                error!("❌ [STALE_INTENT] Failed to load users for stale intent sweep: {}", e);
+                return 0;
+            }
+        };
+
+        let mut rejected_count = 0usize;
+
+        for (tics_address, user) in &users {
+            for (intent_hash, status) in &user.intent_hashes {
+                // Only target intents still in Pending or Batched
+                if !matches!(status, IntentStatus::Pending | IntentStatus::Batched) {
+                    continue;
+                }
+
+                // Look up the deposit intent to read its creation timestamp
+                let intent = match self.get_intent(intent_hash).await {
+                    Some(i) => i,
+                    None => continue,
+                };
+
+                // Skip intents that already have a user_to_network tx ID (Phase 1 complete)
+                if let Some(tx_ids) = self.get_intent_transaction_ids(intent_hash).await {
+                    if tx_ids.user_to_network_tx_id.is_some() {
+                        continue;
+                    }
+                }
+
+                // intent.timestamp is Unix seconds (u128)
+                let age_secs = now_secs.saturating_sub(intent.timestamp);
+                if age_secs >= max_age_secs as u128 {
+                    info!(
+                        "⏰ [STALE_INTENT] Rejecting stale intent {} for user {} — status {:?}, age {}s (>{} max)",
+                        intent_hash, tics_address, status, age_secs, max_age_secs
+                    );
+                    if let Err(e) = self
+                        .update_intent_status(tics_address, intent_hash, IntentStatus::Rejected)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [STALE_INTENT] Failed to reject stale intent {}: {}",
+                            intent_hash, e
+                        );
+                    } else {
+                        rejected_count += 1;
+                    }
+                }
+            }
+        }
+
+        if rejected_count > 0 {
+            info!(
+                "⏰ [STALE_INTENT] Rejected {} stale Pending/Batched intents (max age: {}s)",
+                rejected_count, max_age_secs
+            );
+        }
+
+        rejected_count
     }
 }

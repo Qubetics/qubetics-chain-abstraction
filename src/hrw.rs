@@ -73,20 +73,33 @@ pub mod candidates {
 
     /// Get canonical HRW candidates from DKG storage (read-only).
     ///
-    /// Includes ALL connected peers (DKG participants + observers).
+    /// When `connected_peers` is provided, only peers that are currently connected
+    /// are included. This prevents selecting offline nodes for aggregation rounds.
     /// Observer nodes can be selected as final node for aggregation and broadcast;
     /// they skip individual signing but still aggregate partial signatures from DKG nodes.
     /// Builds a **separate** list of peer IDs sorted by PeerId bytes for deterministic HRW.
     /// The underlying storage and any peer_indices mapping are never modified or sorted.
     /// Invalid peer ID strings are skipped (and logged).
-    pub fn get_hrw_candidates(dkg: &DkgStorage) -> Result<Vec<PeerId>> {
+    pub fn get_hrw_candidates(dkg: &DkgStorage, connected_peers: Option<&std::collections::HashSet<PeerId>>) -> Result<Vec<PeerId>> {
         // Read-only: get_all_peer_indices does not modify storage.
         let indices = dkg.get_all_peer_indices()?;
 
         let mut peer_ids: Vec<PeerId> = Vec::new();
         for (s, _idx) in &indices {
             match PeerId::from_str(s) {
-                Ok(pid) => peer_ids.push(pid),
+                Ok(pid) => {
+                    // If connected_peers filter is provided, only include connected peers
+                    if let Some(connected) = connected_peers {
+                        if !connected.contains(&pid) {
+                            tracing::debug!(
+                                "⏭️ [HRW] Skipping disconnected peer {} from candidates",
+                                pid
+                            );
+                            continue;
+                        }
+                    }
+                    peer_ids.push(pid);
+                }
                 Err(e) => tracing::warn!(
                     "HRW candidates: skip invalid peer_id {:?}: {}",
                     s, e
@@ -96,8 +109,9 @@ pub mod candidates {
         // Sort only our local list; never write back to or sort the peer_id→index storage.
         peer_ids.sort_by(|a, b| a.to_bytes().as_slice().cmp(b.to_bytes().as_slice()));
         tracing::info!(
-            "🎯 [HRW] Candidates: {} peers (all eligible for final node selection)",
-            peer_ids.len()
+            "🎯 [HRW] Candidates: {} peers (filtered by connected: {})",
+            peer_ids.len(),
+            connected_peers.is_some()
         );
         Ok(peer_ids)
     }

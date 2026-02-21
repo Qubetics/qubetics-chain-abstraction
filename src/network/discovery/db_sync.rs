@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use crate::database::primitives::keys;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::rpc::RPCRequest;
-use crate::types::user_intent::UserRegistration;
+use crate::types::user_intent::{AdminRegistration, UserRegistration};
 use crate::types::vrf::VrfRoundSyncRequest;
 
 use crate::network::transport::types::{MpcNetworkBehaviour, MpcNetworkLayer, VrfDomain};
@@ -192,6 +192,15 @@ impl MpcNetworkLayer {
                         }
                     }
                     Err(e) => warn!("⚠️ [DB_SYNC] Failed to compute tweaked shares: {}", e),
+                }
+                // Compute tweaked shares for newly imported admins (those with None).
+                match uim.refresh_missing_admin_tweaked_shares().await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("✅ [DB_SYNC] Computed tweaked shares for {} new admin(s)", count);
+                        }
+                    }
+                    Err(e) => warn!("⚠️ [DB_SYNC] Failed to compute admin tweaked shares: {}", e),
                 }
             }
 
@@ -400,8 +409,41 @@ impl MpcNetworkLayer {
             if !new_entries.is_empty() {
                 self.db.import_batch_async(new_entries).await?;
             }
+        } else if prefix == keys::ADMIN_REGISTRATION {
+            // For admin entries: merge — only import NEW admins, never overwrite existing ones.
+            // Existing admins already have the correct tweaked_secret_share computed from
+            // the original DKG; overwriting would destroy it (peer strips tweaked_secret_share).
+            let mut new_entries = Vec::new();
+            let mut skipped = 0usize;
+            for entry in entries {
+                let key_str = String::from_utf8_lossy(&entry.key).to_string();
+                match self.db.get_string::<AdminRegistration>(&key_str) {
+                    Ok(Some(existing_admin)) if existing_admin.tweaked_secret_share.is_some() => {
+                        info!(
+                            "🛡️ [STATE_SYNC] Preserving existing admin {} (has valid tweaked_secret_share)",
+                            key_str
+                        );
+                        skipped += 1;
+                    }
+                    _ => {
+                        info!("📥 [STATE_SYNC] Importing admin {} (new or missing tweaked share)", key_str);
+                        new_entries.push((entry.key, entry.value));
+                    }
+                }
+            }
+
+            if skipped > 0 {
+                info!(
+                    "🛡️ [STATE_SYNC] Preserved {} existing admin(s) with valid tweaked shares",
+                    skipped
+                );
+            }
+
+            if !new_entries.is_empty() {
+                self.db.import_batch_async(new_entries).await?;
+            }
         } else {
-            // Non-user entries: import as-is (blind overwrite is fine)
+            // Non-user/admin entries: import as-is (blind overwrite is fine)
             let db_entries: Vec<(Vec<u8>, Vec<u8>)> =
                 entries.into_iter().map(|e| (e.key, e.value)).collect();
             if !db_entries.is_empty() {
@@ -464,6 +506,17 @@ impl MpcNetworkLayer {
                     }
                 }
                 Err(e) => warn!("⚠️ [STATE_SYNC] Failed to compute tweaked shares for new users: {}", e),
+            }
+            // Compute tweaked shares for newly imported admins (those with None).
+            match uim.refresh_missing_admin_tweaked_shares().await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("✅ [STATE_SYNC] Computed tweaked shares for {} new admin(s) after sync", count);
+                    } else {
+                        info!("✅ [STATE_SYNC] No new admins need tweaked share computation");
+                    }
+                }
+                Err(e) => warn!("⚠️ [STATE_SYNC] Failed to compute tweaked shares for new admins: {}", e),
             }
         }
 

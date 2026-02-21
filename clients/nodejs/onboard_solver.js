@@ -48,7 +48,7 @@ const ABI = [
   "function getOnboardNonce(address) view returns (uint256)",
   "function getValidateNonce(address) view returns (uint256)",
   "function onboardSolver(string,string,uint256[],string[],uint256,bytes)",
-  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[])",
+  "function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType, string txId)[])",
   "function validateSolverId(uint256,bytes)",
   "function isSolverActive(string) view returns (bool)",
   "function isSolverIdValidated(string) view returns (bool)",
@@ -565,10 +565,10 @@ async function main() {
   const deposits = [];
   for (const cfg of solverConfigs) {
     if (liquidityAmountEVM.gt(0)) {
-      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountEVM, chainType: 1 }); // 1 = EVM
+      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountEVM, chainType: 1, txId: '' }); // 1 = EVM
     }
     if (liquidityAmountBTC.gt(0)) {
-      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountBTC, chainType: 0 });   // 0 = BTC
+      deposits.push({ solverId: cfg.solverId, amount: liquidityAmountBTC, chainType: 0, txId: '' });   // 0 = BTC
     }
   }
 

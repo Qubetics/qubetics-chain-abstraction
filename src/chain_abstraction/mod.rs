@@ -5,9 +5,9 @@ pub mod transactions;
 
 pub use executor::MpcChainExecutor;
 pub use factory::ChainHandlerFactory;
-pub use handlers::{BitcoinChainHandler, ChainHandler, EthereumChainHandler};
+pub use handlers::{BitcoinChainHandler, ChainHandler, TicsChainHandler};
 pub use transactions::{
     BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction, BitcoinWitness,
     BitcoinWitnessInput, BitcoinWitnessUtxo, ChainSignature, ChainSigningResult, ChainTransaction,
-    EthereumSignature, EthereumTransaction,
+    TicsSignature, TicsTransaction,
 };

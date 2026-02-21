@@ -152,10 +152,14 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
     Ok(result)
 }
 
-pub async fn fetch_crypto_prices() -> Result<HashMap<String, Decimal>, String> {
+pub async fn fetch_crypto_prices(timestamp: Option<u128>) -> Result<HashMap<String, Decimal>, String> {
     let base_url =
         std::env::var("BACKEND_API_URL").unwrap_or_else(|_| "https://stage-crypto-api.qubetics.work".to_string());
-    let url = format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS");
+    let url = if let Some(ts) = timestamp {
+        format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS&timestamp={ts}")
+    } else {
+        format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS")
+    };
     let client = Client::new();
 
     info!("Fetching crypto prices from URL: {}", url);
@@ -535,7 +539,6 @@ mod tests {
     fn symbol_for_tics_variants() {
         assert_eq!(symbol_for("tics"), "TICS");
         assert_eq!(symbol_for("qubetics"), "TICS");
-        assert_eq!(symbol_for("ethereum"), "TICS");
     }
 
     #[test]

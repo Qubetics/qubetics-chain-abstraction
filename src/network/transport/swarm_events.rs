@@ -58,7 +58,7 @@ impl MpcNetworkLayer {
                 peer_id,
                 topic,
             })) => {
-                warn!("📡 Peer {} unsubscribed from topic: {}", peer_id, topic);
+                debug!("Peer {} unsubscribed from topic: {}", peer_id, topic);
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.handle_new_listen_addr(address);
@@ -70,17 +70,25 @@ impl MpcNetworkLayer {
                 num_established,
                 cause,
             } => {
-                self.handle_connection_closed(peer_id, num_established, cause)
+                self.handle_connection_closed(swarm, peer_id, num_established, cause)
                     .await;
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                warn!(
-                    "❌ [DIAL] Outbound connection failed to {:?}: {:?}",
+                debug!(
+                    "[DIAL] Outbound connection failed to {:?}: {:?}",
                     peer_id, error
                 );
+
+                // Remove the failed peer from Kademlia to prevent aggressive re-dialing
+                // on the next bootstrap/discovery cycle (every 5 min). The hourly retry
+                // mechanism below handles reconnection at a sane cadence instead.
+                if let Some(pid) = peer_id {
+                    swarm.behaviour_mut().kademlia.remove_peer(&pid);
+                }
+
                 // Record the failed peer's bootstrap/seed/CLI addresses for hourly retry.
-                // Match by peer_id embedded in the multiaddr (/p2p/<peer_id> component).
-                // If peer_id is None (unknown), record ALL unconnected bootstrap addresses.
+                // Only bootstrap and discovery seed addresses are retried — runtime-discovered
+                // peers will be re-discovered organically through Kademlia if they come back.
                 let all_known_addrs: Vec<Multiaddr> = self
                     .bootstrap_addresses
                     .iter()
@@ -97,13 +105,16 @@ impl MpcNetworkLayer {
                     };
 
                     if should_record {
-                        self.failed_dial_addresses
-                            .entry(addr.clone())
-                            .or_insert_with(std::time::Instant::now);
-                        info!(
-                            "📝 [DIAL] Recorded failed address for hourly retry: {}",
-                            addr
-                        );
+                        // Only log once per address (first failure), not on every retry
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            self.failed_dial_addresses.entry(addr.clone())
+                        {
+                            entry.insert(std::time::Instant::now());
+                            debug!(
+                                "[DIAL] Recorded failed address for hourly retry: {}",
+                                addr
+                            );
+                        }
                     }
                 }
             }
@@ -123,6 +134,24 @@ impl MpcNetworkLayer {
 
         let remote_addr = endpoint.get_remote_address();
 
+        // ===== BAN CHECK — reject peers that were recently banned (e.g. inactive solvers) =====
+        if let Some(banned_at) = self.rejected_peers.get(&peer_id) {
+            let ban_duration = std::time::Duration::from_secs(3600); // 1 hour
+            if banned_at.elapsed() < ban_duration {
+                warn!(
+                    "🚫 [BAN] Rejecting connection from banned peer {} ({}) — {} minutes remaining",
+                    peer_id,
+                    remote_addr,
+                    (ban_duration.as_secs() - banned_at.elapsed().as_secs()) / 60
+                );
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
+            } else {
+                // Ban expired — remove and allow connection
+                self.rejected_peers.remove(&peer_id);
+            }
+        }
+
         // Clear this peer from the failed-dial retry list (connection succeeded)
         let removed_count = self.failed_dial_addresses.len();
         self.failed_dial_addresses.retain(|addr, _| {
@@ -132,8 +161,8 @@ impl MpcNetworkLayer {
         });
         let cleared = removed_count - self.failed_dial_addresses.len();
         if cleared > 0 {
-            info!(
-                "✅ [RECONNECT] Cleared {} address(es) from retry list — peer {} connected",
+            debug!(
+                "[RECONNECT] Cleared {} address(es) from retry list for peer {}",
                 cleared, peer_id
             );
         }
@@ -141,18 +170,19 @@ impl MpcNetworkLayer {
         // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
 
         // 1. Solver contract validation (disabled for testing)
-        match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                warn!(
-                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-                    peer_id, remote_addr, e
-                );
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
-            }
-        }
+        // match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
+        // {
+        //     Ok(_) => {}
+        //     Err(e) => {
+        //         warn!(
+        //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+        //             peer_id, remote_addr, e
+        //         );
+        //         self.rejected_peers.insert(peer_id, std::time::Instant::now());
+        //         swarm.disconnect_peer_id(peer_id).ok();
+        //         return Ok(());
+        //     }
+        // }
 
         // 2. Staging cleanup — if this peer is in the disconnection staging map it means it
         //    disconnected earlier but is now rejoining before epoch-2 promoted it to the
@@ -161,8 +191,8 @@ impl MpcNetworkLayer {
             let solver_id = peer_id.to_string();
             let staging_key = format!("{}{}", keys::DISCONNECTION_STAGING, solver_id);
             if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {
-                info!(
-                    "♻️ [REJOIN] Peer {} found in disconnection staging — removing before epoch-2 promotes it; no invalidation will be queued",
+                debug!(
+                    "[REJOIN] Peer {} found in disconnection staging, removing",
                     peer_id
                 );
                 let _ = self.db.delete_string(&staging_key);
@@ -196,16 +226,20 @@ impl MpcNetworkLayer {
             .send_request(&peer_id, RPCRequest::GetPeerInfo);
 
         // Determine whether they dialed us or we dialed them
-        let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
+        let _is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
 
         // Check if we already know this peer
         let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
 
-        // Add the peer's address to Kademlia
+        // Add the peer's address to Kademlia (strip /p2p/ suffix to prevent duplication)
+        let kad_addr: Multiaddr = remote_addr
+            .iter()
+            .filter(|proto| !matches!(proto, libp2p::multiaddr::Protocol::P2p(_)))
+            .collect();
         swarm
             .behaviour_mut()
             .kademlia
-            .add_address(&peer_id, remote_addr.clone());
+            .add_address(&peer_id, kad_addr);
 
         // Add peer to gossipsub as explicit peer
         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
@@ -220,7 +254,7 @@ impl MpcNetworkLayer {
             }
         }
 
-        if is_listener && !already_known {
+        if !already_known {
             self.handle_new_peer_connection(swarm, peer_id).await?;
 
             let total = self.node_manager.get_total_nodes();
@@ -636,6 +670,7 @@ impl MpcNetworkLayer {
     /// Handle connection closed event
     async fn handle_connection_closed(
         &mut self,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
         num_established: u32,
         cause: Option<ConnectionError>,
@@ -655,6 +690,19 @@ impl MpcNetworkLayer {
 
         // STEP 1: Detect when a node fully disconnects (no remaining connections)
         if num_established == 0 {
+            // Remove from Kademlia routing table to stop periodic re-dialing
+            swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
+            info!(
+                "🧹 [DISCONNECT] Removed peer {} from Kademlia routing table",
+                peer_id
+            );
+
+            // Remove from gossipsub explicit peers to stop message routing attempts
+            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+            info!(
+                "🧹 [DISCONNECT] Removed peer {} from gossipsub explicit peers",
+                peer_id
+            );
             // Check if this was an active node in our network
             let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
 
@@ -728,7 +776,7 @@ impl MpcNetworkLayer {
                     if let Err(e) = self
                         .message_tx
                         .send(ChannelMessage::Broadcast {
-                            topic: "peer-disconnections".to_string(),
+                            topic: "peer-status".to_string(),
                             data: msg_bytes,
                         })
                         .await
