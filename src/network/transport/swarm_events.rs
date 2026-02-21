@@ -58,7 +58,7 @@ impl MpcNetworkLayer {
                 peer_id,
                 topic,
             })) => {
-                warn!("📡 Peer {} unsubscribed from topic: {}", peer_id, topic);
+                debug!("Peer {} unsubscribed from topic: {}", peer_id, topic);
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.handle_new_listen_addr(address);
@@ -74,8 +74,8 @@ impl MpcNetworkLayer {
                     .await;
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                warn!(
-                    "❌ [DIAL] Outbound connection failed to {:?}: {:?}",
+                debug!(
+                    "[DIAL] Outbound connection failed to {:?}: {:?}",
                     peer_id, error
                 );
 
@@ -110,8 +110,8 @@ impl MpcNetworkLayer {
                             self.failed_dial_addresses.entry(addr.clone())
                         {
                             entry.insert(std::time::Instant::now());
-                            info!(
-                                "📝 [DIAL] Recorded failed address for hourly retry: {}",
+                            debug!(
+                                "[DIAL] Recorded failed address for hourly retry: {}",
                                 addr
                             );
                         }
@@ -161,8 +161,8 @@ impl MpcNetworkLayer {
         });
         let cleared = removed_count - self.failed_dial_addresses.len();
         if cleared > 0 {
-            info!(
-                "✅ [RECONNECT] Cleared {} address(es) from retry list — peer {} connected",
+            debug!(
+                "[RECONNECT] Cleared {} address(es) from retry list for peer {}",
                 cleared, peer_id
             );
         }
@@ -191,8 +191,8 @@ impl MpcNetworkLayer {
             let solver_id = peer_id.to_string();
             let staging_key = format!("{}{}", keys::DISCONNECTION_STAGING, solver_id);
             if let Ok(Some(_)) = self.db.get_string::<String>(&staging_key) {
-                info!(
-                    "♻️ [REJOIN] Peer {} found in disconnection staging — removing before epoch-2 promotes it; no invalidation will be queued",
+                debug!(
+                    "[REJOIN] Peer {} found in disconnection staging, removing",
                     peer_id
                 );
                 let _ = self.db.delete_string(&staging_key);

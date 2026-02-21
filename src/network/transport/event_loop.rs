@@ -38,6 +38,7 @@ impl MpcNetworkLayer {
         let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
         let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
         let mut reconnect_timer = tokio::time::interval(Duration::from_secs(3600)); // 1 hour
+        let mut ban_sweep_timer = tokio::time::interval(Duration::from_secs(60)); // sweep expired bans every 60s
 
         // Global clock timer - reads interval from environment variable
         let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
@@ -126,11 +127,21 @@ impl MpcNetworkLayer {
                 }
 
                 _ = global_clock_timer.tick() => {
-                    info!("⏰ [CLOCK] Global clock tick triggered");
+                    debug!("[CLOCK] Global clock tick triggered");
                     if let Err(e) = self.handle_global_clock_tick().await {
-                        error!("⏰ [CLOCK] Clock task failed: {}", e);
-                    } else {
-                        info!("⏰ [CLOCK] Clock task executed successfully");
+                        error!("[CLOCK] Clock task failed: {}", e);
+                    }
+                }
+
+                _ = ban_sweep_timer.tick() => {
+                    // Sweep expired peer bans promptly (every 60s) so unblocked
+                    // peers can reconnect without waiting for the hourly timer.
+                    let ban_duration = Duration::from_secs(3600);
+                    let before = self.rejected_peers.len();
+                    self.rejected_peers.retain(|_, banned_at| banned_at.elapsed() < ban_duration);
+                    let expired = before - self.rejected_peers.len();
+                    if expired > 0 {
+                        debug!("[BAN] Swept {} expired peer ban(s)", expired);
                     }
                 }
 
@@ -142,7 +153,7 @@ impl MpcNetworkLayer {
                     // Remove addresses older than 24 hours
                     self.failed_dial_addresses.retain(|addr, first_failure| {
                         if now.duration_since(*first_failure) > max_retry_duration {
-                            warn!("⏰ [RECONNECT] Giving up on {} after 24 hours of retries", addr);
+                            warn!("[RECONNECT] Giving up on {} after 24 hours of retries", addr);
                             false
                         } else {
                             true
@@ -152,25 +163,15 @@ impl MpcNetworkLayer {
                     // Retry remaining addresses
                     let addrs_to_retry: Vec<Multiaddr> = self.failed_dial_addresses.keys().cloned().collect();
                     if !addrs_to_retry.is_empty() {
-                        info!(
-                            "🔄 [RECONNECT] Retrying {} failed address(es) (hourly reconnect)",
+                        debug!(
+                            "[RECONNECT] Retrying {} failed address(es)",
                             addrs_to_retry.len()
                         );
                         for addr in addrs_to_retry {
-                            info!("🔄 [RECONNECT] Retrying dial to: {}", addr);
                             if let Err(e) = swarm.dial(addr.clone()) {
-                                warn!("❌ [RECONNECT] Retry dial failed for {}: {}", addr, e);
+                                warn!("[RECONNECT] Retry dial failed for {}: {}", addr, e);
                             }
                         }
-                    }
-
-                    // Clean up expired peer bans (1 hour)
-                    let ban_duration = Duration::from_secs(3600);
-                    let before = self.rejected_peers.len();
-                    self.rejected_peers.retain(|_, banned_at| banned_at.elapsed() < ban_duration);
-                    let expired = before - self.rejected_peers.len();
-                    if expired > 0 {
-                        info!("🧹 [BAN] Cleared {} expired peer ban(s)", expired);
                     }
                 }
 
@@ -202,16 +203,13 @@ impl MpcNetworkLayer {
             if addresses.is_empty() {
                 warn!("No valid addresses provided to dial");
             } else {
-                info!("Dialing {} addresses:", addresses.len());
-                for (i, addr) in addresses.iter().enumerate() {
-                    info!("  {}. {}", i + 1, addr);
+                debug!("Dialing {} addresses", addresses.len());
+                for addr in addresses.iter() {
                     if let Err(e) = swarm.dial(addr.clone()) {
-                        error!("Failed to dial address {}: {}", addr, e);
+                        warn!("Failed to dial address {}: {}", addr, e);
                         self.failed_dial_addresses
                             .entry(addr.clone())
                             .or_insert_with(std::time::Instant::now);
-                    } else {
-                        info!("Successfully initiated dial to: {}", addr);
                     }
                 }
             }
@@ -231,7 +229,7 @@ impl MpcNetworkLayer {
                 continue;
             }
 
-            info!("Dialing configured seed: {}", addr);
+            debug!("Dialing configured seed: {}", addr);
             if let Err(e) = swarm.dial(addr.clone()) {
                 warn!("Failed to dial seed {}: {}", addr, e);
                 self.failed_dial_addresses
@@ -316,7 +314,7 @@ impl MpcNetworkLayer {
     /// - And all other MpcNetworkLayer fields
     async fn handle_global_clock_tick(&mut self) -> Result<()> {
         self.clock_tick_count += 1;
-        info!("⏰ [CLOCK] Global clock tick #{} triggered - performing node selection", self.clock_tick_count);
+        debug!("[CLOCK] tick #{}", self.clock_tick_count);
 
         // Get available nodes from node manager and convert to Vec
         let available_nodes: Vec<libp2p::PeerId> =
@@ -347,12 +345,11 @@ impl MpcNetworkLayer {
                     })
                     .await
                 {
-                    warn!("⚠️ [CLOCK] Failed to broadcast ActivePeerList: {}", e);
+                    warn!("[CLOCK] Failed to broadcast ActivePeerList: {}", e);
                 } else {
-                    info!(
-                        "📋 [CLOCK] Broadcast ActivePeerList with {} peers (tick #{})",
+                    debug!(
+                        "[CLOCK] Broadcast ActivePeerList with {} peers",
                         available_nodes.len(),
-                        self.clock_tick_count
                     );
                 }
             }
@@ -374,7 +371,7 @@ impl MpcNetworkLayer {
         };
 
         if !initial_dkg_complete {
-            info!("⏳ [CLOCK] Skipping nonce pre-generation - initial DKG not yet complete");
+            debug!("[CLOCK] Skipping nonce pre-generation - initial DKG not yet complete");
         } else if let Some(arc) = &self.signing_node {
             let signing_node = arc.lock().await;
 
@@ -401,7 +398,7 @@ impl MpcNetworkLayer {
                 }
 
                 if !signing_node.is_nonce_pool_ready().await {
-                    info!("🎲 [CLOCK] DKG complete + network ready, triggering nonce pre-generation");
+                    debug!("[CLOCK] Triggering nonce pre-generation");
                     if let Err(e) = signing_node.start_nonce_pregeneration().await {
                         warn!("⚠️ [CLOCK] Failed to start nonce pre-generation: {}", e);
                     }
@@ -409,8 +406,31 @@ impl MpcNetworkLayer {
             }
         }
 
-        info!(
-            "⏰ [CLOCK] Available nodes for VRF selection: count={}",
+        // Every 10 ticks, sweep old round data to keep memory bounded (latest 1000 rounds)
+        if self.clock_tick_count % 10 == 0 {
+            if let Some(arc) = &self.signing_node {
+                let signing_node = arc.lock().await;
+                signing_node.sweep_old_rounds().await;
+            }
+            // Also sweep DB-stored signatures for old rounds
+            if let Some(arc) = &self.db_signing_node {
+                let db_node = arc.lock().await;
+                let signing_storage = db_node.get_signing_storage();
+                // Use the current round to calculate cutoff (keep latest 1000)
+                if let Some(vrf_arc) = &self.signing_node {
+                    let sn = vrf_arc.lock().await;
+                    if let Some(vrf_service) = sn.vrf_service() {
+                        let current_round = vrf_service.get_current_round().await;
+                        if current_round > 1000 {
+                            let _ = signing_storage.sweep_rounds_before(current_round - 1000).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!(
+            "[CLOCK] Available nodes for VRF selection: count={}",
             available_nodes.len(),
         );
 
@@ -442,8 +462,8 @@ impl MpcNetworkLayer {
             signing_node.replicate_vrf_round_to_consensus(round);
 
             if let Some(vrf_service) = signing_node.vrf_service() {
-                info!(
-                    "⏰ [CLOCK] Performing selection for round {} with {} available nodes (using signing_node)",
+                debug!(
+                    "[CLOCK] Performing selection for round {} with {} nodes",
                     round,
                     available_nodes.len()
                 );
@@ -459,8 +479,8 @@ impl MpcNetworkLayer {
                     .await
                 {
                     Ok(selection_result) => {
-                        info!(
-                            "🎯 [CLOCK] Selection completed successfully for round {} (selected_nodes={}, total_nodes={})",
+                        debug!(
+                            "[CLOCK] Selection round {} done (selected={}, total={})",
                             round,
                             selection_result.selected_nodes.len(),
                             selection_result.total_nodes,

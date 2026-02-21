@@ -115,6 +115,28 @@ impl SigningNode {
         &self.connected_peers
     }
 
+    /// Sweep in-memory signature/pending data older than the latest 1000 rounds.
+    /// Should be called periodically (e.g. every 10 clock ticks) to bound memory growth.
+    pub async fn sweep_old_rounds(&self) {
+        // Determine cutoff from signatures_by_round (the primary round tracker)
+        let cutoff = {
+            let map = self.signatures.signatures_by_round.read().await;
+            if map.len() <= 1000 {
+                return; // nothing to sweep
+            }
+            let mut rounds: Vec<u64> = map.keys().copied().collect();
+            rounds.sort_unstable();
+            rounds[rounds.len() - 1000]
+        };
+
+        debug!("[SIGNING] Sweeping rounds older than {} (keeping latest 1000)", cutoff);
+
+        self.signatures.sweep_old_rounds().await;
+        self.pending.sweep_old_rounds(cutoff).await;
+        self.btc_state.sweep_old_rounds(cutoff).await;
+        self.btc_utv_state.sweep_old_rounds(cutoff).await;
+    }
+
     /// Return (withdraw_rounds, claim_reward_rounds) for state sync (no private data).
     pub async fn get_pending_rounds_for_sync(&self) -> (Vec<u64>, Vec<u64>) {
         let wr: Vec<u64> = self

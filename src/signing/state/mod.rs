@@ -68,6 +68,9 @@ impl Default for SignatureStore {
     }
 }
 
+/// Maximum number of recent rounds to keep in memory for signature data.
+const MAX_SIGNATURE_ROUNDS_IN_MEMORY: usize = 1000;
+
 impl SignatureStore {
     pub fn new() -> Self {
         Self {
@@ -78,6 +81,52 @@ impl SignatureStore {
             final_nodes_by_round: Arc::new(RwLock::new(HashMap::new())),
             aggregated_rounds: Arc::new(RwLock::new(HashSet::new())),
             aggregated_round_slots: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    /// Sweep old round data, keeping only the latest `MAX_SIGNATURE_ROUNDS_IN_MEMORY` rounds.
+    /// Call this periodically (e.g. every N clock ticks) to prevent unbounded memory growth.
+    pub async fn sweep_old_rounds(&self) {
+        // Determine the cutoff round from signatures_by_round
+        let cutoff = {
+            let map = self.signatures_by_round.read().await;
+            if map.len() <= MAX_SIGNATURE_ROUNDS_IN_MEMORY {
+                return; // nothing to sweep
+            }
+            let mut rounds: Vec<u64> = map.keys().copied().collect();
+            rounds.sort_unstable();
+            // Keep the top MAX_SIGNATURE_ROUNDS_IN_MEMORY rounds
+            rounds[rounds.len() - MAX_SIGNATURE_ROUNDS_IN_MEMORY]
+        };
+
+        // Sweep signatures_by_round
+        {
+            let mut map = self.signatures_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+
+        // Sweep final_nodes_by_round
+        {
+            let mut map = self.final_nodes_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+
+        // Sweep aggregated_rounds
+        {
+            let mut set = self.aggregated_rounds.write().await;
+            set.retain(|&round| round >= cutoff);
+        }
+
+        // Sweep signatures_by_round_slot (keyed by (round, slot_id))
+        {
+            let mut map = self.signatures_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+
+        // Sweep aggregated_round_slots
+        {
+            let mut set = self.aggregated_round_slots.write().await;
+            set.retain(|&(round, _)| round >= cutoff);
         }
     }
 }
@@ -225,6 +274,25 @@ impl PendingStore {
             received_tx_data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        self.pending_transactions.write().await.retain(|&round, _| round >= cutoff);
+        self.pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.withdraw_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_reward_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_reward_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_reward_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_platform_fee_pending_transactions_btc.write().await.retain(|&round, _| round >= cutoff);
+        self.claim_platform_fee_rounds.write().await.retain(|&round| round >= cutoff);
+        self.claim_platform_fee_pending_transactions_tics.write().await.retain(|&round, _| round >= cutoff);
+        self.intent_hashes_by_round.write().await.retain(|&round, _| round >= cutoff);
+        self.user_to_vault_tics_batch.write().await.retain(|&round, _| round >= cutoff);
+        self.user_to_vault_btc_batch.write().await.retain(|&round, _| round >= cutoff);
+        self.received_tx_data.write().await.retain(|&(round, _), _| round >= cutoff);
+    }
 }
 
 #[cfg(test)]
@@ -333,6 +401,22 @@ impl BtcAggregationState {
             btc_done_inputs_by_round: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        {
+            let mut map = self.btc_sigs_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_agg_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_done_inputs_by_round.write().await;
+            map.retain(|&round, _| round >= cutoff);
+        }
+    }
 }
 
 /// BTC UserToVault batch aggregation state.
@@ -366,6 +450,26 @@ impl BtcUtvAggregationState {
             btc_utv_agg_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_done_inputs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_completed_slots: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    /// Sweep old round data, keeping only rounds >= cutoff.
+    pub async fn sweep_old_rounds(&self, cutoff: u64) {
+        {
+            let mut map = self.btc_utv_sigs_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_utv_agg_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut map = self.btc_utv_done_inputs_by_round_slot.write().await;
+            map.retain(|&(round, _), _| round >= cutoff);
+        }
+        {
+            let mut set = self.btc_utv_completed_slots.write().await;
+            set.retain(|&(round, _)| round >= cutoff);
         }
     }
 }

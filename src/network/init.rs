@@ -172,30 +172,33 @@ impl MpcNetworkLayer {
     ) -> Result<()> {
         use tracing::warn;
 
+        let mut subscribed = 0usize;
+        let mut failed = 0usize;
         for topic in MPC_TOPICS {
             let topic_str = topic.as_str();
             let topic_hash = gossipsub::IdentTopic::new(topic_str);
-            info!("🔔 Attempting to subscribe to topic: {}", topic_str);
-            info!("🔔 Topic hash: {:?}", topic_hash.hash());
 
-            let res = swarm.behaviour_mut().gossipsub.subscribe(&topic_hash);
-            match res {
+            match swarm.behaviour_mut().gossipsub.subscribe(&topic_hash) {
                 Ok(_) => {
-                    info!("✅ Successfully subscribed to topic: {}", topic_str);
+                    subscribed += 1;
                 }
                 Err(err) => {
                     warn!(
-                        "❌ Failed to subscribe to topic: {} with error {:?}",
+                        "Failed to subscribe to topic: {} error {:?}",
                         topic_str, err
                     );
+                    failed += 1;
                 }
             }
             self.topics.insert(topic_hash.hash());
         }
 
-        // Log current gossipsub state
-        let peer_count = swarm.behaviour_mut().gossipsub.all_peers().count();
-        info!("📊 Current gossipsub peer count: {}", peer_count);
+        info!(
+            "[P2P] Subscribed to {}/{} gossipsub topics (failed: {})",
+            subscribed,
+            MPC_TOPICS.len(),
+            failed
+        );
 
         Ok(())
     }
