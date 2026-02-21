@@ -2816,7 +2816,7 @@ impl MpcNetworkLayer {
                             "⚠️ [BTC_INTENT_MANAGER] No stored target_amount for cross-chain intent {}; computing fallback",
                             intent_hash
                         );
-                        match crate::rpc_server::utils::fetch_crypto_prices().await {
+                        match crate::rpc_server::utils::fetch_crypto_prices(Some(intent.timestamp)).await {
                             Ok(prices) => {
                                 match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
                                     source_amount,

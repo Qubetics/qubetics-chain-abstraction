@@ -858,7 +858,7 @@ impl MpcNetworkLayer {
                 let target_amount = if is_same_chain {
                     intent.amount.parse::<u128>().unwrap()
                 } else {
-                    let prices = match fetch_crypto_prices().await {
+                    let prices = match fetch_crypto_prices(Some(intent.timestamp)).await {
                         Ok(p) => p,
                         Err(e) => {
                             warn!(
@@ -1454,7 +1454,9 @@ impl MpcNetworkLayer {
                         // Fetch crypto prices as fallback for intents missing stored target_amount.
                         // Prefer stored target_amount (locked at intent submission) to ensure
                         // the user receives the amount they were promised regardless of price changes.
-                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices().await.ok();
+                        // No timestamp here — this is a batch fallback across multiple intents;
+                        // the primary path uses stored target_amount locked at intent time.
+                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(None).await.ok();
 
                         // Step 1: Build BatchOutput list from intents
                         use crate::signing::chains::bitcoin_batch::BatchOutput;
@@ -1789,7 +1791,8 @@ impl MpcNetworkLayer {
                         let mut batch_intent_inputs = Vec::new();
 
                         // Fetch prices as fallback for intents missing stored target_amount
-                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices().await.ok();
+                        // No timestamp — batch fallback across multiple intents; primary path uses stored target_amount.
+                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(None).await.ok();
 
                         for (intent_hash, intent) in &batch_intents {
                             let source_amount = match intent.amount.parse::<u128>() {

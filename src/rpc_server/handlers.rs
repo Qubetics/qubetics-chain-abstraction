@@ -934,7 +934,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                 let target_amount = if is_same_chain {
                     source_amount
                 } else {
-                    let prices = match crate::rpc_server::utils::fetch_crypto_prices().await {
+                    let prices = match crate::rpc_server::utils::fetch_crypto_prices(Some(req.msg.timestamp)).await {
                         Ok(p) => p,
                         Err(e) => {
                             warn!("❌ [HTTP] Failed to fetch prices for intent {}: {}", intent_hash_hex, e);
