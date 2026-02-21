@@ -378,6 +378,53 @@ pub struct RejoinStatusResponse {
     pub message: String,
 }
 
+/// HTTP request body for POST /claim_platform_fee (admin-only).
+/// Exactly one of `tics_target_address` or `btc_target_address` must be set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimPlatformFeeRequest {
+    /// Amount of platform fee to claim, as decimal string in smallest units.
+    pub amount: String,
+    /// Target TICS (EVM) address to receive the TICS platform fee (mutually exclusive with btc_target_address).
+    pub tics_target_address: Option<String>,
+    /// Target BTC address to receive the BTC platform fee (mutually exclusive with tics_target_address).
+    pub btc_target_address: Option<String>,
+    /// Signature over `message` by VERIFICATION_ADDRESS (proves admin identity).
+    pub signature: String,
+    /// Signed payload string (e.g. JSON containing amount + address + nonce).
+    pub message: String,
+}
+
+/// HTTP response for POST /claim_platform_fee.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimPlatformFeeResponse {
+    pub status: String,
+    pub request_id: Option<String>,
+    pub amount: String,
+    pub tics_target_address: Option<String>,
+    pub btc_target_address: Option<String>,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+/// Internal representation of a queued claim-platform-fee request.
+/// Stored in RocksDB under keys with prefix "pending_claim_platform_fee:".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingClaimPlatformFeeRequest {
+    pub request_id: String,
+    /// Asset being claimed: "TICS" or "BTC" (derived from which address field is set).
+    pub asset: String,
+    /// Amount as decimal string in smallest units.
+    pub amount: String,
+    /// Target TICS address (Some when asset == "TICS").
+    pub tics_target_address: Option<String>,
+    /// Target BTC address (Some when asset == "BTC").
+    pub btc_target_address: Option<String>,
+    /// Original signed message payload from the HTTP request.
+    pub message: String,
+    /// Logical status: "Pending", "Batched", "Completed", "Failed", etc.
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConnectionResponse {
     pub peer_id: String,

@@ -404,7 +404,7 @@ impl MpcNetworkLayer {
                                                     .await
                                                 {
                                                     if user.derived_eth_address.is_some() {
-                                                        info!("📬 [GOSSIPSUB] Derived ETH address stored for {}", tics_address);
+                                                        info!("📬 [GOSSIPSUB] Derived TICS address stored for {}", tics_address);
                                                     }
                                                     if user.derived_btc_address.is_some() {
                                                         info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", tics_address);
@@ -1177,26 +1177,6 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Only add to node_manager if the peer is actually connected.
-                // Without this check, gossip messages about disconnected peers
-                // re-add them to node_manager, inflating total_nodes and causing
-                // the VRF selector to pick offline nodes for signing rounds.
-                if peer != self.local_peer_id && !self.connected_peers_cache.contains(&peer) {
-                    info!(
-                        "⏭️ [PEER_DISCOVERED] Skipping add for {} — not in connected_peers_cache",
-                        peer
-                    );
-                    // Still store the index for later use when the peer connects
-                    if let Some(idx) = index {
-                        self.peer_discovery.peer_indices.insert(peer, idx);
-                        let key = key_utils::peer_index_key(&peer.to_string());
-                        if let Err(e) = self.db.put_string_async(&key, &idx).await {
-                            warn!("Failed to persist peer index: {:?}", e);
-                        }
-                    }
-                    return Ok(());
-                }
-
                 // If index provided, store and persist it
                 if let Some(idx) = index {
                     self.peer_discovery.peer_indices.insert(peer, idx);
@@ -1209,12 +1189,6 @@ impl MpcNetworkLayer {
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
-
-                        // Track connected peer for HRW candidate filtering
-                        if let Some(arc) = &self.signing_node {
-                            let mut signing_node = arc.lock().await;
-                            signing_node.add_connected_peer(peer);
-                        }
 
                         // Log updated node count
                         let total = self.node_manager.get_total_nodes();
@@ -1439,6 +1413,12 @@ impl MpcNetworkLayer {
                         false
                     };
 
+                    // Parse the batch creation timestamp once; shared by both BTC and TICS price
+                    // fallback fetches so all nodes use the same price snapshot.
+                    let batch_ts_ms: Option<u128> = chrono::DateTime::parse_from_rfc3339(&timestamp)
+                        .ok()
+                        .map(|dt| dt.timestamp_millis() as u128);
+
                     // DIFFERENT: Process based on batch type
                     if batch_type == "BTC" {
                     if !is_dkg_participant {
@@ -1454,9 +1434,9 @@ impl MpcNetworkLayer {
                         // Fetch crypto prices as fallback for intents missing stored target_amount.
                         // Prefer stored target_amount (locked at intent submission) to ensure
                         // the user receives the amount they were promised regardless of price changes.
-                        // No timestamp here — this is a batch fallback across multiple intents;
-                        // the primary path uses stored target_amount locked at intent time.
-                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(None).await.ok();
+                        // Use the batch timestamp so the price snapshot is consistent with when
+                        // the batch was originally created by the final node.
+                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(batch_ts_ms).await.ok();
 
                         // Step 1: Build BatchOutput list from intents
                         use crate::signing::chains::bitcoin_batch::BatchOutput;
@@ -1790,9 +1770,8 @@ impl MpcNetworkLayer {
                         // Prepare BatchIntentInput array for processBatchIntents contract call
                         let mut batch_intent_inputs = Vec::new();
 
-                        // Fetch prices as fallback for intents missing stored target_amount
-                        // No timestamp — batch fallback across multiple intents; primary path uses stored target_amount.
-                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(None).await.ok();
+                        // Fetch prices as fallback for intents missing stored target_amount.
+                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(batch_ts_ms).await.ok();
 
                         for (intent_hash, intent) in &batch_intents {
                             let source_amount = match intent.amount.parse::<u128>() {
@@ -2286,28 +2265,6 @@ impl MpcNetworkLayer {
                                 "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
-                            // Revert intent status back to Pending so they can be
-                            // re-picked in the next epoch_3 cycle.
-                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
-                                if let Err(revert_err) = user_intent_manager
-                                    .update_intent_status(
-                                        user_eth_addr,
-                                        intent_hash,
-                                        IntentStatus::Pending,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        "⚠️ [TICS_UTV_BATCH] Failed to revert intent {} to Pending: {}",
-                                        intent_hash, revert_err
-                                    );
-                                } else {
-                                    info!(
-                                        "🔄 [TICS_UTV_BATCH] Reverted intent {} to Pending after batch signing failure",
-                                        intent_hash
-                                    );
-                                }
-                            }
                         } else {
                             info!(
                                 "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots, coordinated: {})",
@@ -2620,28 +2577,6 @@ impl MpcNetworkLayer {
                                 "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
-                            // Revert intent status back to Pending so they can be
-                            // re-picked in the next epoch_3 cycle.
-                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
-                                if let Err(revert_err) = user_intent_manager
-                                    .update_intent_status(
-                                        user_eth_addr,
-                                        intent_hash,
-                                        IntentStatus::Pending,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        "⚠️ [BTC_UTV_BATCH] Failed to revert intent {} to Pending: {}",
-                                        intent_hash, revert_err
-                                    );
-                                } else {
-                                    info!(
-                                        "🔄 [BTC_UTV_BATCH] Reverted intent {} to Pending after batch signing failure",
-                                        intent_hash
-                                    );
-                                }
-                            }
                         } else {
                             info!(
                                 "✅ [BTC_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
@@ -4494,6 +4429,52 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            GossipsubMessage::PendingClaimPlatformFeeRequestBroadcast { request } => {
+                use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+
+                info!(
+                    "💰 [PLATFORM_FEE] Received pending claim-platform-fee request from gossip: request_id={}, asset={}, amount={}",
+                    request.request_id, request.asset, request.amount
+                );
+
+                let key = format!(
+                    "pending_claim_platform_fee:{}",
+                    request.request_id
+                );
+
+                // Deduplicate: skip if a record with this request_id already exists.
+                let existing: Option<PendingClaimPlatformFeeRequest> =
+                    match self.db.get_string(&key) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [PLATFORM_FEE] Failed to check existing record for request_id={}: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                if existing.is_some() {
+                    info!(
+                        "🚫 [PLATFORM_FEE] Ignoring duplicate platform fee request {} — already stored",
+                        request.request_id
+                    );
+                    return Ok(());
+                }
+
+                if let Err(e) = self.db.put_string_async(&key, &request).await {
+                    warn!(
+                        "⚠️ [PLATFORM_FEE] Failed to persist PendingClaimPlatformFeeRequest request_id={}: {}",
+                        request.request_id, e
+                    );
+                } else {
+                    info!(
+                        "✅ [PLATFORM_FEE] Stored PendingClaimPlatformFeeRequest from gossip (request_id={}, asset={}, amount={})",
+                        request.request_id, request.asset, request.amount
+                    );
+                }
+            }
             GossipsubMessage::PendingClaimRewardRequestBroadcast { request } => {
                 use crate::types::rpc_server::PendingClaimRewardRequest;
 
@@ -4685,11 +4666,6 @@ impl MpcNetworkLayer {
                             match self.node_manager.add_node(peer_id) {
                                 Ok(_) => {
                                     added_count += 1;
-                                    // Track connected peer for HRW candidate filtering
-                                    if let Some(arc) = &self.signing_node {
-                                        let mut signing_node = arc.lock().await;
-                                        signing_node.add_connected_peer(peer_id);
-                                    }
                                     info!(
                                         "✅ [PEER_SYNC] Re-added missing peer {} (idx: {:?}) from {}'s ActivePeerList",
                                         peer_id, idx, node_id

@@ -90,6 +90,7 @@ pub const TOPIC_BTC_USER_TO_VAULT_BATCH: &str = "btc-user-to-vault-batch";
 pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
 pub const TOPIC_PEER_DISCONNECTIONS: &str = "peer-disconnections";
 pub const TOPIC_PEER_INVALIDATION_BATCH: &str = "peer-invalidation-batch";
+pub const TOPIC_PLATFORM_FEE: &str = "platform-fee";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -124,6 +125,8 @@ pub enum GossipTopic {
     PeerDisconnections,
     /// Peer invalidation batch broadcast (final node -> all nodes)
     PeerInvalidationBatch,
+    /// Admin claim-platform-fee request broadcast (HTTP node -> all nodes)
+    PlatformFee,
 }
 
 impl GossipTopic {
@@ -156,6 +159,7 @@ impl GossipTopic {
         GossipTopic::BtcIntentManagerTxUpdate,
         GossipTopic::PeerDisconnections,
         GossipTopic::PeerInvalidationBatch,
+        GossipTopic::PlatformFee,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -188,6 +192,7 @@ impl GossipTopic {
             GossipTopic::BtcIntentManagerTxUpdate => TOPIC_BTC_INTENT_MANAGER_TX_UPDATE,
             GossipTopic::PeerDisconnections => TOPIC_PEER_DISCONNECTIONS,
             GossipTopic::PeerInvalidationBatch => TOPIC_PEER_INVALIDATION_BATCH,
+            GossipTopic::PlatformFee => TOPIC_PLATFORM_FEE,
         }
     }
 }

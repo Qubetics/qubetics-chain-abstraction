@@ -17,15 +17,17 @@ use crate::{
         intent::{DepositIntent, DepositIntentResponse, TransactionType},
         messaging::ChannelMessage,
         rpc_server::{
-            AddLiquidityRequest, AddLiquidityResponse, ClaimRewardRequest, ClaimRewardResponse,
+            AddLiquidityRequest, AddLiquidityResponse, ClaimPlatformFeeRequest,
+            ClaimPlatformFeeResponse, ClaimRewardRequest, ClaimRewardResponse,
             DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
             GetSolverRewardsResponse, HeartbeatResponse, IntentDetailsResponse,
             IntentsSolvedCountResponse, NodeIdResponse, PeerConnectionResponse,
-            PendingClaimRewardRequest, PendingIntentsCountResponse, PendingWithdrawRequest,
-            RejoinStatusResponse, RequestContext, SolverLiquidityRequest,
-            SolverLiquidityResponse, UnclaimedRewardEntry, UptimeResponse, UserCountResponse,
-            UserInfoResponse, UserMpcDepositRequest, UserMpcDepositVerifyResponse,
-            UserRegistrationRequest, WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            PendingClaimPlatformFeeRequest, PendingClaimRewardRequest,
+            PendingIntentsCountResponse, PendingWithdrawRequest, RejoinStatusResponse,
+            RequestContext, SolverLiquidityRequest, SolverLiquidityResponse,
+            UnclaimedRewardEntry, UptimeResponse, UserCountResponse, UserInfoResponse,
+            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
+            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
         },
         IntentStatus,
     },
@@ -54,7 +56,7 @@ pub(crate) async fn handle_deposit_intent(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!("📝 HTTP: Received deposit intent request");
     if let Some(addr) = &user_tics_address {
-        info!("📝 HTTP: User eth address provided for signing: {}", addr);
+        info!("📝 HTTP: User TICS address provided for signing: {}", addr);
     }
 
     // Parse string amount into u128 for internal processing
@@ -569,7 +571,7 @@ pub(crate) async fn handle_register_user(
                 let error_response = EnhancedUserRegistrationResponse {
                     status: "error".to_string(),
                     message: format!(
-                        "Derived addresses (ETH/BTC) were not generated within {} seconds. Please try again later.",
+                        "Derived addresses (TICS/BTC) were not generated within {} seconds. Please try again later.",
                         MAX_ATTEMPTS
                     ),
                     derived_eth_address: final_registration.derived_eth_address,
@@ -587,7 +589,7 @@ pub(crate) async fn handle_register_user(
 
             if let Some(eth_addr) = &final_registration.derived_eth_address {
                 info!(
-                    "📬 HTTP: Derived ETH address stored for {} -> {}",
+                    "📬 HTTP: Derived TICS address stored for {} -> {}",
                     addr_cs, eth_addr
                 );
             }
@@ -1919,7 +1921,7 @@ pub(crate) async fn handle_claim_reward(
     _dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
-        "🎁 HTTP: claim_reward request for ETH: {:?}, BTC: {:?}",
+        "🎁 HTTP: claim_reward request for TICS: {:?}, BTC: {:?}",
         req.tics_address, req.btc_address
     );
     if req.tics_address.is_none() && req.btc_address.is_none() {
@@ -3125,13 +3127,13 @@ pub(crate) async fn handle_get_network_addresses(
     // Log the addresses
     if let Some(ref net_addrs) = network_addresses {
         info!(
-            "📍 [RPC] Network Addresses: ETH={}, BTC={}",
+            "📍 [RPC] Network Addresses: TICS={}, BTC={}",
             net_addrs.eth_address, net_addrs.btc_address
         );
     }
     if let Some(ref liquidity_operator_addrs) = liquidity_operator_addresses {
         info!(
-            "📍 [RPC] Liquidity Operator Addresses: ETH={}, BTC={}",
+            "📍 [RPC] Liquidity Operator Addresses: TICS={}, BTC={}",
             liquidity_operator_addrs.eth_address, liquidity_operator_addrs.btc_address
         );
     }
@@ -3221,5 +3223,205 @@ pub(crate) async fn handle_check_peer_connection(
     Ok(warp::reply::json(&PeerConnectionResponse {
         peer_id,
         connected,
+    }))
+}
+
+/// POST /claim_platform_fee — admin-only endpoint.
+///
+/// Verifies the request was signed by `VERIFICATION_ADDRESS`, validates that
+/// exactly one of `tics_target_address` or `btc_target_address` is supplied,
+/// stores a `PendingClaimPlatformFeeRequest` in every node's RocksDB via
+/// gossipsub broadcast, and returns `status: "pending"`.
+///
+/// Processing (signing, on-chain submission) is handled separately once the
+/// request is in the `Pending` state across all nodes.
+pub(crate) async fn handle_claim_platform_fee(
+    req: ClaimPlatformFeeRequest,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    info!(
+        "💰 HTTP: claim_platform_fee request — amount={}, tics_target={:?}, btc_target={:?}",
+        req.amount, req.tics_target_address, req.btc_target_address
+    );
+
+    // --- 1. Validate exactly one address is provided ---
+    match (&req.tics_target_address, &req.btc_target_address) {
+        (Some(_), Some(_)) => {
+            warn!("❌ [PLATFORM_FEE] Both tics_target_address and btc_target_address provided");
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Only one target address may be provided per request".to_string(),
+                error_message: Some(
+                    "Provide either tics_target_address or btc_target_address, not both"
+                        .to_string(),
+                ),
+            }));
+        }
+        (None, None) => {
+            warn!("❌ [PLATFORM_FEE] Neither tics_target_address nor btc_target_address provided");
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: None,
+                btc_target_address: None,
+                message: "A target address is required".to_string(),
+                error_message: Some(
+                    "Provide exactly one of tics_target_address or btc_target_address".to_string(),
+                ),
+            }));
+        }
+        _ => {}
+    }
+
+    // --- 2. Validate amount ---
+    if req.amount.trim().is_empty() || req.amount.trim() == "0" {
+        warn!("❌ [PLATFORM_FEE] Invalid amount: {}", req.amount);
+        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+            status: "error".to_string(),
+            request_id: None,
+            amount: req.amount.clone(),
+            tics_target_address: req.tics_target_address.clone(),
+            btc_target_address: req.btc_target_address.clone(),
+            message: "Amount must be greater than zero".to_string(),
+            error_message: Some("amount must be a non-zero decimal string".to_string()),
+        }));
+    }
+
+    // --- 3. Load VERIFICATION_ADDRESS and verify admin signature ---
+    let verification_address_raw =
+        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| {
+            "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string()
+        });
+    if verification_address_raw.trim().is_empty() {
+        warn!("❌ [PLATFORM_FEE] VERIFICATION_ADDRESS not configured");
+        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+            status: "error".to_string(),
+            request_id: None,
+            amount: req.amount.clone(),
+            tics_target_address: req.tics_target_address.clone(),
+            btc_target_address: req.btc_target_address.clone(),
+            message: "VERIFICATION_ADDRESS not configured".to_string(),
+            error_message: Some("VERIFICATION_ADDRESS env var is missing".to_string()),
+        }));
+    }
+
+    let (compact, v) = match normalize_eth_signature(&req.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ [PLATFORM_FEE] Invalid signature format: {}", e);
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Invalid signature format".to_string(),
+                error_message: Some(format!("Invalid signature: {e:?}")),
+            }));
+        }
+    };
+
+    let msg_bytes = req.message.as_bytes();
+    let recovered_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!(
+                    "❌ [PLATFORM_FEE] Failed to recover admin address: personal_sign={}, raw={}",
+                    e1, e2
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Failed to recover signature".to_string(),
+                    error_message: Some(format!(
+                        "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                    )),
+                }));
+            }
+        },
+    };
+
+    if recovered_address.to_lowercase() != verification_address_raw.to_lowercase() {
+        warn!(
+            "❌ [PLATFORM_FEE] Unauthorized: recovered={}, expected={}",
+            recovered_address, verification_address_raw
+        );
+        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+            status: "error".to_string(),
+            request_id: None,
+            amount: req.amount.clone(),
+            tics_target_address: req.tics_target_address.clone(),
+            btc_target_address: req.btc_target_address.clone(),
+            message: "Unauthorized claim_platform_fee request".to_string(),
+            error_message: Some(
+                "Recovered signer does not match VERIFICATION_ADDRESS".to_string(),
+            ),
+        }));
+    }
+
+    // --- 4. Build the pending request record ---
+    let asset = if req.tics_target_address.is_some() {
+        "TICS"
+    } else {
+        "BTC"
+    };
+    let request_id = format!("platform-fee-{}", uuid::Uuid::new_v4());
+
+    let pending = PendingClaimPlatformFeeRequest {
+        request_id: request_id.clone(),
+        asset: asset.to_string(),
+        amount: req.amount.clone(),
+        tics_target_address: req.tics_target_address.clone(),
+        btc_target_address: req.btc_target_address.clone(),
+        message: req.message.clone(),
+        status: "Pending".to_string(),
+    };
+
+    // --- 5. Broadcast to all nodes (local + peers) via channel ---
+    let tx = message_tx.lock().await;
+    if let Err(e) = tx
+        .send(ChannelMessage::PendingClaimPlatformFeeRequestBroadcast {
+            request: pending.clone(),
+        })
+        .await
+    {
+        warn!(
+            "❌ [PLATFORM_FEE] Failed to enqueue broadcast for request_id={}: {}",
+            request_id, e
+        );
+        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+            status: "error".to_string(),
+            request_id: None,
+            amount: req.amount.clone(),
+            tics_target_address: req.tics_target_address.clone(),
+            btc_target_address: req.btc_target_address.clone(),
+            message: "Failed to submit platform fee claim to network".to_string(),
+            error_message: Some(format!("Channel send error: {e}")),
+        }));
+    }
+
+    info!(
+        "✅ [PLATFORM_FEE] claim_platform_fee accepted: request_id={}, asset={}, amount={}",
+        request_id, asset, req.amount
+    );
+
+    Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+        status: "pending".to_string(),
+        request_id: Some(request_id),
+        amount: req.amount,
+        tics_target_address: req.tics_target_address,
+        btc_target_address: req.btc_target_address,
+        message: "Platform fee claim submitted — marked as pending across all nodes".to_string(),
+        error_message: None,
     }))
 }

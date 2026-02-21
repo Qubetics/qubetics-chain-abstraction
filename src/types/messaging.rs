@@ -301,6 +301,11 @@ pub enum ChannelMessage {
     PendingWithdrawRequestBroadcast {
         request: PendingWithdrawRequest,
     },
+    /// Propagate a new pending claim-platform-fee request to all nodes so they store it in DB.
+    /// Sent by the node that received the claim_platform_fee admin RPC.
+    PendingClaimPlatformFeeRequestBroadcast {
+        request: crate::types::rpc_server::PendingClaimPlatformFeeRequest,
+    },
     UserRegistration {
         tics_address: String,
         node_id: String,
@@ -531,6 +536,11 @@ pub enum GossipsubMessage {
     /// Sent by the node that received the withdraw_liquidity RPC; peers store the same request.
     PendingWithdrawRequestBroadcast {
         request: PendingWithdrawRequest,
+    },
+    /// Propagate a new pending claim-platform-fee request to all nodes so they store it in DB.
+    /// Sent by the node that received the claim_platform_fee admin RPC.
+    PendingClaimPlatformFeeRequestBroadcast {
+        request: crate::types::rpc_server::PendingClaimPlatformFeeRequest,
     },
     /// Acknowledgment messages for critical message retry mechanism
     CriticalMessageAck {

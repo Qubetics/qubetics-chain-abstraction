@@ -108,7 +108,8 @@ use crate::{
 };
 
 use crate::network::transport::types::{
-    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_WITHDRAW_LIQUIDITY,
+    MpcNetworkBehaviour, MpcNetworkLayer, TOPIC_CLAIM_REWARDS, TOPIC_PLATFORM_FEE,
+    TOPIC_WITHDRAW_LIQUIDITY,
 };
 use crate::protocols::DKGStatus;
 
@@ -1098,6 +1099,62 @@ impl MpcNetworkLayer {
                 } else {
                     warn!(
                         "⚠️ [WITHDRAW_LIQUIDITY] No peers available for broadcasting PendingWithdrawRequestBroadcast"
+                    );
+                }
+            }
+            ChannelMessage::PendingClaimPlatformFeeRequestBroadcast { request } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg =
+                    crate::types::GossipsubMessage::PendingClaimPlatformFeeRequestBroadcast {
+                        request: request.clone(),
+                    };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [PLATFORM_FEE] Failed to serialize PendingClaimPlatformFeeRequestBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [PLATFORM_FEE] Failed to process local PendingClaimPlatformFeeRequestBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [PLATFORM_FEE] Failed to publish PendingClaimPlatformFeeRequestBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    } else {
+                        info!(
+                            "📡 [PLATFORM_FEE] Published PendingClaimPlatformFeeRequestBroadcast (request_id={}) to {} peers",
+                            request.request_id, peer_count
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [PLATFORM_FEE] No peers available for broadcasting PendingClaimPlatformFeeRequestBroadcast"
                     );
                 }
             }

@@ -83,3 +83,6 @@ pub const SOLVER_ADD_LIQUIDITY: &str = "solver_add_liquidity:";
 pub const PENDING_WITHDRAW_LIQUIDITY: &str = "pending_withdraw_liquidity:";
 /// Pending claim reward requests (contract call)
 pub const PENDING_CLAIM_REWARD: &str = "pending_claim_reward:";
+/// Pending admin claim-platform-fee requests.
+/// Key format: "pending_claim_platform_fee:{request_id}"
+pub const PENDING_CLAIM_PLATFORM_FEE: &str = "pending_claim_platform_fee:";
