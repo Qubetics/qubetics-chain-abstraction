@@ -435,6 +435,71 @@ impl MpcNetworkLayer {
                     warn!("❌ [GOSSIPSUB] User registry not available to handle user registration");
                 }
             }
+            GossipsubMessage::AdminRegistration {
+                tics_address,
+                timestamp,
+                node_id,
+            } => {
+                info!(
+                    "👤 Received admin registration via gossipsub: {} from node {} at {}",
+                    tics_address, node_id, timestamp
+                );
+
+                if let Some(user_intent_manager) = &mut self.user_intent_manager {
+                    let dkg_secret_share = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+
+                    match user_intent_manager
+                        .register_admin(&tics_address, dkg_secret_share.as_ref(), &node_id)
+                        .await
+                    {
+                        Ok(registration) => {
+                            info!(
+                                "✅ [GOSSIPSUB] Successfully registered admin {} locally",
+                                tics_address
+                            );
+
+                            if let Some(dkg_node) = &self.dkg_node {
+                                if let Some(tweak_scalar) = k256::Scalar::from_repr_vartime(
+                                    registration.hmac_constant.into(),
+                                ) {
+                                    match dkg_node
+                                        .derive_user_specific_group_key_from_commitments(
+                                            tweak_scalar,
+                                        )
+                                        .await
+                                    {
+                                        Ok(group_key) => {
+                                            if let Err(e) = user_intent_manager
+                                                .set_admin_group_key(&tics_address, group_key)
+                                                .await
+                                            {
+                                                warn!("❌ [GOSSIPSUB] Failed to store admin group key for {}: {}", tics_address, e);
+                                            } else {
+                                                info!("🔑 [GOSSIPSUB] Stored admin-specific group key and derived addresses for {}", tics_address);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("❌ [GOSSIPSUB] Failed to derive admin-specific group key for {}: {}", tics_address, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "❌ [GOSSIPSUB] Failed to register admin {} locally: {}",
+                                tics_address, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!("❌ [GOSSIPSUB] User registry not available to handle admin registration");
+                }
+            }
             GossipsubMessage::TransactionIdBroadcast {
                 intent_hashes,
                 transaction_id,

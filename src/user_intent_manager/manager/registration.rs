@@ -432,4 +432,162 @@ impl UserIntentManager {
             }
         }
     }
+
+    // ==================== Admin Registration ====================
+
+    /// Register a new admin (stored separately under "admin:" prefix)
+    pub async fn register_admin(
+        &self,
+        tics_address: &str,
+        dkg_secret_share: Option<&Scalar>,
+        node_id: &str,
+    ) -> Result<crate::types::AdminRegistration, String> {
+        info!(
+            "👤 [DB_ADMIN_REGISTRY] register_admin called - Address: {}, Node: {}",
+            tics_address, node_id
+        );
+
+        // 1) Normalize to canonical EIP-55
+        let addr_cs = match checksum_from_any(tics_address) {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(format!(
+                    "Invalid tics_address '{tics_address}': {e}"
+                ))
+            }
+        };
+
+        // 2) Check if admin already registered
+        if self
+            .user_storage
+            .contains_admin(&addr_cs)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err("Admin already registered".to_string());
+        }
+
+        // 3) Generate admin ID and HMAC constant
+        let admin_id = Uuid::new_v4().to_string();
+        let hmac_constant = self.generate_hmac_constant(&addr_cs);
+
+        // 4) Create admin registration
+        let mut registration = crate::types::AdminRegistration {
+            admin_id: admin_id.clone(),
+            tics_address: addr_cs.clone(),
+            hmac_constant,
+            tweaked_secret_share: None,
+            user_group_key: None,
+            derived_eth_address: None,
+            derived_btc_address: None,
+            created_at: Utc::now(),
+            registered_by_node: node_id.to_string(),
+        };
+
+        // 5) Process DKG share if provided
+        if let Some(share) = dkg_secret_share {
+            let share_bytes = share.to_bytes();
+            info!(
+                "🔑 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} at registration: dkg_share_fingerprint=0x{}, hmac_constant=0x{}",
+                addr_cs,
+                hex::encode(&share_bytes[..8]),
+                hex::encode(&registration.hmac_constant[..8])
+            );
+            let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
+            registration.tweaked_secret_share = Some(tweaked_share);
+        }
+
+        // 6) Store in database under "admin:" prefix
+        match self.user_storage.store_admin(&addr_cs, &registration).await {
+            Ok(()) => {
+                info!(
+                    "🎉 [DB_ADMIN_REGISTRY] Admin registration SUCCESSFULLY stored in database!"
+                );
+                info!("  📧 Final address: {}", addr_cs);
+                info!("  🆔 Final admin ID: {}", admin_id);
+
+                // Compute and store admin share pubkeys for all peers
+                let dkg_storage = self.database_module.dkg_storage();
+                if let Err(e) = dkg_storage
+                    .compute_and_store_user_share_pubkeys_for_user(
+                        &addr_cs,
+                        &registration.hmac_constant,
+                    )
+                    .await
+                {
+                    warn!(
+                        "⚠️ [DB_ADMIN_REGISTRY] Failed to compute admin share pubkeys for {}: {}",
+                        addr_cs, e
+                    );
+                } else {
+                    info!(
+                        "✅ [DB_ADMIN_REGISTRY] Successfully computed and stored admin share pubkeys for {}",
+                        addr_cs
+                    );
+                }
+
+                Ok(registration)
+            }
+            Err(e) => {
+                error!(
+                    "💥 [DB_ADMIN_REGISTRY] FAILED to store admin registration in database!"
+                );
+                error!("  📧 Address: {}", addr_cs);
+                error!("  💥 Database error: {}", e);
+                Err(e.to_string())
+            }
+        }
+    }
+
+    /// Get admin registration by TICS address
+    pub async fn get_admin_by_address(
+        &self,
+        tics_address: &str,
+    ) -> Option<crate::types::AdminRegistration> {
+        match self.user_storage.get_admin(tics_address).await {
+            Ok(admin) => admin,
+            Err(e) => {
+                tracing::error!("Failed to get admin by address {}: {}", tics_address, e);
+                None
+            }
+        }
+    }
+
+    /// Set admin group key and derived addresses
+    pub async fn set_admin_group_key(
+        &self,
+        tics_address: &str,
+        group_key: k256::ProjectivePoint,
+    ) -> Result<(), String> {
+        let affine = group_key.to_affine();
+        let serial = SerializablePoint(affine);
+
+        let derived_eth = crate::utils::get_eth_address_from_group_key(group_key);
+        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key);
+
+        info!(
+            "📬 [DB_ADMIN_REGISTRY] Derived ETH address for admin {}: {}",
+            tics_address, derived_eth
+        );
+        info!(
+            "📬 [DB_ADMIN_REGISTRY] Derived BTC address for admin {}: {}",
+            tics_address, derived_btc
+        );
+
+        self.user_storage
+            .update_admin_group_key_and_addresses(
+                tics_address,
+                &serial,
+                Some(derived_eth),
+                Some(derived_btc),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        info!(
+            "✅ [DB_ADMIN_REGISTRY] Set admin group key and derived addresses for {}",
+            tics_address
+        );
+        Ok(())
+    }
 }

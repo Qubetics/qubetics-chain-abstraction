@@ -51,6 +51,25 @@ pub struct UserRegistrationRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRegistrationRequest {
+    pub tics_address: String,
+    /// Signature of the registration message (required for security)
+    /// Must be signed by the ADMIN_PUBLIC_ADDRESS configured in env
+    pub signature: String,
+    /// The message that was signed (should be in format: "register_admin:{tics_address}:{timestamp}")
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRegistrationResponse {
+    pub status: String,
+    pub message: String,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
+    pub error: Option<ErrorResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMpcDepositRequest {
     pub signature: Option<String>,
     pub msg: DepositIntent,
@@ -219,6 +238,19 @@ pub struct UserInfoResponse {
     pub tics_address: Option<String>,
     pub has_tweaked_share: Option<bool>,
     pub has_user_group_key: Option<bool>,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
+    pub created_at: Option<String>,
+    pub error: Option<ErrorResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminInfoResponse {
+    pub status: String,
+    pub admin_id: Option<String>,
+    pub tics_address: Option<String>,
+    pub has_tweaked_share: Option<bool>,
+    pub has_group_key: Option<bool>,
     pub derived_eth_address: Option<String>,
     pub derived_btc_address: Option<String>,
     pub created_at: Option<String>,

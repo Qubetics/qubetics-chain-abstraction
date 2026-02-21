@@ -629,6 +629,383 @@ pub(crate) async fn handle_register_user(
     }
 }
 
+pub(crate) async fn handle_register_admin(
+    request: crate::types::rpc_server::AdminRegistrationRequest,
+    user_intent_manager: Arc<UserIntentManager>,
+    dkg_storage: Arc<DkgStorage>,
+    message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    node_id: String,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use crate::types::rpc_server::AdminRegistrationResponse;
+
+    info!(
+        "👤 HTTP: Received admin registration request for address: {}",
+        request.tics_address
+    );
+
+    // --- 1. Validate TICS address ---
+    let addr_cs = match super::errors::validate_tics_address(&request.tics_address) {
+        Ok(normalized) => normalized,
+        Err(e) => {
+            error!(
+                "❌ HTTP: Address validation failed for '{}': {:?}",
+                request.tics_address, e
+            );
+            return Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid TICS address".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(e.to_error_response()),
+            }));
+        }
+    };
+
+    // --- 2. Load ADMIN_PUBLIC_ADDRESS from env ---
+    let admin_public_address = match std::env::var("ADMIN_PUBLIC_ADDRESS") {
+        Ok(addr) if !addr.trim().is_empty() => addr.trim().to_string(),
+        _ => {
+            error!("❌ ADMIN_PUBLIC_ADDRESS env var is not configured");
+            return Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "ADMIN_PUBLIC_ADDRESS not configured on this node".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(
+                        "ADMIN_PUBLIC_ADDRESS env var is not configured".to_string(),
+                    )
+                    .to_error_response(),
+                ),
+            }));
+        }
+    };
+
+    // --- 3. Normalize and verify signature ---
+    let (compact, v) = match normalize_eth_signature(&request.signature) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("❌ Failed to normalize admin signature: {}", e);
+            return Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid signature format".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!("Invalid signature format: {e}"))
+                        .to_error_response(),
+                ),
+            }));
+        }
+    };
+
+    let msg_bytes = request.message.as_bytes();
+    let recovered_address = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+        Ok(addr) => addr,
+        Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+            Ok(addr) => addr,
+            Err(e2) => {
+                error!(
+                    "❌ Both signature recovery methods failed for admin registration: personal_sign={}, raw={}",
+                    e1, e2
+                );
+                return Ok(warp::reply::json(&AdminRegistrationResponse {
+                    status: "error".to_string(),
+                    message: "Failed to recover signature".to_string(),
+                    derived_eth_address: None,
+                    derived_btc_address: None,
+                    error: Some(
+                        RpcError::InvalidRequest(format!(
+                            "Failed to recover signature: personal_sign={e1}, raw={e2}"
+                        ))
+                        .to_error_response(),
+                    ),
+                }));
+            }
+        },
+    };
+
+    // --- 4. Verify recovered address matches ADMIN_PUBLIC_ADDRESS from env ---
+    if recovered_address.to_lowercase() != admin_public_address.to_lowercase() {
+        error!(
+            "❌ Admin signature verification failed: recovered={}, expected ADMIN_PUBLIC_ADDRESS={}",
+            recovered_address, admin_public_address
+        );
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "Unauthorized: signer does not match ADMIN_PUBLIC_ADDRESS".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Recovered signer does not match ADMIN_PUBLIC_ADDRESS".to_string(),
+                )
+                .to_error_response(),
+            ),
+        }));
+    }
+
+    // --- 5. Validate message format and timestamp ---
+    // Expected format: "register_admin:{tics_address}:{timestamp}"
+    let parts: Vec<&str> = request.message.split(':').collect();
+    if parts.len() != 3 || parts[0] != "register_admin" {
+        warn!("⚠️ Invalid message format, expected: register_admin:{{address}}:{{timestamp}}");
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "Invalid message format".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Invalid message format. Expected: register_admin:{address}:{timestamp}"
+                        .to_string(),
+                )
+                .to_error_response(),
+            ),
+        }));
+    }
+
+    // Verify the address in the message matches the provided tics_address
+    let message_addr = match checksum_from_any(parts[1]) {
+        Ok(addr) => addr,
+        Err(e) => {
+            error!("❌ Invalid address in message: {}", e);
+            return Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "Invalid address in message".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!("Invalid address in message: {e}"))
+                        .to_error_response(),
+                ),
+            }));
+        }
+    };
+
+    if message_addr.to_lowercase() != addr_cs.to_lowercase() {
+        error!(
+            "❌ Address in message {} does not match provided address {}",
+            message_addr, addr_cs
+        );
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "Address in message does not match provided address".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "Address in message does not match provided address".to_string(),
+                )
+                .to_error_response(),
+            ),
+        }));
+    }
+
+    // Validate timestamp (5-minute window)
+    if let Ok(timestamp) = parts[2].parse::<i64>() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let time_diff = (now - timestamp).abs();
+        const MAX_TIME_DIFF: i64 = 300;
+
+        if time_diff > MAX_TIME_DIFF {
+            warn!(
+                "⚠️ Timestamp validation failed: time difference {} seconds exceeds maximum {} seconds",
+                time_diff, MAX_TIME_DIFF
+            );
+            return Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "Timestamp validation failed: message expired or invalid".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(
+                    RpcError::InvalidRequest(format!(
+                        "Timestamp validation failed: time difference {} seconds exceeds maximum {} seconds",
+                        time_diff, MAX_TIME_DIFF
+                    ))
+                    .to_error_response(),
+                ),
+            }));
+        }
+    } else {
+        warn!("⚠️ Invalid timestamp format in message");
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "Invalid timestamp format in message".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest("Invalid timestamp format in message".to_string())
+                    .to_error_response(),
+            ),
+        }));
+    }
+
+    info!(
+        "✅ Admin signature verification successful for address: {}",
+        addr_cs
+    );
+
+    // --- 6. Check if admin is already registered (under "admin:" prefix) ---
+    if let Some(_existing_admin) = user_intent_manager.get_admin_by_address(&addr_cs).await {
+        info!("⚠️ HTTP: Admin already registered: {}", addr_cs);
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "Admin is already registered".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest("Admin is already registered".to_string())
+                    .to_error_response(),
+            ),
+        }));
+    }
+
+    // --- 7. Check DKG status ---
+    let dkg_secret_share = get_actual_dkg_secret_share(dkg_storage).await;
+    if dkg_secret_share.is_none() {
+        warn!("⚠️ HTTP: DKG not ready for admin registration");
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "DKG system is not ready. Please try again later.".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::DkgNotReady("DKG secret share not available".to_string())
+                    .to_error_response(),
+            ),
+        }));
+    }
+
+    // --- 8. Register admin (stored separately under "admin:" prefix) ---
+    match user_intent_manager
+        .register_admin(&addr_cs, dkg_secret_share.as_ref(), &node_id)
+        .await
+    {
+        Ok(registration) => {
+            info!(
+                "✅ HTTP: Admin registration successful for address: {}",
+                addr_cs
+            );
+
+            // Broadcast to peers via dedicated AdminRegistration channel message
+            let admin_reg_msg = ChannelMessage::AdminRegistration {
+                tics_address: addr_cs.clone(),
+                node_id: node_id.to_string(),
+            };
+
+            if let Ok(tx) = message_tx.try_lock() {
+                if let Err(e) = tx.send(admin_reg_msg).await {
+                    error!(
+                        "❌ Failed to send admin registration message to network: {}",
+                        e
+                    );
+                    warn!("⚠️ Admin registered locally but network broadcast failed");
+                } else {
+                    info!("📡 Admin registration message sent to network layer for broadcasting");
+                }
+            } else {
+                warn!("⚠️ Could not acquire message channel lock for network broadcast");
+            }
+
+            // Wait for derived addresses
+            info!("⏳ Waiting for admin derived addresses to be populated...");
+            let mut attempts = 0;
+            const MAX_ATTEMPTS: u8 = 10;
+
+            let mut derived_eth = registration.derived_eth_address.clone();
+            let mut derived_btc = registration.derived_btc_address.clone();
+            while attempts < MAX_ATTEMPTS {
+                match user_intent_manager.get_admin_by_address(&addr_cs).await {
+                    Some(updated_admin) => {
+                        if updated_admin.derived_eth_address.is_some()
+                            && updated_admin.derived_btc_address.is_some()
+                        {
+                            derived_eth = updated_admin.derived_eth_address;
+                            derived_btc = updated_admin.derived_btc_address;
+                            info!("✅ Admin derived addresses are now available!");
+                            break;
+                        }
+                    }
+                    None => {
+                        warn!("⚠️ Admin temporarily missing from registry during address derivation, retrying...");
+                    }
+                }
+
+                attempts += 1;
+                if attempts < MAX_ATTEMPTS {
+                    info!(
+                        "⏳ Attempt {}/{}: Admin derived addresses not ready yet, waiting 1 second...",
+                        attempts, MAX_ATTEMPTS
+                    );
+                    sleep(Duration::from_secs(1)).await;
+                }
+            }
+
+            if derived_eth.is_none() || derived_btc.is_none() {
+                error!(
+                    "❌ HTTP: Admin derived addresses not available after {} attempts",
+                    MAX_ATTEMPTS
+                );
+                return Ok(warp::reply::json(&AdminRegistrationResponse {
+                    status: "error".to_string(),
+                    message: format!(
+                        "Derived addresses (TICS/BTC) were not generated within {} seconds. Please try again later.",
+                        MAX_ATTEMPTS
+                    ),
+                    derived_eth_address: derived_eth,
+                    derived_btc_address: derived_btc,
+                    error: Some(
+                        RpcError::Timeout(format!(
+                            "Derived addresses not generated within {} seconds",
+                            MAX_ATTEMPTS
+                        ))
+                        .to_error_response(),
+                    ),
+                }));
+            }
+
+            if let Some(eth_addr) = &derived_eth {
+                info!(
+                    "📬 HTTP: Admin derived TICS address stored for {} -> {}",
+                    addr_cs, eth_addr
+                );
+            }
+            if let Some(btc_addr) = &derived_btc {
+                info!(
+                    "📬 HTTP: Admin derived BTC address stored for {} -> {}",
+                    addr_cs, btc_addr
+                );
+            }
+
+            Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "success".to_string(),
+                message: "Admin registered successfully".to_string(),
+                derived_eth_address: derived_eth,
+                derived_btc_address: derived_btc,
+                error: None,
+            }))
+        }
+        Err(e) => {
+            error!(
+                "❌ HTTP: Admin registration failed for address {}: {}",
+                addr_cs, e
+            );
+
+            Ok(warp::reply::json(&AdminRegistrationResponse {
+                status: "error".to_string(),
+                message: "Admin registration failed".to_string(),
+                derived_eth_address: None,
+                derived_btc_address: None,
+                error: Some(RpcError::RegistrationFailed(e.to_string()).to_error_response()),
+            }))
+        }
+    }
+}
+
 pub(crate) async fn handle_user_mpc_deposit(
     req: UserMpcDepositRequest,
     user_intent_manager: Arc<UserIntentManager>,
@@ -1381,6 +1758,75 @@ pub(crate) async fn handle_get_user_info(
             };
 
             Ok(warp::reply::json(&error_response))
+        }
+    }
+}
+
+pub(crate) async fn handle_get_admin_info(
+    tics_address: String,
+    user_intent_manager: Arc<UserIntentManager>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    use crate::types::rpc_server::AdminInfoResponse;
+
+    info!(
+        "🔍 HTTP: Received admin info request for address: {}",
+        tics_address
+    );
+
+    let addr_cs = match super::errors::validate_tics_address(&tics_address) {
+        Ok(normalized) => normalized,
+        Err(e) => {
+            error!(
+                "❌ HTTP: Address validation failed for '{}': {:?}",
+                tics_address, e
+            );
+            return Ok(warp::reply::json(&AdminInfoResponse {
+                status: "error".to_string(),
+                admin_id: None,
+                tics_address: None,
+                has_tweaked_share: None,
+                has_group_key: None,
+                derived_eth_address: None,
+                derived_btc_address: None,
+                created_at: None,
+                error: Some(e.to_error_response()),
+            }));
+        }
+    };
+
+    match user_intent_manager.get_admin_by_address(&addr_cs).await {
+        Some(admin) => {
+            info!("✅ HTTP: Found admin info for {}", addr_cs);
+
+            Ok(warp::reply::json(&AdminInfoResponse {
+                status: "success".to_string(),
+                admin_id: Some(admin.admin_id),
+                tics_address: Some(admin.tics_address),
+                has_tweaked_share: Some(admin.tweaked_secret_share.is_some()),
+                has_group_key: Some(admin.user_group_key.is_some()),
+                derived_eth_address: admin.derived_eth_address,
+                derived_btc_address: admin.derived_btc_address,
+                created_at: Some(admin.created_at.to_rfc3339()),
+                error: None,
+            }))
+        }
+        None => {
+            info!("❌ HTTP: Admin not found for {}", addr_cs);
+
+            Ok(warp::reply::json(&AdminInfoResponse {
+                status: "error".to_string(),
+                admin_id: None,
+                tics_address: None,
+                has_tweaked_share: None,
+                has_group_key: None,
+                derived_eth_address: None,
+                derived_btc_address: None,
+                created_at: None,
+                error: Some(
+                    RpcError::UserNotFound(format!("Admin with address {addr_cs} not found"))
+                        .to_error_response(),
+                ),
+            }))
         }
     }
 }

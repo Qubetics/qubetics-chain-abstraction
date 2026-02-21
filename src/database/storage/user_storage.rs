@@ -1,6 +1,7 @@
 use crate::database::{key_utils, Database};
 use crate::types::{
-    DepositIntent, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
+    AdminRegistration, DepositIntent, IntentStatus, IntentTransactionIds, TransactionStatus,
+    UserRegistration,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -284,6 +285,73 @@ impl UserStorage {
         tics_address: &str,
     ) -> Result<Option<UserRegistration>> {
         self.get_user(tics_address).await
+    }
+
+    // ==================== Admin Storage ====================
+
+    /// Store an admin registration (separate from users, under "admin:" prefix)
+    pub async fn store_admin(&self, tics_address: &str, admin: &AdminRegistration) -> Result<()> {
+        let key = key_utils::admin_key(tics_address);
+
+        debug!("[USER_STORAGE] Storing admin: {}", tics_address);
+
+        match self.db.put_string(&key, admin) {
+            Ok(()) => {
+                info!("[USER_STORAGE] Stored admin registration: {}", tics_address);
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    "[USER_STORAGE] Failed to store admin registration for {}: {}",
+                    tics_address, e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Get an admin registration by TICS address
+    pub async fn get_admin(&self, tics_address: &str) -> Result<Option<AdminRegistration>> {
+        let key = key_utils::admin_key(tics_address);
+        let admin = self.db.get_string(&key)?;
+        if admin.is_some() {
+            debug!("[USER_STORAGE] Retrieved admin: {}", tics_address);
+        }
+        Ok(admin)
+    }
+
+    /// Check if admin exists
+    pub async fn contains_admin(&self, tics_address: &str) -> Result<bool> {
+        let key = key_utils::admin_key(tics_address);
+        self.db.contains_string_key(&key)
+    }
+
+    /// Update admin group key and derived addresses
+    pub async fn update_admin_group_key_and_addresses(
+        &self,
+        tics_address: &str,
+        group_key: &crate::types::SerializablePoint,
+        eth_addr: Option<String>,
+        btc_addr: Option<String>,
+    ) -> Result<()> {
+        let key = key_utils::admin_key(tics_address);
+        if let Some(mut admin) = self.get_admin(tics_address).await? {
+            admin.user_group_key = Some(group_key.clone());
+            if let Some(eth) = eth_addr {
+                admin.derived_eth_address = Some(eth);
+            }
+            if let Some(btc) = btc_addr {
+                admin.derived_btc_address = Some(btc);
+            }
+            self.db.put_string(&key, &admin)?;
+            info!(
+                "[USER_STORAGE] Updated admin group key and derived addresses: {}",
+                tics_address
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Admin not found: {}", tics_address))
+        }
     }
 }
 

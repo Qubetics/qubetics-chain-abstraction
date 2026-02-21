@@ -310,6 +310,10 @@ pub enum ChannelMessage {
         tics_address: String,
         node_id: String,
     },
+    AdminRegistration {
+        tics_address: String,
+        node_id: String,
+    },
     ScheduledDKGStart,
     PeerDiscoveryRetry {
         attempt: u8,
@@ -439,6 +443,11 @@ pub enum GossipsubMessage {
         nonce_tuple_id: Option<String>,
     },
     UserRegistration {
+        tics_address: String,
+        timestamp: i64,
+        node_id: String,
+    },
+    AdminRegistration {
         tics_address: String,
         timestamp: i64,
         node_id: String,

@@ -2634,6 +2634,69 @@ impl MpcNetworkLayer {
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
 
+            ChannelMessage::AdminRegistration {
+                tics_address,
+                node_id,
+            } => {
+                info!(
+                    "👤 [NETWORK] Broadcasting admin registration: {} from node {}",
+                    tics_address, node_id
+                );
+
+                // Derive admin group key and store derived addresses locally
+                if let (Some(user_intent_manager), Some(dkg_node)) =
+                    (&self.user_intent_manager, &self.dkg_node)
+                {
+                    if let Some(reg) = user_intent_manager
+                        .get_admin_by_address(&tics_address)
+                        .await
+                    {
+                        if let Some(tweak_scalar) =
+                            k256::Scalar::from_repr_vartime(reg.hmac_constant.into())
+                        {
+                            match dkg_node
+                                .derive_user_specific_group_key_from_commitments(tweak_scalar)
+                                .await
+                            {
+                                Ok(group_key) => {
+                                    if let Err(e) = user_intent_manager
+                                        .set_admin_group_key(&tics_address, group_key)
+                                        .await
+                                    {
+                                        warn!("❌ [NETWORK] Failed to store admin group key for {}: {}", tics_address, e);
+                                    } else {
+                                        info!("🔑 [NETWORK] Stored admin-specific group key and derived addresses for {}", tics_address);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("❌ [NETWORK] Failed to derive admin-specific group key for {}: {}", tics_address, e);
+                                }
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "❌ [NETWORK] Admin not found for HMAC tweak: {}",
+                            tics_address
+                        );
+                    }
+                } else {
+                    warn!("❌ [NETWORK] Missing user_intent_manager or dkg_node; cannot update commitments locally for admin {}", tics_address);
+                }
+
+                // Broadcast admin registration via gossipsub
+                let admin_reg_msg = GossipsubMessage::AdminRegistration {
+                    tics_address: tics_address.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    node_id: node_id.clone(),
+                };
+                let msg_bytes = serde_json::to_vec(&admin_reg_msg)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize admin registration: {}", e))?;
+
+                let topic = gossipsub::IdentTopic::new("user-registrations");
+                swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
+                info!("📡 [NETWORK] Broadcasted admin registration to P2P network");
+            }
+
             ChannelMessage::ScheduledDKGStart => {
                 let total = self.node_manager.get_total_nodes();
                 let threshold = self.node_manager.get_threshold();

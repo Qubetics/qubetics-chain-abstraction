@@ -70,7 +70,7 @@ impl MpcNetworkLayer {
                 num_established,
                 cause,
             } => {
-                self.handle_connection_closed(peer_id, num_established, cause)
+                self.handle_connection_closed(swarm, peer_id, num_established, cause)
                     .await;
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -201,11 +201,15 @@ impl MpcNetworkLayer {
         // Check if we already know this peer
         let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
 
-        // Add the peer's address to Kademlia
+        // Add the peer's address to Kademlia (strip /p2p/ suffix to prevent duplication)
+        let kad_addr: Multiaddr = remote_addr
+            .iter()
+            .filter(|proto| !matches!(proto, libp2p::multiaddr::Protocol::P2p(_)))
+            .collect();
         swarm
             .behaviour_mut()
             .kademlia
-            .add_address(&peer_id, remote_addr.clone());
+            .add_address(&peer_id, kad_addr);
 
         // Add peer to gossipsub as explicit peer
         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
@@ -636,6 +640,7 @@ impl MpcNetworkLayer {
     /// Handle connection closed event
     async fn handle_connection_closed(
         &mut self,
+        swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>,
         peer_id: PeerId,
         num_established: u32,
         cause: Option<ConnectionError>,
@@ -655,6 +660,19 @@ impl MpcNetworkLayer {
 
         // STEP 1: Detect when a node fully disconnects (no remaining connections)
         if num_established == 0 {
+            // Remove from Kademlia routing table to stop periodic re-dialing
+            swarm.behaviour_mut().kademlia.remove_peer(&peer_id);
+            info!(
+                "🧹 [DISCONNECT] Removed peer {} from Kademlia routing table",
+                peer_id
+            );
+
+            // Remove from gossipsub explicit peers to stop message routing attempts
+            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+            info!(
+                "🧹 [DISCONNECT] Removed peer {} from gossipsub explicit peers",
+                peer_id
+            );
             // Check if this was an active node in our network
             let was_active = self.node_manager.get_active_nodes().contains(&peer_id);
 

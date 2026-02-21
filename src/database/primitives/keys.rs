@@ -1,5 +1,6 @@
 /// Database key prefixes for different data types
 pub const USER_REGISTRATION: &str = "user:";
+pub const ADMIN_REGISTRATION: &str = "admin:";
 pub const INTENT_REGISTRY: &str = "intent:";
 pub const USER_INTENT_HASH: &str = "user_intent:";
 pub const INTENT_TRANSACTION_IDS: &str = "intent_txids:";

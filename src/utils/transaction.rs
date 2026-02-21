@@ -1900,6 +1900,115 @@ pub fn encode_update_solver_rewards_calldata(
     encode_claim_rewards_batch_calldata(&claims, chain_type_u8)
 }
 
+/// Encode calldata for `claimPlatformFee(uint256 amount, uint8 chainType, address recipient)`.
+/// - `amount`: fee amount in smallest units (wei for TICS, satoshis for BTC).
+/// - `chain_type`: 0 = BTC, 1 = TICS (SolverManager.ChainType enum).
+/// - `recipient`: target address that will receive the fee.
+pub fn encode_claim_platform_fee_calldata(
+    amount: U256,
+    chain_type: u8,
+    recipient: &str,
+) -> Option<Vec<u8>> {
+    let recipient_addr: ethers::types::Address = match recipient.parse() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+
+    #[allow(deprecated)]
+    let f = Function {
+        name: "claimPlatformFee".to_owned(),
+        inputs: vec![
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "chainType".into(),
+                kind: ParamType::Uint(8),
+                internal_type: None,
+            },
+            Param {
+                name: "recipient".into(),
+                kind: ParamType::Address,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::Uint(amount),
+        Token::Uint(U256::from(chain_type)),
+        Token::Address(recipient_addr),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+/// Create a `ChainTransaction` for `claimPlatformFee` on the SolverManager contract.
+/// - For TICS (chain_type=1): triggers an on-chain batchTransfer from treasury vault.
+/// - For BTC  (chain_type=0): updates on-chain accounting; MPC nodes send BTC separately.
+pub async fn create_claim_platform_fee_transaction(
+    from_address: &str,
+    amount: U256,
+    chain_type: u8,
+    recipient: &str,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    let calldata = encode_claim_platform_fee_calldata(amount, chain_type, recipient)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode claimPlatformFee calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+
+    info!(
+        "🔧 [CONTRACT] Creating claimPlatformFee: amount={}, chain_type={}, recipient={} on chain {} via {}",
+        amount, chain_type, recipient, chain_id, normalized_contract_address
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await?;
+    let gas_limit = estimated_gas + (estimated_gas / 10);
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "⚠️ Failed to get dynamic gas price for claimPlatformFee: {}, using fallback",
+                e
+            );
+            get_default_gas_price_for_chain(chain_name)
+        });
+
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
+
+    let tics_tx = TicsTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Tics(tics_tx))
+}
+
 pub fn encode_remove_liquidity_calldata(
     solver_id: &str,
     chain_id: U256,

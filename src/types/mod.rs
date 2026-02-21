@@ -37,7 +37,8 @@ pub use signing::{
     ThresholdSignatureShare,
 };
 pub use user_intent::{
-    IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus, UserRegistration,
+    AdminRegistration, IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus,
+    UserRegistration,
 };
 pub use vrf::{NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage};
 

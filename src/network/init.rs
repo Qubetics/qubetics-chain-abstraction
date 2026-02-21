@@ -289,7 +289,14 @@ impl MpcNetworkLayer {
                 let mut added_count = 0;
                 for addr in bootstrap_nodes.iter().chain(discovery_seeds.iter()) {
                     if let Some(peer_id) = Self::extract_peer_id(addr) {
-                        kademlia.add_address(&peer_id, addr.clone());
+                        // Strip /p2p/ component — Kademlia keys by peer_id separately
+                        let clean_addr: libp2p::Multiaddr = addr
+                            .iter()
+                            .filter(|proto| {
+                                !matches!(proto, libp2p::multiaddr::Protocol::P2p(_))
+                            })
+                            .collect();
+                        kademlia.add_address(&peer_id, clean_addr);
                         added_count += 1;
                     }
                 }

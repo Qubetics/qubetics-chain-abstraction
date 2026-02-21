@@ -5,6 +5,10 @@ pub fn user_key(tics_address: &str) -> String {
     format!("{}{}", keys::USER_REGISTRATION, tics_address)
 }
 
+pub fn admin_key(tics_address: &str) -> String {
+    format!("{}{}", keys::ADMIN_REGISTRATION, tics_address)
+}
+
 pub fn intent_key(intent_hash: &str) -> String {
     format!("{}{}", keys::INTENT_REGISTRY, intent_hash)
 }
