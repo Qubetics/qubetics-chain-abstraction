@@ -1478,11 +1478,9 @@ impl MpcNetworkLayer {
                         false
                     };
 
-                    // Parse the batch creation timestamp once; shared by both BTC and TICS price
-                    // fallback fetches so all nodes use the same price snapshot.
-                    let batch_ts_ms: Option<u128> = chrono::DateTime::parse_from_rfc3339(&timestamp)
-                        .ok()
-                        .map(|dt| dt.timestamp_millis() as u128);
+                    // NOTE: Fallback price fetches now use intent.timestamp (per-intent)
+                    // instead of the batch creation timestamp, ensuring consistency with
+                    // the price snapshot used at intent submission time.
 
                     // DIFFERENT: Process based on batch type
                     if batch_type == "BTC" {
@@ -1495,13 +1493,6 @@ impl MpcNetworkLayer {
                             "₿ [BATCH] Processing Bitcoin batch transaction for {} intents",
                             intent_data.len()
                         );
-
-                        // Fetch crypto prices as fallback for intents missing stored target_amount.
-                        // Prefer stored target_amount (locked at intent submission) to ensure
-                        // the user receives the amount they were promised regardless of price changes.
-                        // Use the batch timestamp so the price snapshot is consistent with when
-                        // the batch was originally created by the final node.
-                        let fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(batch_ts_ms).await.ok();
 
                         // Step 1: Build BatchOutput list from intents
                         use crate::signing::chains::bitcoin_batch::BatchOutput;
@@ -1522,9 +1513,10 @@ impl MpcNetworkLayer {
                                 );
                                 stored as u64
                             } else {
-                                // Fallback: re-compute from current prices if stored value missing
+                                // Fallback: re-compute using the intent's original timestamp
+                                // so the price snapshot matches what was used at submission time.
                                 warn!(
-                                    "⚠️ [BATCH] No stored target_amount for intent {}; falling back to price conversion",
+                                    "⚠️ [BATCH] No stored target_amount for intent {}; falling back to price conversion with intent timestamp",
                                     intent_hash
                                 );
                                 let source_amount: u128 = match intent.amount.parse() {
@@ -1537,12 +1529,12 @@ impl MpcNetworkLayer {
                                         continue;
                                     }
                                 };
-                                let prices = match &fallback_prices {
-                                    Some(p) => p,
-                                    None => {
+                                let fallback_prices = match crate::rpc_server::utils::fetch_crypto_prices(Some(intent.timestamp)).await {
+                                    Ok(p) => p,
+                                    Err(e) => {
                                         error!(
-                                            "❌ [BATCH] No prices available for fallback conversion of intent {}; skipping",
-                                            intent_hash
+                                            "❌ [BATCH] Failed to fetch prices for intent {} (timestamp {}); skipping: {}",
+                                            intent_hash, intent.timestamp, e
                                         );
                                         continue;
                                     }
@@ -1551,7 +1543,7 @@ impl MpcNetworkLayer {
                                     source_amount,
                                     &intent.source_chain,
                                     &intent.target_chain,
-                                    prices,
+                                    &fallback_prices,
                                 ) {
                                     Ok(amt) => amt as u64,
                                     Err(e) => {
@@ -1835,9 +1827,6 @@ impl MpcNetworkLayer {
                         // Prepare BatchIntentInput array for processBatchIntents contract call
                         let mut batch_intent_inputs = Vec::new();
 
-                        // Fetch prices as fallback for intents missing stored target_amount.
-                        let tics_fallback_prices = crate::rpc_server::utils::fetch_crypto_prices(batch_ts_ms).await.ok();
-
                         for (intent_hash, intent) in &batch_intents {
                             let source_amount = match intent.amount.parse::<u128>() {
                                 Ok(amt) => amt,
@@ -1859,29 +1848,35 @@ impl MpcNetworkLayer {
                             {
                                 Some(amt) => amt,
                                 None => {
-                                    // Fallback: re-compute if same-chain use source, else price convert
+                                    // Fallback: re-compute using the intent's original timestamp
+                                    // so the price snapshot matches what was used at submission time.
                                     warn!(
-                                        "⚠️ [TICS_BATCH] No stored target_amount for intent {}; computing fallback",
+                                        "⚠️ [TICS_BATCH] No stored target_amount for intent {}; computing fallback with intent timestamp",
                                         intent_hash
                                     );
                                     if intent.source_chain.to_lowercase() == intent.target_chain.to_lowercase() {
                                         source_amount
-                                    } else if let Some(prices) = &tics_fallback_prices {
-                                        match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
-                                            source_amount,
-                                            &intent.source_chain,
-                                            &intent.target_chain,
-                                            prices,
-                                        ) {
-                                            Ok(amt) => amt,
+                                    } else {
+                                        match crate::rpc_server::utils::fetch_crypto_prices(Some(intent.timestamp)).await {
+                                            Ok(prices) => {
+                                                match crate::rpc_server::utils::convert_src_smallest_to_dst_smallest(
+                                                    source_amount,
+                                                    &intent.source_chain,
+                                                    &intent.target_chain,
+                                                    &prices,
+                                                ) {
+                                                    Ok(amt) => amt,
+                                                    Err(e) => {
+                                                        error!("❌ [TICS_BATCH] Fallback conversion failed for intent {}: {:?}", intent_hash, e);
+                                                        continue;
+                                                    }
+                                                }
+                                            }
                                             Err(e) => {
-                                                error!("❌ [TICS_BATCH] Fallback conversion failed for intent {}: {:?}", intent_hash, e);
+                                                error!("❌ [TICS_BATCH] Failed to fetch prices for intent {} (timestamp {}); skipping: {}", intent_hash, intent.timestamp, e);
                                                 continue;
                                             }
                                         }
-                                    } else {
-                                        error!("❌ [TICS_BATCH] No prices available for fallback conversion of intent {}; skipping", intent_hash);
-                                        continue;
                                     }
                                 }
                             };
@@ -2331,6 +2326,23 @@ impl MpcNetworkLayer {
                                 "❌ [TICS_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
+                            // Revert intent status back to Pending so they can be
+                            // re-picked in the next epoch cycle.
+                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                if let Err(revert_err) = user_intent_manager
+                                    .update_intent_status(
+                                        user_eth_addr,
+                                        intent_hash,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [TICS_UTV_BATCH] Failed to revert intent {} to Pending: {}",
+                                        intent_hash, revert_err
+                                    );
+                                }
+                            }
                         } else {
                             info!(
                                 "✅ [TICS_UTV_BATCH] Initiated batch signing for round {} ({} slots, coordinated: {})",
@@ -2643,6 +2655,23 @@ impl MpcNetworkLayer {
                                 "❌ [BTC_UTV_BATCH] Batch signing failed for round {}: {}",
                                 round, e
                             );
+                            // Revert intent status back to Pending so they can be
+                            // re-picked in the next epoch cycle.
+                            for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                if let Err(revert_err) = user_intent_manager
+                                    .update_intent_status(
+                                        user_eth_addr,
+                                        intent_hash,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [BTC_UTV_BATCH] Failed to revert intent {} to Pending: {}",
+                                        intent_hash, revert_err
+                                    );
+                                }
+                            }
                         } else {
                             info!(
                                 "✅ [BTC_UTV_BATCH] Initiated batch signing for round {} ({} slots)",
