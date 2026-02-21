@@ -350,8 +350,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "intent-batch-broadcast".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "intent-batches";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -413,8 +413,8 @@ impl MpcNetworkLayer {
                 };
 
                 let topic =
-                    crate::network::transport::types::TOPIC_TICS_USER_TO_VAULT_BATCH.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                    crate::network::transport::types::TOPIC_INTENT_BATCHES;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -479,8 +479,8 @@ impl MpcNetworkLayer {
                 };
 
                 let topic =
-                    crate::network::transport::types::TOPIC_BTC_USER_TO_VAULT_BATCH.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                    crate::network::transport::types::TOPIC_INTENT_BATCHES;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -553,8 +553,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "btc-intent-manager-tx-update".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "intent-batches";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -623,8 +623,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -686,8 +686,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -748,8 +748,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_PLATFORM_FEE.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -812,8 +812,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_PLATFORM_FEE.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -874,8 +874,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_PLATFORM_FEE.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -935,8 +935,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "peer-invalidation-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "peer-status";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -999,8 +999,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1062,8 +1062,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1129,8 +1129,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1202,8 +1202,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "withdraw-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "withdraw-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1253,8 +1253,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_WITHDRAW_LIQUIDITY.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_WITHDRAW_LIQUIDITY;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1309,8 +1309,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_PLATFORM_FEE.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_PLATFORM_FEE;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1364,8 +1364,8 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic = TOPIC_CLAIM_REWARDS.to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = TOPIC_CLAIM_REWARDS;
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -1436,8 +1436,8 @@ impl MpcNetworkLayer {
                 };
 
                 // 1) Process locally by calling the main gossipsub handler
-                let topic = "solver-add-liquidity-batch".to_string();
-                let topic_hash = IdentTopic::new(topic.clone());
+                let topic = "solver-add-liquidity";
+                let topic_hash = IdentTopic::new(topic);
                 let local_msg = GossipMessage {
                     source: Some(self.local_peer_id),
                     data: data.clone(),
@@ -2489,7 +2489,7 @@ impl MpcNetworkLayer {
                     .map_err(|e| anyhow::anyhow!("Failed to serialize deposit intent: {}", e))?;
 
                 // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("deposit-intents");
+                let topic = gossipsub::IdentTopic::new("user-operations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted deposit intent to P2P network");
             }
@@ -2560,7 +2560,7 @@ impl MpcNetworkLayer {
                 // Process locally first (like add_liquidity / peerinv:) so this node updates DB too
                 {
                     use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
-                    let topic_hash = IdentTopic::new("transaction-id-sync");
+                    let topic_hash = IdentTopic::new("transaction-sync");
                     let gossip_message = crate::types::GossipsubMessage::TransactionIdBroadcast {
                         intent_hashes: intent_hashes.clone(),
                         transaction_id: transaction_id.clone(),
@@ -2597,7 +2597,7 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let topic_str = "transaction-id-sync";
+                let topic_str = "transaction-sync";
                 let topic = gossipsub::IdentTopic::new(topic_str);
 
                 // CRITICAL FIX: Register TransactionIdBroadcast for retry tracking
@@ -2817,7 +2817,7 @@ impl MpcNetworkLayer {
                     .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
 
                 // Broadcast to all peers via gossipsub
-                let topic = gossipsub::IdentTopic::new("user-registrations");
+                let topic = gossipsub::IdentTopic::new("user-operations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted user registration to P2P network");
             }
@@ -2880,7 +2880,7 @@ impl MpcNetworkLayer {
                 let msg_bytes = serde_json::to_vec(&admin_reg_msg)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize admin registration: {}", e))?;
 
-                let topic = gossipsub::IdentTopic::new("user-registrations");
+                let topic = gossipsub::IdentTopic::new("user-operations");
                 swarm.behaviour_mut().gossipsub.publish(topic, msg_bytes)?;
                 info!("📡 [NETWORK] Broadcasted admin registration to P2P network");
             }

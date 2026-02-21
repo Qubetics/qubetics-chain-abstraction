@@ -2031,7 +2031,7 @@ impl SigningNode {
                 let _ = consensus_node; // Release the mutable borrow
 
                 // Now we can safely borrow self immutably
-                self.broadcast("consensus-result", &broadcast_data).await?;
+                self.broadcast("consensus", &broadcast_data).await?;
 
                 info!(
                     "📤 [CONSENSUS] Broadcasted consensus result for round {}",

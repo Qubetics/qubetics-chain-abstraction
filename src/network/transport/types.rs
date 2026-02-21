@@ -65,31 +65,16 @@ pub enum VrfDomain {
 
 pub const TOPIC_SIGNING: &str = "signing";
 pub const TOPIC_CONSENSUS: &str = "consensus";
-pub const TOPIC_COMMANDS: &str = "commands";
 pub const TOPIC_VRF_SELECTION: &str = "vrf-selection";
-pub const TOPIC_TRANSACTIONS: &str = "transactions";
-pub const TOPIC_DEPOSIT_INTENTS: &str = "deposit-intents";
-pub const TOPIC_INTENT_HASH_BROADCAST: &str = "intent-hash-broadcast";
-pub const TOPIC_DKG_COMMANDS: &str = "dkg-commands";
-pub const TOPIC_USER_REGISTRATIONS: &str = "user-registrations";
-pub const TOPIC_SOLVER_REWARDS: &str = "solver-rewards";
+pub const TOPIC_USER_OPERATIONS: &str = "user-operations";
 pub const TOPIC_CLAIM_REWARDS: &str = "claim-rewards";
 pub const TOPIC_WITHDRAW_LIQUIDITY: &str = "withdraw-liquidity";
-pub const TOPIC_WITHDRAW_LIQUIDITY_BATCH: &str = "withdraw-liquidity-batch";
 pub const TOPIC_SOLVER_ADD_LIQUIDITY: &str = "solver-add-liquidity";
-pub const TOPIC_SOLVER_ADD_LIQUIDITY_BATCH: &str = "solver-add-liquidity-batch";
-pub const TOPIC_TRANSACTION_ID_SYNC: &str = "transaction-id-sync";
-pub const TOPIC_CONSENSUS_RESULT: &str = "consensus-result";
-pub const TOPIC_TRANSACTION_ERROR_SYNC: &str = "transaction-error-sync";
-pub const TOPIC_LEGACY_DKG: &str = "dkg";
+pub const TOPIC_TRANSACTION_SYNC: &str = "transaction-sync";
 pub const TOPIC_TRANSACTION_BROADCAST: &str = "transaction-broadcast";
 pub const TOPIC_TRANSACTION_FAILURE: &str = "transaction-failure";
-pub const TOPIC_INTENT_BATCH_BROADCAST: &str = "intent-batch-broadcast";
-pub const TOPIC_TICS_USER_TO_VAULT_BATCH: &str = "tics-user-to-vault-batch";
-pub const TOPIC_BTC_USER_TO_VAULT_BATCH: &str = "btc-user-to-vault-batch";
-pub const TOPIC_BTC_INTENT_MANAGER_TX_UPDATE: &str = "btc-intent-manager-tx-update";
-pub const TOPIC_PEER_DISCONNECTIONS: &str = "peer-disconnections";
-pub const TOPIC_PEER_INVALIDATION_BATCH: &str = "peer-invalidation-batch";
+pub const TOPIC_INTENT_BATCHES: &str = "intent-batches";
+pub const TOPIC_PEER_STATUS: &str = "peer-status";
 pub const TOPIC_PLATFORM_FEE: &str = "platform-fee";
 
 /// Typed view of the gossipsub topics this MPC node participates in.
@@ -99,32 +84,17 @@ pub enum GossipTopic {
     PeerDiscovery,
     Signing,
     Consensus,
-    Commands,
     VrfSelection,
-    Transactions,
-    DepositIntents,
-    IntentBatchBroadcast,
-    TicsUserToVaultBatch,
-    BtcUserToVaultBatch,
-    DkgCommands,
-    UserRegistrations,
-    SolverRewards,
+    UserOperations,
+    IntentBatches,
     ClaimRewards,
     WithdrawLiquidity,
-    WithdrawLiquidityBatch,
     SolverAddLiquidity,
-    SolverAddLiquidityBatch,
-    TransactionIdSync,
-    ConsensusResult,
-    TransactionErrorSync,
-    LegacyDkg,
+    TransactionSync,
     TransactionBroadcast,
     TransactionFailure,
-    BtcIntentManagerTxUpdate,
-    /// Gossip for PeerDisconnection events (each node stores pending_disconnection entries)
-    PeerDisconnections,
-    /// Peer invalidation batch broadcast (final node -> all nodes)
-    PeerInvalidationBatch,
+    /// Peer disconnect/invalidation events
+    PeerStatus,
     /// Admin claim-platform-fee request broadcast (HTTP node -> all nodes)
     PlatformFee,
 }
@@ -135,30 +105,16 @@ impl GossipTopic {
         GossipTopic::PeerDiscovery,
         GossipTopic::Signing,
         GossipTopic::Consensus,
-        GossipTopic::Commands,
         GossipTopic::VrfSelection,
-        GossipTopic::Transactions,
-        GossipTopic::DepositIntents,
-        GossipTopic::DkgCommands,
-        GossipTopic::IntentBatchBroadcast,
-        GossipTopic::TicsUserToVaultBatch,
-        GossipTopic::BtcUserToVaultBatch,
-        GossipTopic::UserRegistrations,
-        GossipTopic::SolverRewards,
+        GossipTopic::UserOperations,
+        GossipTopic::IntentBatches,
         GossipTopic::ClaimRewards,
         GossipTopic::WithdrawLiquidity,
-        GossipTopic::WithdrawLiquidityBatch,
         GossipTopic::SolverAddLiquidity,
-        GossipTopic::SolverAddLiquidityBatch,
-        GossipTopic::TransactionIdSync,
-        GossipTopic::ConsensusResult,
-        GossipTopic::TransactionErrorSync,
-        GossipTopic::LegacyDkg,
+        GossipTopic::TransactionSync,
         GossipTopic::TransactionBroadcast,
         GossipTopic::TransactionFailure,
-        GossipTopic::BtcIntentManagerTxUpdate,
-        GossipTopic::PeerDisconnections,
-        GossipTopic::PeerInvalidationBatch,
+        GossipTopic::PeerStatus,
         GossipTopic::PlatformFee,
     ];
 
@@ -168,30 +124,16 @@ impl GossipTopic {
             GossipTopic::PeerDiscovery => MSG_TOPIC_PEER_DISCOVERY,
             GossipTopic::Signing => TOPIC_SIGNING,
             GossipTopic::Consensus => TOPIC_CONSENSUS,
-            GossipTopic::Commands => TOPIC_COMMANDS,
             GossipTopic::VrfSelection => TOPIC_VRF_SELECTION,
-            GossipTopic::Transactions => TOPIC_TRANSACTIONS,
-            GossipTopic::DepositIntents => TOPIC_DEPOSIT_INTENTS,
-            GossipTopic::IntentBatchBroadcast => TOPIC_INTENT_BATCH_BROADCAST,
-            GossipTopic::TicsUserToVaultBatch => TOPIC_TICS_USER_TO_VAULT_BATCH,
-            GossipTopic::BtcUserToVaultBatch => TOPIC_BTC_USER_TO_VAULT_BATCH,
-            GossipTopic::DkgCommands => TOPIC_DKG_COMMANDS,
-            GossipTopic::UserRegistrations => TOPIC_USER_REGISTRATIONS,
-            GossipTopic::SolverRewards => TOPIC_SOLVER_REWARDS,
+            GossipTopic::UserOperations => TOPIC_USER_OPERATIONS,
+            GossipTopic::IntentBatches => TOPIC_INTENT_BATCHES,
             GossipTopic::ClaimRewards => TOPIC_CLAIM_REWARDS,
             GossipTopic::WithdrawLiquidity => TOPIC_WITHDRAW_LIQUIDITY,
-            GossipTopic::WithdrawLiquidityBatch => TOPIC_WITHDRAW_LIQUIDITY_BATCH,
             GossipTopic::SolverAddLiquidity => TOPIC_SOLVER_ADD_LIQUIDITY,
-            GossipTopic::SolverAddLiquidityBatch => TOPIC_SOLVER_ADD_LIQUIDITY_BATCH,
-            GossipTopic::TransactionIdSync => TOPIC_TRANSACTION_ID_SYNC,
-            GossipTopic::ConsensusResult => TOPIC_CONSENSUS_RESULT,
-            GossipTopic::TransactionErrorSync => TOPIC_TRANSACTION_ERROR_SYNC,
-            GossipTopic::LegacyDkg => TOPIC_LEGACY_DKG,
+            GossipTopic::TransactionSync => TOPIC_TRANSACTION_SYNC,
             GossipTopic::TransactionBroadcast => TOPIC_TRANSACTION_BROADCAST,
             GossipTopic::TransactionFailure => TOPIC_TRANSACTION_FAILURE,
-            GossipTopic::BtcIntentManagerTxUpdate => TOPIC_BTC_INTENT_MANAGER_TX_UPDATE,
-            GossipTopic::PeerDisconnections => TOPIC_PEER_DISCONNECTIONS,
-            GossipTopic::PeerInvalidationBatch => TOPIC_PEER_INVALIDATION_BATCH,
+            GossipTopic::PeerStatus => TOPIC_PEER_STATUS,
             GossipTopic::PlatformFee => TOPIC_PLATFORM_FEE,
         }
     }

@@ -1310,7 +1310,7 @@ impl SigningNode {
         };
 
         let channel_message = crate::types::ChannelMessage::Broadcast {
-            topic: "transaction-error-sync".to_string(),
+            topic: "transaction-sync".to_string(),
             data: serde_json::to_vec(&broadcast_message).unwrap_or_default(),
         };
 

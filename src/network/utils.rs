@@ -68,7 +68,7 @@ impl MpcNetworkLayer {
         // Send via the message channel to be broadcast by the swarm
         self.message_tx
             .send(ChannelMessage::Broadcast {
-                topic: "user-registrations".to_string(),
+                topic: "user-operations".to_string(),
                 data: msg_bytes,
             })
             .await

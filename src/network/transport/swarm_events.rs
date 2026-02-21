@@ -776,7 +776,7 @@ impl MpcNetworkLayer {
                     if let Err(e) = self
                         .message_tx
                         .send(ChannelMessage::Broadcast {
-                            topic: "peer-disconnections".to_string(),
+                            topic: "peer-status".to_string(),
                             data: msg_bytes,
                         })
                         .await

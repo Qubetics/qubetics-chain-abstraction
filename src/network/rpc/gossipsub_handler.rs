@@ -89,10 +89,10 @@ impl MpcNetworkLayer {
 
                         // Check if we haven't already processed this disconnect
                         if self.node_manager.get_active_nodes().contains(&peer_id) {
-                            info!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
+                            debug!("📢 [DISCONNECT] Processing disconnect for node {}", peer_id);
                             self.handle_node_disconnect_internal(peer_id).await;
                         } else {
-                            info!("📢 [DISCONNECT] Node {} already removed, skipping", peer_id);
+                            debug!("📢 [DISCONNECT] Node {} already removed, skipping", peer_id);
                         }
                     }
                 } else {
@@ -146,7 +146,7 @@ impl MpcNetworkLayer {
                             } else {
                                 "network-to-target"
                             };
-                            info!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_tics_address: {:?})", tx_type, from, round, message.topic, user_tics_address);
+                            debug!("📥 [NETWORK] Received {} ECDSA signature from {} for round {} on topic {} (user_tics_address: {:?})", tx_type, from, round, message.topic, user_tics_address);
                             info!(
                                 "🔍 [NETWORK] Signature details - signer_id: {}",
                                 signature.signer_id
@@ -375,7 +375,7 @@ impl MpcNetworkLayer {
 
                             // Log tweaked secret share status
                             if registration.tweaked_secret_share.is_some() {
-                                info!("🔑 [GOSSIPSUB] Computed and stored tweaked secret share for user: {}", tics_address);
+                                debug!("🔑 [GOSSIPSUB] Computed and stored tweaked secret share for user: {}", tics_address);
                             } else {
                                 info!("⚠️ [GOSSIPSUB] No tweaked secret share computed (DKG secret share not available) for user: {}", tics_address);
                             }
@@ -404,10 +404,10 @@ impl MpcNetworkLayer {
                                                     .await
                                                 {
                                                     if user.derived_eth_address.is_some() {
-                                                        info!("📬 [GOSSIPSUB] Derived TICS address stored for {}", tics_address);
+                                                        debug!("📬 [GOSSIPSUB] Derived TICS address stored for {}", tics_address);
                                                     }
                                                     if user.derived_btc_address.is_some() {
-                                                        info!("📬 [GOSSIPSUB] Derived BTC address stored for {}", tics_address);
+                                                        debug!("📬 [GOSSIPSUB] Derived BTC address stored for {}", tics_address);
                                                     }
                                                 }
                                             }
@@ -479,7 +479,7 @@ impl MpcNetworkLayer {
                                             {
                                                 warn!("❌ [GOSSIPSUB] Failed to store admin group key for {}: {}", tics_address, e);
                                             } else {
-                                                info!("🔑 [GOSSIPSUB] Stored admin-specific group key and derived addresses for {}", tics_address);
+                                                debug!("🔑 [GOSSIPSUB] Stored admin-specific group key and derived addresses for {}", tics_address);
                                             }
                                         }
                                         Err(e) => {
@@ -1253,7 +1253,7 @@ impl MpcNetworkLayer {
 
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
-                        info!("✅ Successfully added peer {} to node manager", peer);
+                        debug!("✅ Successfully added peer {} to node manager", peer);
 
                         // Log updated node count
                         let total = self.node_manager.get_total_nodes();
@@ -1770,7 +1770,7 @@ impl MpcNetworkLayer {
                                     if let Some(btc_handler) = chain_handler_box.as_any_mut().downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
                                     {
                                         btc_handler.set_group_public_key(compressed_bytes);
-                                        info!("🔑 [BATCH] Set network DKG group public key");
+                                        debug!("🔑 [BATCH] Set network DKG group public key");
                                     }
                                 }
                             }
@@ -1822,7 +1822,7 @@ impl MpcNetworkLayer {
                                 )
                                 .await?;
 
-                            info!("✅ [BATCH] Bitcoin batch transaction signed successfully");
+                            debug!("✅ [BATCH] Bitcoin batch transaction signed successfully");
                         } else {
                             error!("❌ [BATCH] Signing node not available");
                         }
@@ -2961,7 +2961,7 @@ impl MpcNetworkLayer {
                                 .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>(
                             ) {
                                 btc_handler.set_group_public_key(compressed_bytes);
-                                info!("🔑 [BTC_WITHDRAW] Set network DKG group public key");
+                                debug!("🔑 [BTC_WITHDRAW] Set network DKG group public key");
                             }
                         }
                     }
@@ -3007,7 +3007,7 @@ impl MpcNetworkLayer {
                         )
                         .await?;
 
-                    info!("✅ [BTC_WITHDRAW] Bitcoin withdraw batch transaction signing initiated");
+                    debug!("✅ [BTC_WITHDRAW] Bitcoin withdraw batch transaction signing initiated");
                 } else {
                     error!("❌ [BTC_WITHDRAW] Signing node not available");
                 }
@@ -3330,7 +3330,7 @@ impl MpcNetworkLayer {
                             nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                         )
                         .await?;
-                    info!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
+                    debug!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
                 } else {
                     error!("❌ [BTC_CLAIM_REWARD] Signing node not available");
                 }
@@ -5149,7 +5149,7 @@ impl MpcNetworkLayer {
                                 .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
                             {
                                 btc_handler.set_group_public_key(compressed_bytes);
-                                info!("🔑 [BTC_CLAIM_PLATFORM_FEE] Set network DKG group public key");
+                                debug!("🔑 [BTC_CLAIM_PLATFORM_FEE] Set network DKG group public key");
                             }
                         }
                     }
@@ -5192,7 +5192,7 @@ impl MpcNetworkLayer {
                         )
                         .await?;
 
-                    info!("✅ [BTC_CLAIM_PLATFORM_FEE] Bitcoin claim-platform-fee transaction signing initiated");
+                    debug!("✅ [BTC_CLAIM_PLATFORM_FEE] Bitcoin claim-platform-fee transaction signing initiated");
                 } else {
                     error!("❌ [BTC_CLAIM_PLATFORM_FEE] Signing node not available");
                 }
@@ -5533,7 +5533,7 @@ impl MpcNetworkLayer {
 
         let topic = match msg_type {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
-                crate::network::transport::types::TOPIC_TRANSACTION_ID_SYNC
+                crate::network::transport::types::TOPIC_TRANSACTION_SYNC
             }
         };
 
