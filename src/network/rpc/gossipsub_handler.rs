@@ -1177,6 +1177,26 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                // Only add to node_manager if the peer is actually connected.
+                // Without this check, gossip messages about disconnected peers
+                // re-add them to node_manager, inflating total_nodes and causing
+                // the VRF selector to pick offline nodes for signing rounds.
+                if peer != self.local_peer_id && !self.connected_peers_cache.contains(&peer) {
+                    info!(
+                        "⏭️ [PEER_DISCOVERED] Skipping add for {} — not in connected_peers_cache",
+                        peer
+                    );
+                    // Still store the index for later use when the peer connects
+                    if let Some(idx) = index {
+                        self.peer_discovery.peer_indices.insert(peer, idx);
+                        let key = key_utils::peer_index_key(&peer.to_string());
+                        if let Err(e) = self.db.put_string_async(&key, &idx).await {
+                            warn!("Failed to persist peer index: {:?}", e);
+                        }
+                    }
+                    return Ok(());
+                }
+
                 // If index provided, store and persist it
                 if let Some(idx) = index {
                     self.peer_discovery.peer_indices.insert(peer, idx);
@@ -1189,6 +1209,12 @@ impl MpcNetworkLayer {
                 match self.node_manager.add_node(peer) {
                     Ok(_) => {
                         info!("✅ Successfully added peer {} to node manager", peer);
+
+                        // Track connected peer for HRW candidate filtering
+                        if let Some(arc) = &self.signing_node {
+                            let mut signing_node = arc.lock().await;
+                            signing_node.add_connected_peer(peer);
+                        }
 
                         // Log updated node count
                         let total = self.node_manager.get_total_nodes();
@@ -4656,6 +4682,11 @@ impl MpcNetworkLayer {
                             match self.node_manager.add_node(peer_id) {
                                 Ok(_) => {
                                     added_count += 1;
+                                    // Track connected peer for HRW candidate filtering
+                                    if let Some(arc) = &self.signing_node {
+                                        let mut signing_node = arc.lock().await;
+                                        signing_node.add_connected_peer(peer_id);
+                                    }
                                     info!(
                                         "✅ [PEER_SYNC] Re-added missing peer {} (idx: {:?}) from {}'s ActivePeerList",
                                         peer_id, idx, node_id

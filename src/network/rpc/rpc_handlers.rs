@@ -1491,12 +1491,27 @@ impl MpcNetworkLayer {
         // 1️⃣ First, merge all peers (no threshold updates yet)
         let mut new_peers_added = false;
         for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
-            // Add peer to node_manager if not already present
+            // Only add to node_manager if the peer is actually connected or is self.
+            // Unconnected peers will be added by handle_new_peer_connection when the dial succeeds.
+            // Without this check, PeerList re-adds disconnected peers, inflating total_nodes
+            // and causing the VRF selector to pick offline nodes for signing rounds.
             if !self.node_manager.get_active_nodes().contains(&p) {
-                self.node_manager
-                    .add_node(p)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                new_peers_added = true; // Mark if any new peer was added
+                if p == *self.get_local_peer_id() || self.connected_peers_cache.contains(&p) {
+                    self.node_manager
+                        .add_node(p)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    // Track connected peer for HRW candidate filtering
+                    if let Some(arc) = &self.signing_node {
+                        let mut signing_node = arc.lock().await;
+                        signing_node.add_connected_peer(p);
+                    }
+                    new_peers_added = true;
+                } else {
+                    info!(
+                        "⏭️ [PEER_LIST] Skipping add for {} — not connected",
+                        p
+                    );
+                }
             }
 
             // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list

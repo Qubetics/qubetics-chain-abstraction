@@ -90,11 +90,29 @@ pub struct SigningNode {
     last_btc_user_to_vault_batch_hashes: Arc<RwLock<VecDeque<HashSet<String>>>>,
     /// Nonce manager for random k generation (optional until fully integrated)
     nonce_manager: Option<Arc<tokio::sync::Mutex<nonce::NonceManager>>>,
+    /// Currently connected peers (updated on connect/disconnect).
+    /// Used by HRW to filter candidates to only connected peers.
+    connected_peers: HashSet<PeerId>,
 }
 
 impl SigningNode {
     pub fn set_threshold(&mut self, new_threshold: usize) {
         self.threshold = new_threshold;
+    }
+
+    /// Mark a peer as connected (for HRW candidate filtering).
+    pub fn add_connected_peer(&mut self, peer: PeerId) {
+        self.connected_peers.insert(peer);
+    }
+
+    /// Mark a peer as disconnected (for HRW candidate filtering).
+    pub fn remove_connected_peer(&mut self, peer: &PeerId) {
+        self.connected_peers.remove(peer);
+    }
+
+    /// Get the set of currently connected peers.
+    pub fn get_connected_peers(&self) -> &HashSet<PeerId> {
+        &self.connected_peers
     }
 
     /// Return (withdraw_rounds, claim_reward_rounds) for state sync (no private data).
@@ -197,6 +215,11 @@ impl SigningNode {
             last_tics_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
             last_btc_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
             nonce_manager: None,       // Set via set_nonce_manager after database is available
+            connected_peers: {
+                let mut s = HashSet::new();
+                s.insert(peer_id); // Include self in connected peers
+                s
+            },
         }
     }
 
@@ -1868,8 +1891,9 @@ impl SigningNode {
             .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
 
         // HRW path: canonical final node from DKG candidate set
+        // Filter candidates to only connected peers so disconnected nodes aren't selected
         let all_selected_nodes: Vec<SerializablePeerId> = if let Some(ref dkg) = self.dkg_storage {
-            let candidates = match hrw::candidates::get_hrw_candidates(dkg) {
+            let candidates = match hrw::candidates::get_hrw_candidates(dkg, Some(&self.connected_peers)) {
                 Ok(c) if !c.is_empty() => c,
                 Ok(_) => {
                     info!(
@@ -2185,7 +2209,7 @@ impl SigningNode {
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
         let ConsensusMessage::FinalNodeResult { ref result, round } = msg;
             if let Some(ref dkg) = self.dkg_storage {
-                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg) {
+                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg, Some(&self.connected_peers)) {
                     if let Some(our_winner) =
                         hrw::select_final(round, &candidates, hrw::HRW_DOMAIN_FINAL_NODE)
                     {

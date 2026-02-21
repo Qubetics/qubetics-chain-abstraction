@@ -82,6 +82,12 @@ impl MpcNetworkLayer {
             );
         }
 
+        // Remove from signing node's connected_peers set (for HRW candidate filtering)
+        if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
+            signing_node.remove_connected_peer(&peer_id);
+        }
+
         // Remove from in-memory peer_indices HashMap (transient; will be restored from DB on reconnect).
         // IMPORTANT: Do NOT delete the peer_index:{peer_id} key from the database!
         // That key holds the original DKG index assigned during key generation.
@@ -125,17 +131,6 @@ impl MpcNetworkLayer {
             }
         }
 
-        // Update network parameters
-        let new_total = self.node_manager.get_total_nodes();
-        let new_threshold = self.node_manager.get_threshold();
-
-        info!(
-            "📊 [DISCONNECT] Updated network: total_nodes={}, threshold={}",
-            new_total, new_threshold
-        );
-
-        // Contract sequencer removed
-
         // Only update DKG and signing node parameters if initial DKG is not yet complete.
         // After DKG, total_nodes and threshold are fixed based on initial DKG participants only.
         // Updating them with node_manager values (which include observers) inflates the
@@ -147,18 +142,13 @@ impl MpcNetworkLayer {
         };
 
         if !initial_dkg_complete {
+            let new_total = self.node_manager.get_total_nodes();
+            let new_threshold = self.node_manager.get_threshold();
             if let Some(dkg_node) = &mut self.dkg_node {
                 if let Err(e) = dkg_node.update_node_params(new_total, new_threshold) {
                     warn!("⚠️ [DISCONNECT] Failed to update DKG params: {}", e);
                 }
             }
-        } else {
-            info!(
-                "ℹ️ [DISCONNECT] Skipping DKGNode param update - initial DKG already complete (params fixed at DKG signer count)"
-            );
-        }
-
-        if !initial_dkg_complete {
             // If we already know the DKG signer count, use it for threshold
             // instead of total_nodes — prevents observer threshold inflation
             let effective_threshold = if let Some(dkg_node) = &self.dkg_node {
@@ -176,8 +166,6 @@ impl MpcNetworkLayer {
                 let mut signing_node = arc.lock().await;
                 signing_node.set_threshold(effective_threshold);
             }
-        } else {
-            info!("ℹ️ [THRESHOLD] Keeping signing threshold unchanged after disconnect - fixed by initial DKG");
         }
 
     }
@@ -254,6 +242,8 @@ impl MpcNetworkLayer {
             };
             if let Some(arc) = &self.signing_node {
                 let mut signing_node = arc.lock().await;
+                // Track connected peer for HRW candidate filtering
+                signing_node.add_connected_peer(peer_id);
 
                 let new_node_count = self.node_manager.get_active_nodes().len();
 
