@@ -326,6 +326,22 @@ impl UserStorage {
         self.db.contains_string_key(&key)
     }
 
+    /// Get all admins
+    pub async fn get_all_admins(&self) -> Result<HashMap<String, AdminRegistration>> {
+        let prefix = crate::database::keys::ADMIN_REGISTRATION;
+        let results: Vec<(String, AdminRegistration)> = self.db.get_values_with_prefix(prefix)?;
+
+        let mut admins = HashMap::new();
+        for (key, admin) in results {
+            if let Some(tics_address) = key.strip_prefix(prefix) {
+                admins.insert(tics_address.to_string(), admin);
+            }
+        }
+
+        debug!("[USER_STORAGE] Retrieved {} admins", admins.len());
+        Ok(admins)
+    }
+
     /// Update admin group key and derived addresses
     pub async fn update_admin_group_key_and_addresses(
         &self,

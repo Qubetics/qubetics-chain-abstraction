@@ -491,4 +491,73 @@ impl UserIntentManager {
         }
         filtered
     }
+
+    /// Reject intents that have been stuck in Pending or Batched status for longer than
+    /// `max_age_secs` seconds (default: 3 hours = 10800s). These intents are unlikely to
+    /// succeed and should be freed so they stop being picked for batches.
+    /// Only user-to-vault intents (those without a `user_to_network_tx_id`) are considered.
+    /// Returns the number of intents rejected.
+    pub async fn reject_stale_intents(&self, max_age_secs: u64) -> usize {
+        let now_secs = chrono::Utc::now().timestamp() as u128;
+        let users = match self.user_storage.get_all_users().await {
+            Ok(u) => u,
+            Err(e) => {
+                error!("❌ [STALE_INTENT] Failed to load users for stale intent sweep: {}", e);
+                return 0;
+            }
+        };
+
+        let mut rejected_count = 0usize;
+
+        for (tics_address, user) in &users {
+            for (intent_hash, status) in &user.intent_hashes {
+                // Only target intents still in Pending or Batched
+                if !matches!(status, IntentStatus::Pending | IntentStatus::Batched) {
+                    continue;
+                }
+
+                // Look up the deposit intent to read its creation timestamp
+                let intent = match self.get_intent(intent_hash).await {
+                    Some(i) => i,
+                    None => continue,
+                };
+
+                // Skip intents that already have a user_to_network tx ID (Phase 1 complete)
+                if let Some(tx_ids) = self.get_intent_transaction_ids(intent_hash).await {
+                    if tx_ids.user_to_network_tx_id.is_some() {
+                        continue;
+                    }
+                }
+
+                // intent.timestamp is Unix seconds (u128)
+                let age_secs = now_secs.saturating_sub(intent.timestamp);
+                if age_secs >= max_age_secs as u128 {
+                    info!(
+                        "⏰ [STALE_INTENT] Rejecting stale intent {} for user {} — status {:?}, age {}s (>{} max)",
+                        intent_hash, tics_address, status, age_secs, max_age_secs
+                    );
+                    if let Err(e) = self
+                        .update_intent_status(tics_address, intent_hash, IntentStatus::Rejected)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [STALE_INTENT] Failed to reject stale intent {}: {}",
+                            intent_hash, e
+                        );
+                    } else {
+                        rejected_count += 1;
+                    }
+                }
+            }
+        }
+
+        if rejected_count > 0 {
+            info!(
+                "⏰ [STALE_INTENT] Rejected {} stale Pending/Batched intents (max age: {}s)",
+                rejected_count, max_age_secs
+            );
+        }
+
+        rejected_count
+    }
 }

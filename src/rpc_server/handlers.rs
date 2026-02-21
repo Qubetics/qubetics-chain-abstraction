@@ -1220,6 +1220,20 @@ pub(crate) async fn handle_user_mpc_deposit(
                     "eth"
                 };
 
+                // Calculate required balance: amount + 5% buffer + estimated tx fee
+                let five_percent_buffer = source_amount / 20; // 5% of amount
+                let estimated_tx_fee: u128 = if source_blockchain == "btc" {
+                    // BTC: conservative estimate for P2WPKH tx (2 inputs, 2 outputs)
+                    // vbytes = 10 + 68*2 + 31*2 = 208, fee = 208 * 2 sat/vbyte = 416 sats
+                    // Use 1000 sats as a safe upper bound
+                    1000
+                } else {
+                    // TICS (EVM): gas_limit=300_000, gas_price=1 Gwei (1e9 wei)
+                    // fee = 300_000 * 1_000_000_000 = 300_000_000_000_000 wei (0.0003 TICS)
+                    300_000_000_000_000u128
+                };
+                let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+
                 // Fetch user's source address balance
                 match crate::rpc_server::utils::fetch_network_balance(
                     &req.msg.source_address,
@@ -1228,24 +1242,26 @@ pub(crate) async fn handle_user_mpc_deposit(
                 .await
                 {
                     Ok(user_balance) => {
-                        if user_balance < source_amount {
+                        if user_balance < required_balance {
                             warn!(
-                                "⚠️ [HTTP] Insufficient balance for intent {}: user has {}, needs {}",
-                                intent_hash_hex, user_balance, source_amount
+                                "⚠️ [HTTP] Insufficient balance for intent {}: user has {}, needs {} (amount {} + 5% buffer {} + est. fee {})",
+                                intent_hash_hex, user_balance, required_balance,
+                                source_amount, five_percent_buffer, estimated_tx_fee
                             );
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
                                 error_message: Some(format!(
-                                    "Insufficient balance: you have {} but need {} (in smallest units)",
-                                    user_balance, source_amount
+                                    "Insufficient balance: you have {} but need {} (amount {} + 5% buffer {} + estimated fee {})",
+                                    user_balance, required_balance,
+                                    source_amount, five_percent_buffer, estimated_tx_fee
                                 )),
                                 signer_eth_address: None,
                             }));
                         } else {
                             info!(
-                                "✅ [HTTP] Source address has sufficient balance: {} >= {}",
-                                user_balance, source_amount
+                                "✅ [HTTP] Source address has sufficient balance: {} >= {} (amount {} + 5% {} + fee {})",
+                                user_balance, required_balance, source_amount, five_percent_buffer, estimated_tx_fee
                             );
                         }
                     }
@@ -1307,7 +1323,6 @@ pub(crate) async fn handle_user_mpc_deposit(
                 let dst_is_btc = req.msg.target_chain.eq_ignore_ascii_case("btc")
                     || req.msg.target_chain.eq_ignore_ascii_case("bitcoin");
                 let is_same_chain = (src_is_tics && dst_is_tics) || (src_is_btc && dst_is_btc);
-                let is_btc_to_tics = src_is_btc && dst_is_tics;
                 let is_tics_to_btc = src_is_tics && dst_is_btc;
 
                 let target_amount = if is_same_chain {
@@ -1400,18 +1415,22 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 .filter(|u| u.status.confirmed)
                                 .map(|u| u.value as u128)
                                 .sum();
-                            if confirmed_balance < source_amount {
+                            // required_balance already includes amount + 5% buffer + estimated BTC fee
+                            if confirmed_balance < required_balance {
                                 warn!(
-                                    "⚠️ [HTTP] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {}",
-                                    intent_hash_hex, confirmed_balance, source_amount
+                                    "⚠️ [HTTP] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {} (amount {} + 5% {} + fee {})",
+                                    intent_hash_hex, confirmed_balance, required_balance,
+                                    source_amount, five_percent_buffer, estimated_tx_fee
                                 );
                                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                     status: "error".to_string(),
                                     intent_hash: intent_hash_hex.clone(),
                                     error_message: Some(format!(
-                                        "Insufficient confirmed balance: you have {} confirmed sats but need {}. \
+                                        "Insufficient confirmed balance: you have {} confirmed sats but need {} \
+                                         (amount {} + 5% buffer {} + estimated fee {}). \
                                          Please wait for your pending transactions to confirm.",
-                                        confirmed_balance, source_amount
+                                        confirmed_balance, required_balance,
+                                        source_amount, five_percent_buffer, estimated_tx_fee
                                     )),
                                     signer_eth_address: None,
                                 }));
@@ -1436,9 +1455,9 @@ pub(crate) async fn handle_user_mpc_deposit(
                 }
 
                 // Network balance check for ALL directions:
-                // - BTC->TICS: Treasury vault balance >= target_amount
-                // - All others: DKG address balance on target chain >= target_amount
-                let network_address = if is_btc_to_tics {
+                // - *->TICS: Treasury vault balance >= target_amount (TICS payouts come from vault)
+                // - *->BTC: DKG address balance on target chain >= target_amount
+                let network_address = if dst_is_tics {
                     std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
                         .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string())
                 } else {
@@ -1460,7 +1479,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                     match crate::rpc_server::utils::fetch_network_balance(&network_address, network_blockchain).await {
                         Ok(network_balance) => {
                             if network_balance < target_amount {
-                                let liquidity_source = if is_btc_to_tics { "treasury vault" } else { "network" };
+                                let liquidity_source = if dst_is_tics { "treasury vault" } else { "network" };
                                 warn!(
                                     "⚠️ [HTTP] Insufficient {} balance for intent {}: have {}, need {}",
                                     liquidity_source, intent_hash_hex, network_balance, target_amount
@@ -3386,6 +3405,7 @@ pub(crate) async fn handle_add_liquidity(
                 signed_payload: req.message.clone(),
                 timestamp_ms,
                 status: "Pending".to_string(),
+                tx_id: req.tx_id.clone(),
             })
             .await
         {
@@ -3686,6 +3706,8 @@ pub(crate) async fn handle_claim_platform_fee(
     req: ClaimPlatformFeeRequest,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
     db: Arc<crate::database::Database>,
+    user_intent_manager: Arc<crate::user_intent_manager::UserIntentManager>,
+    dkg_storage: Arc<DkgStorage>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "💰 HTTP: claim_platform_fee request — amount={}, tics_target={:?}, btc_target={:?}",
@@ -3738,6 +3760,29 @@ pub(crate) async fn handle_claim_platform_fee(
             message: "Amount must be greater than zero".to_string(),
             error_message: Some("amount must be a non-zero decimal string".to_string()),
         }));
+    }
+
+    // --- 2b. BTC dust check: reject BTC claims below Bitcoin dust limit ---
+    if req.btc_target_address.is_some() {
+        let amount_u128 = req.amount.trim().parse::<u128>().unwrap_or(0);
+        if amount_u128 < (DUST_LIMIT_SATS as u128) {
+            warn!(
+                "❌ [PLATFORM_FEE] BTC claim amount {} sats below dust limit {}",
+                amount_u128, DUST_LIMIT_SATS
+            );
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "BTC amount below dust threshold".to_string(),
+                error_message: Some(format!(
+                    "BTC amount {} satoshis is below Bitcoin dust limit (minimum {} satoshis required)",
+                    amount_u128, DUST_LIMIT_SATS
+                )),
+            }));
+        }
     }
 
     // --- 3. Load ADMIN_PUBLIC_ADDRESS and verify admin signature ---
@@ -3814,6 +3859,57 @@ pub(crate) async fn handle_claim_platform_fee(
                 "Recovered signer does not match ADMIN_PUBLIC_ADDRESS".to_string(),
             ),
         }));
+    }
+
+    // --- 3b. Verify admin is registered in MPC system ---
+    let admin_address_cs = ethers::utils::to_checksum(
+        &admin_public_address
+            .parse::<Address>()
+            .expect("ADMIN_PUBLIC_ADDRESS already validated"),
+        None,
+    );
+    match user_intent_manager
+        .get_admin_by_address(&admin_address_cs)
+        .await
+    {
+        Some(admin) => {
+            if admin.derived_eth_address.is_none() || admin.tweaked_secret_share.is_none() {
+                warn!(
+                    "❌ [PLATFORM_FEE] Admin {} is registered but missing derived address or tweaked share",
+                    admin_address_cs
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Admin registration incomplete".to_string(),
+                    error_message: Some(
+                        "Admin is registered but missing derived address or tweaked share. \
+                         Wait for MPC key generation to complete or re-register."
+                            .to_string(),
+                    ),
+                }));
+            }
+        }
+        None => {
+            warn!(
+                "❌ [PLATFORM_FEE] Admin {} is not registered in MPC system",
+                admin_address_cs
+            );
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Admin not registered in MPC system".to_string(),
+                error_message: Some(
+                    "Admin address is not registered. Call /register_admin first.".to_string(),
+                ),
+            }));
+        }
     }
 
     // --- 4. Validate requested amount against on-chain unclaimed balance ---
@@ -3962,6 +4058,86 @@ pub(crate) async fn handle_claim_platform_fee(
                     requested_amount, unclaimed
                 )),
             }));
+        }
+    }
+
+    // --- 4b. Verify network has sufficient balance for the claim ---
+    // TICS claims: check treasury vault balance
+    // BTC claims: check DKG-derived BTC address balance
+    {
+        let requested_u128 = req.amount.trim().parse::<u128>().unwrap_or(0);
+        let (network_address, blockchain, liquidity_source) = if asset == "TICS" {
+            let vault_address = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
+            (vault_address, "eth", "treasury vault")
+        } else {
+            // BTC: derive network address from DKG group key
+            match dkg_storage.get_final_public().await {
+                Ok(Some(final_public)) => {
+                    let btc_addr = crate::utils::get_btc_address_from_group_key(final_public);
+                    (btc_addr, "btc", "network BTC address")
+                }
+                _ => {
+                    warn!("⚠️ [PLATFORM_FEE] DKG key not available — cannot verify BTC balance");
+                    return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                        status: "error".to_string(),
+                        request_id: None,
+                        amount: req.amount.clone(),
+                        tics_target_address: req.tics_target_address.clone(),
+                        btc_target_address: req.btc_target_address.clone(),
+                        message: "Network not ready: DKG key not available".to_string(),
+                        error_message: Some(
+                            "Cannot derive BTC network address — DKG key generation not complete. Try again later."
+                                .to_string(),
+                        ),
+                    }));
+                }
+            }
+        };
+
+        match crate::rpc_server::utils::fetch_network_balance(&network_address, blockchain).await {
+            Ok(balance) => {
+                if balance < requested_u128 {
+                    warn!(
+                        "❌ [PLATFORM_FEE] {} balance {} < requested {} amount {}",
+                        liquidity_source, balance, asset, requested_u128
+                    );
+                    return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                        status: "error".to_string(),
+                        request_id: None,
+                        amount: req.amount.clone(),
+                        tics_target_address: req.tics_target_address.clone(),
+                        btc_target_address: req.btc_target_address.clone(),
+                        message: format!("Insufficient {} balance", liquidity_source),
+                        error_message: Some(format!(
+                            "{} has {} but {} was requested. Fund it first.",
+                            liquidity_source, balance, requested_u128
+                        )),
+                    }));
+                }
+                info!(
+                    "✅ [PLATFORM_FEE] {} has sufficient balance: {} >= {}",
+                    liquidity_source, balance, requested_u128
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "⚠️ [PLATFORM_FEE] Failed to fetch {} balance: {}",
+                    liquidity_source, e
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: format!("Failed to verify {} balance", liquidity_source),
+                    error_message: Some(format!(
+                        "Could not query {} balance: {e}",
+                        liquidity_source
+                    )),
+                }));
+            }
         }
     }
 

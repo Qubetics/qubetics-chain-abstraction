@@ -2683,6 +2683,8 @@ impl MpcNetworkLayer {
                     signed_payload: String,
                     timestamp_ms: i64,
                     status: String,
+                    #[serde(default)]
+                    tx_id: Option<String>,
                 }
                 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
 
@@ -2942,12 +2944,13 @@ impl MpcNetworkLayer {
                 signed_payload,
                 timestamp_ms,
                 status,
+                tx_id,
             } => {
                 use libp2p::gossipsub::IdentTopic;
 
                 info!(
-                    "💧 [ADD_LIQUIDITY] Processing solver_add_liquidity request for request_id={} solver_id={} solver_address={} amount={} chain_id={}",
-                    request_id, solver_id, solver_address, amount, chain_id
+                    "💧 [ADD_LIQUIDITY] Processing solver_add_liquidity request for request_id={} solver_id={} solver_address={} amount={} chain_id={} tx_id={:?}",
+                    request_id, solver_id, solver_address, amount, chain_id, tx_id
                 );
 
                 // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
@@ -2971,6 +2974,8 @@ impl MpcNetworkLayer {
                     signed_payload: String,
                     timestamp_ms: i64,
                     status: String,
+                    #[serde(default)]
+                    tx_id: Option<String>,
                 }
 
                 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
@@ -2985,6 +2990,7 @@ impl MpcNetworkLayer {
                     signed_payload: signed_payload.clone(),
                     timestamp_ms,
                     status: status.clone(),
+                    tx_id: tx_id.clone(),
                 };
 
                 // Use request_id as the unique key identifier
@@ -3008,6 +3014,7 @@ impl MpcNetworkLayer {
                     signed_payload: signed_payload.clone(),
                     timestamp_ms,
                     status: status.clone(),
+                    tx_id: tx_id.clone(),
                 };
 
                 let msg_bytes =
@@ -3396,12 +3403,15 @@ impl MpcNetworkLayer {
             signed_payload: String,
             timestamp_ms: i64,
             status: String,
+            #[serde(default)]
+            tx_id: Option<String>,
         }
 
         let mut solver_ids: Vec<String> = Vec::new();
         let mut amounts: Vec<String> = Vec::new();
         let mut chain_ids: Vec<u64> = Vec::new();
         let mut chain_types: Vec<u8> = Vec::new();
+        let mut tx_ids: Vec<String> = Vec::new();
 
         for request_id in &request_ids {
             let key = format!("{}{}", ADD_LIQUIDITY_DB_PREFIX, request_id);
@@ -3430,9 +3440,10 @@ impl MpcNetworkLayer {
                     }
                 };
                 chain_types.push(chain_type);
+                tx_ids.push(record.tx_id.clone().unwrap_or_default());
 
                 // Keep status as "Pending" - it will be marked "Completed" on success
-                info!("📦 [ADD_LIQUIDITY_BATCH] Processing request {} (status: {})", request_id, record.status);
+                info!("📦 [ADD_LIQUIDITY_BATCH] Processing request {} (status: {}, tx_id: {:?})", request_id, record.status, record.tx_id);
             } else {
                 warn!("⚠️ [ADD_LIQUIDITY_BATCH] Request {} not found in RocksDB, skipping", request_id);
             }
@@ -3509,6 +3520,7 @@ impl MpcNetworkLayer {
             &solver_ids,
             &amounts_u256,
             &chain_types,
+            &tx_ids,
             &solver_contract_address,
             chain_id,
         )

@@ -226,7 +226,7 @@ impl MpcNetworkLayer {
             .send_request(&peer_id, RPCRequest::GetPeerInfo);
 
         // Determine whether they dialed us or we dialed them
-        let is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
+        let _is_listener = matches!(endpoint, ConnectedPoint::Listener { .. });
 
         // Check if we already know this peer
         let already_known = self.node_manager.get_active_nodes().contains(&peer_id);
@@ -254,7 +254,7 @@ impl MpcNetworkLayer {
             }
         }
 
-        if is_listener && !already_known {
+        if !already_known {
             self.handle_new_peer_connection(swarm, peer_id).await?;
 
             let total = self.node_manager.get_total_nodes();

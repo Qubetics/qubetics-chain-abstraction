@@ -122,6 +122,8 @@ pub enum ChannelMessage {
         timestamp_ms: i64,
         /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
         status: String,
+        /// Optional transaction ID (e.g. on-chain deposit tx hash).
+        tx_id: Option<String>,
     },
     TransactionFailure {
         sequencer_request_id: String,
@@ -480,6 +482,9 @@ pub enum GossipsubMessage {
         timestamp_ms: i64,
         /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
         status: String,
+        /// Optional transaction ID (e.g. on-chain deposit tx hash).
+        #[serde(default)]
+        tx_id: Option<String>,
     },
     /// Gossip for solver add-liquidity batch (final node broadcasts for signing)
     /// All nodes already have the full records in RocksDB, so we only send IDs

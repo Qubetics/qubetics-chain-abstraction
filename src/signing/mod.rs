@@ -1908,15 +1908,20 @@ impl SigningNode {
             None
         };
 
+        // Get available nodes from node_manager BEFORE borrowing consensus_node mutably.
+        // node_manager is synced across all nodes via PeerDiscovered gossip,
+        // NodeDisconnected broadcast, and ActivePeerList reconciliation.
+        let active_nodes: std::collections::HashSet<PeerId> = self.coordination.get_available_nodes().await.into_iter().collect();
+
         let consensus_node = self
             .coordination
             .consensus_node_mut()
             .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
 
         // HRW path: canonical final node from DKG candidate set
-        // Filter candidates to only connected peers so disconnected nodes aren't selected
+        // Filter candidates to available nodes from node_manager (synced across all nodes)
         let all_selected_nodes: Vec<SerializablePeerId> = if let Some(ref dkg) = self.dkg_storage {
-            let candidates = match hrw::candidates::get_hrw_candidates(dkg, Some(&self.connected_peers)) {
+            let candidates = match hrw::candidates::get_hrw_candidates(dkg, Some(&active_nodes)) {
                 Ok(c) if !c.is_empty() => c,
                 Ok(_) => {
                     info!(
@@ -1981,10 +1986,11 @@ impl SigningNode {
                 let cycle_number = current_epoch_secs / clock_interval_secs;
 
                 // Map global clock cycles into internal epochs:
-                // 0 mod 4 => epoch_1 (TICS batch + add_liquidity)
-                // 1 mod 4 => epoch_2 (BTC batch + BTC contract tx-id update + BTC withdraw)
-                // 2 mod 4 => epoch_3 (withdraw settlement / cleanup)
-                // 3 mod 4 => epoch_4 (BTC platform fee claim)
+                // Signer key legend: (N) = network/main DKG key, (V) = vault/liquidity-operator key, (U) = user derived key, (A) = admin derived key
+                // 0 mod 4 => epoch_1: TICS phase1 processBatchIntents (N), add_liquidity batchTransfer (V), BTC claim-reward (N), TICS UTV (U)
+                // 1 mod 4 => epoch_2: BTC phase1 (N), BTC UTV (U), peer invalidation (V)
+                // 2 mod 4 => epoch_3: withdraw settlement removeLiquidity (V), TICS platform fee claimPlatformFee (A)
+                // 3 mod 4 => epoch_4: BTC platform fee (BTC key), TICS claim-reward claimRewardsBatch (V)
                 let epoch_type = match cycle_number % 4 {
                     0 => "epoch_1".to_string(),
                     1 => "epoch_2".to_string(),
@@ -2154,7 +2160,7 @@ impl SigningNode {
                             .await?;
                     } else if operation_type.as_deref() == Some("epoch_3") {
                         info!(
-                            "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement), finalizing withdraw request statuses...",
+                            "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement + platform fee), finalizing withdraw request statuses...",
                             round
                         );
 
@@ -2164,15 +2170,10 @@ impl SigningNode {
                                 round, e
                             );
                         }
-                        if let Err(e) = self.process_tics_claim_reward_settlement_epoch(round).await {
-                            warn!(
-                                "⚠️ [CLOCK] Failed to process TICS claim-reward settlement epoch for round {}: {}",
-                                round, e
-                            );
-                        }
+                        // TICS claim-platform-fee uses admin derived MPC key (no nonce conflict with withdraw's liquidity operator key)
                         if let Err(e) = self.process_tics_claim_platform_fee_settlement_epoch(round).await {
                             warn!(
-                                "⚠️ [CLOCK] Failed to process TICS claim-platform-fee settlement epoch for round {}: {}",
+                                "⚠️ [CLOCK] Failed to process TICS claim-platform-fee batch for round {}: {}",
                                 round, e
                             );
                         }
@@ -2184,19 +2185,26 @@ impl SigningNode {
                             );
                         }
 
-                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending) for TICS
-
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
                     } else if operation_type.as_deref() == Some("epoch_4") {
                         info!(
-                            "⏰ [CLOCK] Round {} is epoch_4 (BTC platform fee claim), processing pending BTC platform fee claims...",
+                            "⏰ [CLOCK] Round {} is epoch_4 (BTC platform fee + TICS claim-reward), processing...",
                             round
                         );
 
                         if let Err(e) = self.process_btc_claim_platform_fee_batch_for_round(round).await {
                             warn!(
                                 "⚠️ [CLOCK] Failed to process BTC claim-platform-fee batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
+                        // TICS claim-reward uses liquidity operator key — moved here from epoch_3
+                        // to avoid nonce conflict with withdraw settlement (also liquidity operator key)
+                        if let Err(e) = self.process_tics_claim_reward_settlement_epoch(round).await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process TICS claim-reward settlement for round {}: {}",
                                 round, e
                             );
                         }
@@ -2254,8 +2262,10 @@ impl SigningNode {
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
         let ConsensusMessage::FinalNodeResult { ref result, round } = msg;
+            // Use available nodes from node_manager (synced across all nodes) for HRW validation
+            let active_nodes: std::collections::HashSet<PeerId> = self.coordination.get_available_nodes().await.into_iter().collect();
             if let Some(ref dkg) = self.dkg_storage {
-                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg, Some(&self.connected_peers)) {
+                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg, Some(&active_nodes)) {
                     if let Some(our_winner) =
                         hrw::select_final(round, &candidates, hrw::HRW_DOMAIN_FINAL_NODE)
                     {
@@ -3219,6 +3229,8 @@ impl SigningNode {
             signed_payload: String,
             timestamp_ms: i64,
             status: String,
+            #[serde(default)]
+            tx_id: Option<String>,
         }
 
         // Scan RocksDB for all keys with the prefix (async wrapper)
@@ -5288,6 +5300,46 @@ impl SigningNode {
             slot_id,
             round
         );
+
+        // 3b. If this final node failed to verify ALL signatures (e.g. missing DKG
+        //     commitments on an observer), the batch can never complete.  Revert the
+        //     intent status from Batched back to Pending so a future round (with a
+        //     different final node) can re-process it.
+        if verified_count == 0 && !signatures.is_empty() {
+            // Check if this node is the final node for this round
+            let is_final = {
+                let final_nodes = self.signatures.final_nodes_by_round.read().await;
+                final_nodes.get(&round).map_or(false, |f| *f == self.id)
+            };
+            if is_final {
+                warn!(
+                    "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending so it can be re-processed",
+                    self.id, slot_id, round
+                );
+                if let Some(ref uim) = self.user_intent_manager {
+                    if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
+                        if let Err(e) = uim
+                            .update_intent_status(
+                                &user.tics_address,
+                                &slot_id,
+                                crate::types::user_intent::IntentStatus::Pending,
+                            )
+                            .await
+                        {
+                            error!(
+                                "❌ [BTC_UTV] Failed to revert intent {} to Pending: {}",
+                                slot_id, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [BTC_UTV] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
+                                slot_id, user.tics_address
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // 4. Sweep: aggregate each input that hit threshold
         for idx in 0..total_inputs {

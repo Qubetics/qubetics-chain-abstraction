@@ -108,6 +108,7 @@ impl MpcNetworkLayer {
             clock_tick_count: 0,
             failed_dial_addresses: HashMap::new(),
             rejected_peers: HashMap::new(),
+            processed_batch_rounds: HashSet::new(),
         };
 
         this.bootstrap_peer_ids = this

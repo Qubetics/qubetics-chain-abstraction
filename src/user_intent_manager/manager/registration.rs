@@ -148,6 +148,81 @@ impl UserIntentManager {
         Ok(computed_count)
     }
 
+    /// Compute tweaked secret shares ONLY for admins that are missing them (tweaked_secret_share = None).
+    /// This is used after state sync to compute shares for newly imported admins without
+    /// touching existing admins that already have valid shares from the original DKG signing.
+    /// Observer nodes (no DKG final secret) skip computation — they hold admin data for RPC queries only.
+    pub async fn refresh_missing_admin_tweaked_shares(&self) -> Result<usize> {
+        info!("🔄 [DB_ADMIN_REGISTRY] Computing tweaked shares for admins with missing shares only");
+
+        let dkg_storage = self.database_module.dkg_storage();
+        let final_secret_share = match dkg_storage.get_final_secret().await? {
+            Some(s) => {
+                let share_bytes = s.to_bytes();
+                info!(
+                    "🔑 [DB_ADMIN_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (for admin share computation)",
+                    hex::encode(&share_bytes[..8])
+                );
+                s
+            }
+            None => {
+                // Observer node — no DKG secret, cannot compute tweaked shares.
+                info!(
+                    "ℹ️ [DB_ADMIN_REGISTRY] No DKG final secret — this is an observer node. \
+                     Admin data imported for RPC queries; tweaked shares not computed."
+                );
+                return Ok(0);
+            }
+        };
+
+        let admins: HashMap<String, crate::types::AdminRegistration> =
+            self.user_storage.get_all_admins().await?;
+        let total = admins.len();
+        let mut computed_count: usize = 0;
+        let mut already_have: usize = 0;
+
+        for (address, mut admin) in admins.into_iter() {
+            if admin.tweaked_secret_share.is_some() {
+                already_have += 1;
+                continue;
+            }
+
+            // Admin is missing tweaked share (newly synced) — compute it
+            info!(
+                "🧮 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} (admin_id: {})",
+                address, admin.admin_id
+            );
+            let new_tweaked =
+                self.compute_tweaked_share(&final_secret_share, &admin.hmac_constant);
+            admin.tweaked_secret_share = Some(new_tweaked);
+
+            if let Err(e) = self.user_storage.store_admin(&address, &admin).await {
+                error!(
+                    "❌ [DB_ADMIN_REGISTRY] Failed to store tweaked share for admin {}: {}",
+                    address, e
+                );
+            } else {
+                // Compute and store admin share pubkeys for all peers
+                if let Err(e) = dkg_storage
+                    .compute_and_store_user_share_pubkeys_for_user(&address, &admin.hmac_constant)
+                    .await
+                {
+                    warn!(
+                        "⚠️ [DB_ADMIN_REGISTRY] Failed to compute admin share pubkeys for {}: {}",
+                        address, e
+                    );
+                }
+                computed_count += 1;
+            }
+        }
+
+        info!(
+            "🎉 [DB_ADMIN_REGISTRY] Completed refresh_missing_admin: {} total admins, {} already had shares, {} newly computed",
+            total, already_have, computed_count
+        );
+        Ok(computed_count)
+    }
+
     /// Register a new user
     pub async fn register_user(
         &self,

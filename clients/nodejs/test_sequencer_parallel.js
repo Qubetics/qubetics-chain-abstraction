@@ -202,10 +202,22 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
   // "36411b3c9bf1ee28d867a102939ddb63cd661d90a9db5e28a62c5dff92a4665b",
   // "e46c3fafd3aaeba93fda80eccbab01506a79e7025c41d34231954e3780ae19b7",
   // "542254c961bc8666efbc683ca379353526bf7a05cf6416f19aa297799544574b",
-  "2bac96fb98387a7d3277fd736329587ca7f6414b6d09f2f79d53cd173a20701a",
+
+  // "2bac96fb98387a7d3277fd736329587ca7f6414b6d09f2f79d53cd173a20701a",
+
+
   // "cd05ec519bc75735b9d42634105378a691d257d7ea3382cd9c01b3a9011ee48f",
+
+
+
+
   // "028d3f6d56405cb733c322f9841490b0cf02e404f7a1ec45a069aa9beff9eb34",
-  // "6a45ba4143b63e4f752f33d35d583db0ce3157fa529ea2a65f5595850ba972d8",
+
+  "6a45ba4143b63e4f752f33d35d583db0ce3157fa529ea2a65f5595850ba972d8",
+
+
+
+
   // "4c5c430c7546905fb0041ed02f51d3f1d82cf0a70bc2ef1bea0fdd5f3233a3c1",
   // "fcf3c71ce256510ef7274e28fd377add56d3a520df05b87abdc78d5cb99d745d",
   // "66fbe061b89f8ba8138ff45f6cf2407230e1de70f68eedc622b2a2165ec6a584",
@@ -539,17 +551,17 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      source_address: userInfo.data.derived_eth_address,  // BTC address
-      // source_address: userInfo.data.derived_btc_address,  // BTC address
+      // source_address: userInfo.data.derived_eth_address,  // BTC address
+      source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
       // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
-      target_address: "0x88c8045Fd96b88394B67fcA04FC92172CF7E6940",
+      target_address: "0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989",
       // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
-      source_chain: 'qubetics',
+      source_chain: 'bitcoin',
       target_chain: 'qubetics',
       amount: amount,
-      source_token: 'TICS',
+      source_token: 'BTC',
       target_token: 'TICS',
       timestamp: intentTimestamp,
     };
@@ -869,8 +881,8 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    const amount = "5000000000000000000";  // 12 TICS
-    // const amount = "700";  // btc
+    // const amount = "3000000000000000000000";  // 12 TICS
+    const amount = "2000";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });

@@ -38,6 +38,9 @@ struct PendingAddLiquidityRecord {
     timestamp_ms: i64,
     /// Status: "Pending" (initial), "Batched" (included in a batch), "Completed" (tx submitted).
     status: String,
+    /// Optional on-chain deposit tx hash associated with this liquidity add.
+    #[serde(default)]
+    tx_id: Option<String>,
 }
 
 const ADD_LIQUIDITY_DB_PREFIX: &str = "solver_add_liquidity:";
@@ -871,19 +874,29 @@ impl MpcNetworkLayer {
                     "eth"
                 };
 
+                // Calculate required balance: amount + 5% buffer + estimated tx fee
+                let five_percent_buffer = source_amount / 20;
+                let estimated_tx_fee: u128 = if source_blockchain == "btc" {
+                    1000 // ~1000 sats covers typical P2WPKH tx with margin
+                } else {
+                    300_000_000_000_000u128 // gas_limit=300k * gas_price=1 Gwei
+                };
+                let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+
                 // Fetch user's source address balance
                 match fetch_network_balance(&intent.source_address, source_blockchain).await {
                     Ok(user_balance) => {
-                        if user_balance < source_amount {
+                        if user_balance < required_balance {
                             warn!(
-                                "⚠️ [GOSSIPSUB] Insufficient source balance for intent {}: user has {}, needs {}",
-                                intent_hash, user_balance, source_amount
+                                "⚠️ [GOSSIPSUB] Insufficient source balance for intent {}: user has {}, needs {} (amount {} + 5% {} + fee {})",
+                                intent_hash, user_balance, required_balance,
+                                source_amount, five_percent_buffer, estimated_tx_fee
                             );
                             return Ok(());
                         } else {
                             info!(
                                 "✅ [GOSSIPSUB] Source address has sufficient balance: {} >= {}",
-                                user_balance, source_amount
+                                user_balance, required_balance
                             );
                         }
                     }
@@ -894,6 +907,17 @@ impl MpcNetworkLayer {
                         );
                         return Ok(());
                     }
+                }
+
+                // BTC source dust check: reject if BTC source amount is below dust limit
+                let src_is_btc = intent.source_chain.eq_ignore_ascii_case("btc")
+                    || intent.source_chain.eq_ignore_ascii_case("bitcoin");
+                if src_is_btc && source_amount < (DUST_LIMIT_SATS as u128) {
+                    warn!(
+                        "⚠️ [GOSSIPSUB] BTC-source intent {} below dust limit: {} satoshis (min {})",
+                        intent_hash, source_amount, DUST_LIMIT_SATS
+                    );
+                    return Ok(());
                 }
 
                 // Each node: fetch prices, compute target amount; store only when network has sufficient funds
@@ -962,17 +986,15 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // BTC->TICS detection for treasury vault checks.
-                let is_btc_to_tics = (intent.source_chain.eq_ignore_ascii_case("btc")
-                    || intent.source_chain.eq_ignore_ascii_case("bitcoin"))
-                    && (intent.target_chain.eq_ignore_ascii_case("tics")
-                        || intent.target_chain.eq_ignore_ascii_case("qubetics"));
+                // TICS target detection for treasury vault checks.
+                let dst_is_tics = intent.target_chain.eq_ignore_ascii_case("tics")
+                    || intent.target_chain.eq_ignore_ascii_case("qubetics")
+                    || intent.target_chain.eq_ignore_ascii_case("evm");
 
                 // Check network balance for target chain:
-                // - TICS->BTC: DKG BTC address (vault/main BTC).
-                // - BTC->TICS: Treasury Vault contract address on TICS, not the DKG ETH address.
-                // - Same-chain: DKG address on that chain.
-                let network_address = if is_btc_to_tics {
+                // - *->TICS: Treasury Vault contract balance (TICS payouts come from vault).
+                // - *->BTC: DKG BTC address balance.
+                let network_address = if dst_is_tics {
                     std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS").unwrap_or_else(|_| {
                         "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string()
                     })
@@ -1088,6 +1110,7 @@ impl MpcNetworkLayer {
                 signed_payload,
                 timestamp_ms,
                 status,
+                tx_id,
             } => {
                 info!(
                     "💧 [ADD_LIQUIDITY] Received solver_add_liquidity gossip: request_id={}, solver_id={}, solver_address={}, amount={}, chain_id={}",
@@ -1185,6 +1208,7 @@ impl MpcNetworkLayer {
                     signed_payload: signed_payload.clone(),
                     timestamp_ms,
                     status: status.clone(),
+                    tx_id: tx_id.clone(),
                 };
 
                 // Use request_id as the unique key identifier
@@ -1394,6 +1418,17 @@ impl MpcNetworkLayer {
                         node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, batch_type.clone());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type {}, skipping duplicate",
+                        round, batch_type
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 // SHARED: Fetch intent details from database (same for BTC and TICS)
                 // Each receiving node independently validates every intent before signing.
@@ -2099,6 +2134,14 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "TICS_UTV".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!("⏭️ [BATCH] Already processed batch for round {} type TICS_UTV, skipping duplicate", round);
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
+
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
                     for intent_hash in intent_hashes.iter() {
@@ -2378,6 +2421,14 @@ impl MpcNetworkLayer {
                         node.remove_nonces_from_available_pool(&nonce_ids).await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "BTC_UTV".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!("⏭️ [BATCH] Already processed batch for round {} type BTC_UTV, skipping duplicate", round);
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     // Mark all intents in this batch as Batched on this node so they are not re-picked for future batches
@@ -2716,6 +2767,17 @@ impl MpcNetworkLayer {
                 // sign_bitcoin_transaction() handles observer path internally
                 // (builds TX, skips signing, stores for aggregation).
 
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "BTC_WITHDRAW".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type BTC_WITHDRAW, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
+
                 // Load all pending withdraw records so we can look up each request
                 let db = &self.db;
                 let all_withdraws: Vec<(String, PendingWithdrawRequest)> =
@@ -3044,7 +3106,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::BtcClaimRewardBatch {
                 batch_id,
                 requests,
-                round: _round,
+                round,
                 timestamp,
                 node_id,
                 nonce_tuple_id,
@@ -3073,6 +3135,17 @@ impl MpcNetworkLayer {
                 // All nodes (DKG + observer) proceed with batch processing.
                 // sign_bitcoin_transaction() handles observer path internally
                 // (builds TX, skips signing, stores for aggregation).
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "BTC_CLAIM_REWARD".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type BTC_CLAIM_REWARD, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 let db = &self.db;
                 let all_claims: Vec<(String, PendingClaimRewardRequest)> = match db
@@ -3389,6 +3462,17 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "TICS_WITHDRAW".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type TICS_WITHDRAW, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
+
                 if requests.is_empty() {
                     info!("ℹ️  [TICS_WITHDRAW] Empty TicsWithdrawBatch received, nothing to do");
                     return Ok(());
@@ -3678,7 +3762,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::TicsClaimRewardBatch {
                 batch_id,
                 requests,
-                round: _,
+                round,
                 timestamp,
                 node_id,
                 nonce_tuple_id,
@@ -3702,6 +3786,17 @@ impl MpcNetworkLayer {
                         node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "TICS_CLAIM_REWARD".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type TICS_CLAIM_REWARD, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 if requests.is_empty() {
                     info!("ℹ️  [TICS_CLAIM_REWARD] Empty TicsClaimRewardBatch received, nothing to do");
@@ -4143,6 +4238,17 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (update_round, "BTC_INTENT_MANAGER_UPDATE".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type BTC_INTENT_MANAGER_UPDATE, skipping duplicate",
+                        update_round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
+
                 // Process the batch - create contract call
                 // handle_btc_intent_manager_update_batch is a method on MpcNetworkLayer (in channel_handler.rs)
                 // Since both are impl MpcNetworkLayer, we can call it directly
@@ -4286,6 +4392,17 @@ impl MpcNetworkLayer {
                         node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "PEER_INVALIDATION".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type PEER_INVALIDATION, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 // Store round -> solver_ids so we can broadcast PeerInvalidationTxConfirmed after tx receipt
                 {
@@ -4456,6 +4573,17 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "SOLVER_ADD_LIQUIDITY".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type SOLVER_ADD_LIQUIDITY, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
+
                 // All nodes (DKG + observer) process the batch.
                 // Observer nodes will go through sign_contract_message() which handles
                 // the observer path internally (builds TX, skips signing, stores for aggregation).
@@ -4579,6 +4707,18 @@ impl MpcNetworkLayer {
                     }
                 }
 
+                // --- BTC dust check ---
+                if request.asset == "BTC" {
+                    let amount_u128 = request.amount.trim().parse::<u128>().unwrap_or(0);
+                    if amount_u128 < (DUST_LIMIT_SATS as u128) {
+                        warn!(
+                            "🚫 [PLATFORM_FEE] Gossip claim {} rejected: BTC amount {} sats below dust limit {}",
+                            request.request_id, amount_u128, DUST_LIMIT_SATS
+                        );
+                        return Ok(());
+                    }
+                }
+
                 // --- On-chain amount validation ---
                 {
                     use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
@@ -4644,6 +4784,64 @@ impl MpcNetworkLayer {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // --- Network balance check ---
+                // TICS claims: check treasury vault balance
+                // BTC claims: check DKG-derived BTC address balance
+                {
+                    let requested_u128 = request.amount.trim().parse::<u128>().unwrap_or(0);
+                    let (network_address, blockchain, liquidity_source) = if request.asset == "TICS" {
+                        let vault = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
+                            .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
+                        (vault, "eth", "treasury vault")
+                    } else {
+                        // BTC: derive address from DKG group key
+                        if let Some(dkg_node) = &self.dkg_node {
+                            match dkg_node.get_final_public_key().await {
+                                Some(final_public) => {
+                                    let btc_addr = crate::utils::get_btc_address_from_group_key(final_public);
+                                    (btc_addr, "btc", "network BTC address")
+                                }
+                                None => {
+                                    warn!(
+                                        "⚠️ [PLATFORM_FEE] DKG key not available — cannot verify BTC balance for gossip claim {}",
+                                        request.request_id
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "⚠️ [PLATFORM_FEE] DKG node not available — cannot verify BTC balance for gossip claim {}",
+                                request.request_id
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    match fetch_network_balance(&network_address, blockchain).await {
+                        Ok(balance) => {
+                            if balance < requested_u128 {
+                                warn!(
+                                    "❌ [PLATFORM_FEE] Gossip claim {} rejected: {} balance {} < requested {}",
+                                    request.request_id, liquidity_source, balance, requested_u128
+                                );
+                                return Ok(());
+                            }
+                            info!(
+                                "✅ [PLATFORM_FEE] Gossip {} balance check passed for {}: {} >= {}",
+                                liquidity_source, request.request_id, balance, requested_u128
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [PLATFORM_FEE] Failed to fetch {} balance for gossip claim {}: {}",
+                                liquidity_source, request.request_id, e
+                            );
+                            return Ok(());
                         }
                     }
                 }
@@ -4929,6 +5127,17 @@ impl MpcNetworkLayer {
                         node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "BTC_CLAIM_PLATFORM_FEE".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type BTC_CLAIM_PLATFORM_FEE, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 // Load all pending platform-fee claim records
                 let db = &self.db;
@@ -5229,7 +5438,7 @@ impl MpcNetworkLayer {
             GossipsubMessage::TicsClaimPlatformFeeBatch {
                 batch_id,
                 requests,
-                round: _,
+                round,
                 timestamp,
                 node_id,
                 nonce_tuple_id,
@@ -5251,6 +5460,17 @@ impl MpcNetworkLayer {
                             .await;
                     }
                 }
+
+                // Deduplicate: skip if we already processed a batch for this round+type
+                let batch_key = (round, "TICS_CLAIM_PLATFORM_FEE".to_string());
+                if self.processed_batch_rounds.contains(&batch_key) {
+                    info!(
+                        "⏭️ [BATCH] Already processed batch for round {} type TICS_CLAIM_PLATFORM_FEE, skipping duplicate",
+                        round
+                    );
+                    return Ok(());
+                }
+                self.processed_batch_rounds.insert(batch_key);
 
                 if requests.is_empty() {
                     info!("ℹ️  [TICS_CLAIM_PLATFORM_FEE] Empty batch received, nothing to do");

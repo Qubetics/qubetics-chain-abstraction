@@ -124,6 +124,12 @@ impl MpcNetworkLayer {
 
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
+
+                    // Reject user-to-vault intents stuck in Pending/Batched for > 3 hours
+                    if let Some(ref uim) = self.user_intent_manager {
+                        const STALE_INTENT_MAX_AGE_SECS: u64 = 3 * 3600; // 3 hours
+                        uim.reject_stale_intents(STALE_INTENT_MAX_AGE_SECS).await;
+                    }
                 }
 
                 _ = global_clock_timer.tick() => {
@@ -142,6 +148,21 @@ impl MpcNetworkLayer {
                     let expired = before - self.rejected_peers.len();
                     if expired > 0 {
                         debug!("[BAN] Swept {} expired peer ban(s)", expired);
+                    }
+
+                    // Prune old entries from processed_batch_rounds to prevent unbounded growth.
+                    // Keep entries from the last 100 rounds relative to the highest seen round.
+                    if !self.processed_batch_rounds.is_empty() {
+                        let max_round = self.processed_batch_rounds.iter().map(|(r, _)| *r).max().unwrap_or(0);
+                        if max_round > 100 {
+                            let cutoff = max_round - 100;
+                            let before_count = self.processed_batch_rounds.len();
+                            self.processed_batch_rounds.retain(|(r, _)| *r >= cutoff);
+                            let pruned = before_count - self.processed_batch_rounds.len();
+                            if pruned > 0 {
+                                debug!("[BATCH_DEDUP] Pruned {} old batch dedup entries (cutoff round {})", pruned, cutoff);
+                            }
+                        }
                     }
                 }
 

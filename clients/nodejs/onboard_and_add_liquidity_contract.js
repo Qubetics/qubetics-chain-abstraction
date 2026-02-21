@@ -41,7 +41,7 @@ import { ethers } from 'ethers';
 
 const SOLVER_MANAGER_ABI = [
   'function onboardSolver(string solverId, string solverName, uint256[] chainIds, string[] solverAddresses, uint256 deadline, bytes signature)',
-  'function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType)[] deposits)',
+  'function addLiquidityBatch(tuple(string solverId, uint256 amount, uint8 chainType, string txId)[] deposits)',
   'function removeLiquidity(tuple(string solverId, uint256 amount, uint8 chainType, string transactionHash)[] requests)',
   'function getDomainSeparator() view returns (bytes32)',
   'function getSolverId(address solver) view returns (string)',
@@ -199,8 +199,9 @@ async function runAddLiquidity(contract, wallet) {
   }
   const amount = ethers.BigNumber.from(amountStr);
 
-  const deposits = [{ solverId, amount, chainType }];
-  console.log(`${colors.blue}Calling addLiquidityBatch: solverId=${solverId}, amount=${amountStr}, chainType=${chainType}${colors.reset}`);
+  const txId = getEnv('TX_ID', '');
+  const deposits = [{ solverId, amount, chainType, txId }];
+  console.log(`${colors.blue}Calling addLiquidityBatch: solverId=${solverId}, amount=${amountStr}, chainType=${chainType}, txId=${txId}${colors.reset}`);
   const tx = await contract.addLiquidityBatch(deposits);
   const receipt = await tx.wait();
   console.log(`${colors.green}✅ addLiquidityBatch tx: ${receipt.transactionHash}${colors.reset}`);

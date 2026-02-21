@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::database::keys;
 use crate::types::p2p::SerializablePeerId;
-use crate::types::UserRegistration;
+use crate::types::{AdminRegistration, UserRegistration};
 use crate::types::signing::SigningMessage;
 use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
@@ -1005,6 +1005,7 @@ impl MpcNetworkLayer {
     fn state_sync_prefixes() -> &'static [&'static str] {
         &[
             keys::USER_REGISTRATION,
+            keys::ADMIN_REGISTRATION,
             keys::INTENT_REGISTRY,
             keys::INTENT_TRANSACTION_IDS,
             keys::USER_INTENT_HASH,
@@ -1024,6 +1025,12 @@ impl MpcNetworkLayer {
             keys::PENDING_CLAIM_REWARD,
             keys::PEER_ADDR,
             keys::PUBLIC_KEY,
+            // DKG commitments + per-node share pubkeys: observer/joining nodes need these
+            // to verify partial signatures and aggregate transactions as final node.
+            keys::DKG_ORIGINAL_COMMITMENT,
+            keys::NODE_SHARE_PUBKEY_NETWORK,
+            keys::NODE_SHARE_PUBKEY_VAULT,
+            keys::NODE_SHARE_PUBKEY_USER,
         ]
     }
 
@@ -1125,6 +1132,48 @@ impl MpcNetworkLayer {
                 Err(e) => {
                     error!("❌ [STATE_SYNC] Failed to export user batch: {}", e);
                     RPCResponse::Error(format!("Failed to export user batch: {e}"))
+                }
+            }
+        } else if prefix == keys::ADMIN_REGISTRATION {
+            // Export admin batch with tweaked_secret_share stripped (no private data).
+            match self
+                .db
+                .export_batch_with_prefix_async(keys::ADMIN_REGISTRATION, start, batch_size)
+                .await
+            {
+                Ok((entries, is_last_batch)) => {
+                    let mut out = Vec::with_capacity(entries.len());
+                    for (key, value) in entries {
+                        match bincode::deserialize::<AdminRegistration>(&value) {
+                            Ok(mut admin) => {
+                                admin.tweaked_secret_share = None;
+                                match bincode::serialize(&admin) {
+                                    Ok(value_clean) => {
+                                        out.push(crate::types::rpc::DatabaseEntry {
+                                            key,
+                                            value: value_clean,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [STATE_SYNC] Failed to serialize admin: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [STATE_SYNC] Failed to deserialize admin: {}", e);
+                            }
+                        }
+                    }
+                    RPCResponse::StateSyncBatch {
+                        prefix,
+                        batch_index,
+                        entries: out,
+                        is_last_batch,
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [STATE_SYNC] Failed to export admin batch: {}", e);
+                    RPCResponse::Error(format!("Failed to export admin batch: {e}"))
                 }
             }
         } else if Self::state_sync_prefixes().iter().any(|p| *p == prefix.as_str()) {

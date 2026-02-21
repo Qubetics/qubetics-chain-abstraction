@@ -23,15 +23,15 @@ const RPC_BASE_URL = 'http://127.0.0.1:8082';
 const API_KEY = '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // Admin private key — must match ADMIN_PUBLIC_ADDRESS env on the node
-const ADMIN_PRIVATE_KEY = '0x536fba61a404115d2503092010f59531c77196c2a203b0a4b873871bbf45b7c1';
+const ADMIN_PRIVATE_KEY = '0xd9cc6693b05830c39ef09c5060c1e5bb7e2c8f02f2f2976941e6d77ca703894d';
 
 // Target addresses for receiving the claimed fees
-const TICS_TARGET_ADDRESS = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
-const BTC_TARGET_ADDRESS = 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
+const TICS_TARGET_ADDRESS = '0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989';
+const BTC_TARGET_ADDRESS = 'tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42';
 
 // Claim amounts (smallest units — wei for TICS, satoshis for BTC)
 const TICS_CLAIM_AMOUNT = '1000000000000000000'; // 1 TICS (18 decimals)
-const BTC_CLAIM_AMOUNT = '10000';                // 10000 satoshis
+const BTC_CLAIM_AMOUNT = '700';                // 10000 satoshis
 
 // ─── Colours ─────────────────────────────────────────────────────────────────
 

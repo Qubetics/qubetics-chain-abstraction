@@ -1563,13 +1563,13 @@ pub async fn create_solver_claim_rewards_batch_transaction(
     Ok(ChainTransaction::Tics(tics_tx))
 }
 
-/// Encode calldata for SolverManager.batchTransfer(recipients, amounts).
 /// Encode calldata for addLiquidityBatch(AddLiquidityBatch[] deposits)
-/// where AddLiquidityBatch is struct { string solverId, uint256 amount, uint8 chainType }
+/// where AddLiquidityBatch is struct { string solverId, uint256 amount, uint8 chainType, string txId }
 pub fn encode_add_liquidity_batch_calldata(
     solver_ids: &[String],
     amounts: &[U256],
     chain_types: &[u8],
+    tx_ids: &[String],
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
@@ -1581,6 +1581,7 @@ pub fn encode_add_liquidity_batch_calldata(
                     ParamType::String,      // solverId
                     ParamType::Uint(256),   // amount
                     ParamType::Uint(8),     // chainType (enum as uint8)
+                    ParamType::String,      // txId
                 ]))),
                 internal_type: Some("struct SolverManager.AddLiquidityBatch[]".into()),
             },
@@ -1590,20 +1591,22 @@ pub fn encode_add_liquidity_batch_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
-    if solver_ids.len() != amounts.len() || solver_ids.len() != chain_types.len() {
+    if solver_ids.len() != amounts.len() || solver_ids.len() != chain_types.len() || solver_ids.len() != tx_ids.len() {
         return None;
     }
 
-    // Build array of tuples (solverId, amount, chainType)
+    // Build array of tuples (solverId, amount, chainType, txId)
     let deposit_tuples: Vec<Token> = solver_ids
         .iter()
         .zip(amounts.iter())
         .zip(chain_types.iter())
-        .map(|((solver_id, amount), chain_type)| {
+        .zip(tx_ids.iter())
+        .map(|(((solver_id, amount), chain_type), tx_id)| {
             Token::Tuple(vec![
                 Token::String(solver_id.clone()),
                 Token::Uint(*amount),
                 Token::Uint((*chain_type).into()),
+                Token::String(tx_id.clone()),
             ])
         })
         .collect();
@@ -1623,6 +1626,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
     solver_ids: &[String],
     amounts: &[U256],
     chain_types: &[u8],
+    tx_ids: &[String],
     contract_address: &str,
     chain_id: u64,
 ) -> Result<ChainTransaction> {
@@ -1639,7 +1643,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         normalized_contract_address
     );
 
-    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types);
+    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types, tx_ids);
     let calldata_hex = calldata
         .as_ref()
         .map(|d| format!("0x{}", hex::encode(d)))
