@@ -163,6 +163,15 @@ impl MpcNetworkLayer {
                             }
                         }
                     }
+
+                    // Clean up expired peer bans (1 hour)
+                    let ban_duration = Duration::from_secs(3600);
+                    let before = self.rejected_peers.len();
+                    self.rejected_peers.retain(|_, banned_at| banned_at.elapsed() < ban_duration);
+                    let expired = before - self.rejected_peers.len();
+                    if expired > 0 {
+                        info!("🧹 [BAN] Cleared {} expired peer ban(s)", expired);
+                    }
                 }
 
                 // Contract sequencer removed - contract transactions are executed directly

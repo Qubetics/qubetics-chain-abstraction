@@ -78,9 +78,17 @@ impl MpcNetworkLayer {
                     "❌ [DIAL] Outbound connection failed to {:?}: {:?}",
                     peer_id, error
                 );
+
+                // Remove the failed peer from Kademlia to prevent aggressive re-dialing
+                // on the next bootstrap/discovery cycle (every 5 min). The hourly retry
+                // mechanism below handles reconnection at a sane cadence instead.
+                if let Some(pid) = peer_id {
+                    swarm.behaviour_mut().kademlia.remove_peer(&pid);
+                }
+
                 // Record the failed peer's bootstrap/seed/CLI addresses for hourly retry.
-                // Match by peer_id embedded in the multiaddr (/p2p/<peer_id> component).
-                // If peer_id is None (unknown), record ALL unconnected bootstrap addresses.
+                // Only bootstrap and discovery seed addresses are retried — runtime-discovered
+                // peers will be re-discovered organically through Kademlia if they come back.
                 let all_known_addrs: Vec<Multiaddr> = self
                     .bootstrap_addresses
                     .iter()
@@ -97,13 +105,16 @@ impl MpcNetworkLayer {
                     };
 
                     if should_record {
-                        self.failed_dial_addresses
-                            .entry(addr.clone())
-                            .or_insert_with(std::time::Instant::now);
-                        info!(
-                            "📝 [DIAL] Recorded failed address for hourly retry: {}",
-                            addr
-                        );
+                        // Only log once per address (first failure), not on every retry
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            self.failed_dial_addresses.entry(addr.clone())
+                        {
+                            entry.insert(std::time::Instant::now());
+                            info!(
+                                "📝 [DIAL] Recorded failed address for hourly retry: {}",
+                                addr
+                            );
+                        }
                     }
                 }
             }
@@ -122,6 +133,24 @@ impl MpcNetworkLayer {
         use libp2p::core::ConnectedPoint;
 
         let remote_addr = endpoint.get_remote_address();
+
+        // ===== BAN CHECK — reject peers that were recently banned (e.g. inactive solvers) =====
+        if let Some(banned_at) = self.rejected_peers.get(&peer_id) {
+            let ban_duration = std::time::Duration::from_secs(3600); // 1 hour
+            if banned_at.elapsed() < ban_duration {
+                warn!(
+                    "🚫 [BAN] Rejecting connection from banned peer {} ({}) — {} minutes remaining",
+                    peer_id,
+                    remote_addr,
+                    (ban_duration.as_secs() - banned_at.elapsed().as_secs()) / 60
+                );
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
+            } else {
+                // Ban expired — remove and allow connection
+                self.rejected_peers.remove(&peer_id);
+            }
+        }
 
         // Clear this peer from the failed-dial retry list (connection succeeded)
         let removed_count = self.failed_dial_addresses.len();
@@ -149,6 +178,7 @@ impl MpcNetworkLayer {
         //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
         //             peer_id, remote_addr, e
         //         );
+        //         self.rejected_peers.insert(peer_id, std::time::Instant::now());
         //         swarm.disconnect_peer_id(peer_id).ok();
         //         return Ok(());
         //     }

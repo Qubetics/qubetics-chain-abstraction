@@ -107,6 +107,41 @@ impl SigningNode {
         );
     }
 
+    pub(crate) async fn store_claim_platform_fee_transaction_tics_batch(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        identifiers: Vec<String>,
+    ) {
+        if identifiers.is_empty() {
+            return;
+        }
+        let count = identifiers.len();
+        let mut pending = self
+            .pending
+            .claim_platform_fee_pending_transactions_tics
+            .write()
+            .await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                Some(identifiers),
+                Some(TransactionType::ClaimPlatformFee),
+                None,
+                None,
+            ),
+        );
+        let mut claim_pf_rounds = self.pending.claim_platform_fee_rounds.write().await;
+        claim_pf_rounds.insert(round);
+        info!(
+            "💰 [SIGNING] Stored TICS claim-platform-fee batch for round {} with {} request(s)",
+            round, count
+        );
+    }
+
     pub(crate) async fn store_withdraw_transaction_btc(
         &self,
         round: u64,
@@ -175,6 +210,43 @@ impl SigningNode {
         );
     }
 
+    pub(crate) async fn store_claim_platform_fee_transaction_btc(
+        &self,
+        round: u64,
+        chain_tx: ChainTransaction,
+        tx_bytes: Vec<u8>,
+        identifiers: Vec<String>,
+        extras: crate::signing::state::BtcRoundExtras,
+    ) {
+        let mut pending = self
+            .pending
+            .claim_platform_fee_pending_transactions_btc
+            .write()
+            .await;
+        pending.insert(
+            round,
+            (
+                chain_tx,
+                tx_bytes,
+                if identifiers.is_empty() {
+                    None
+                } else {
+                    Some(identifiers)
+                },
+                Some(TransactionType::ClaimPlatformFee),
+                Some(extras),
+            ),
+        );
+        {
+            let mut rounds = self.pending.claim_platform_fee_rounds.write().await;
+            rounds.insert(round);
+        }
+        info!(
+            "💰 [SIGNING] Stored BTC claim-platform-fee transaction for round {} with batch metadata",
+            round
+        );
+    }
+
     pub(crate) async fn store_transaction_error_for_round(
         &self,
         round: u64,
@@ -194,6 +266,11 @@ impl SigningNode {
         let is_claim_reward_round = {
             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
             claim_reward_rounds.contains(&round)
+        };
+
+        let is_claim_platform_fee_round = {
+            let claim_pf_rounds = self.pending.claim_platform_fee_rounds.read().await;
+            claim_pf_rounds.contains(&round)
         };
 
         let (intent_hashes, transaction_type, retrieved_solver_address): (
@@ -253,6 +330,27 @@ impl SigningNode {
                     } else {
                         (vec![], None, None)
                     }
+                } else if is_claim_platform_fee_round {
+                    let claim_pf_pending_tics = self
+                        .pending
+                        .claim_platform_fee_pending_transactions_tics
+                        .read()
+                        .await;
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        identifiers,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = claim_pf_pending_tics.get(&round)
+                    {
+                        let first_id =
+                            identifiers.as_ref().and_then(|v| v.first().cloned());
+                        (vec![], transaction_type.clone(), first_id)
+                    } else {
+                        (vec![], None, None)
+                    }
                 } else {
                     let (from_pending, tx_type) = {
                         let pending = self.pending.pending_transactions.read().await;
@@ -283,6 +381,21 @@ impl SigningNode {
                         let solver_address =
                             solver_addresses.as_ref().and_then(|v| v.first().cloned());
                         (vec![], transaction_type.clone(), solver_address)
+                    } else {
+                        (vec![], None, None)
+                    }
+                } else if is_claim_platform_fee_round {
+                    let claim_pf_pending_btc = self
+                        .pending
+                        .claim_platform_fee_pending_transactions_btc
+                        .read()
+                        .await;
+                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
+                        claim_pf_pending_btc.get(&round)
+                    {
+                        let first_id =
+                            identifiers.as_ref().and_then(|v| v.first().cloned());
+                        (vec![], transaction_type.clone(), first_id)
                     } else {
                         (vec![], None, None)
                     }
@@ -337,6 +450,10 @@ impl SigningNode {
                     }
                     Some(crate::types::TransactionType::ClaimReward) => {
                         error!("❌ [SIGNING] ClaimReward with intent_hashes - invalid");
+                        return;
+                    }
+                    Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                        error!("❌ [SIGNING] ClaimPlatformFee with intent_hashes - invalid");
                         return;
                     }
                     Some(crate::types::TransactionType::PeerInvalidation) => "peer_invalidation",
@@ -444,6 +561,10 @@ impl SigningNode {
             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
             claim_reward_rounds.contains(&round)
         };
+        let is_claim_platform_fee_round = {
+            let claim_pf_rounds = self.pending.claim_platform_fee_rounds.read().await;
+            claim_pf_rounds.contains(&round)
+        };
         info!(
             "💾 [SIGNING] Is claim reward round: {}",
             is_claim_reward_round
@@ -496,6 +617,27 @@ impl SigningNode {
                         (None, transaction_type.clone(), None)
                     } else {
                         warn!("[store_transaction_id_for_round] [TICS][ClaimReward] No entry in claim_reward_pending_transactions_tics for round {}", round);
+                        (None, None, None)
+                    }
+                } else if is_claim_platform_fee_round {
+                    let claim_pf_pending_tics = self
+                        .pending
+                        .claim_platform_fee_pending_transactions_tics
+                        .read()
+                        .await;
+                    if let Some((
+                        _tx,
+                        _tx_bytes,
+                        _identifiers,
+                        transaction_type,
+                        _request_id,
+                        _original_request,
+                    )) = claim_pf_pending_tics.get(&round)
+                    {
+                        info!("[store_transaction_id_for_round] [TICS][ClaimPlatformFee] Found claim_platform_fee_pending_transactions_tics entry for round {}: transaction_type={:?}", round, transaction_type);
+                        (None, transaction_type.clone(), None)
+                    } else {
+                        warn!("[store_transaction_id_for_round] [TICS][ClaimPlatformFee] No entry in claim_platform_fee_pending_transactions_tics for round {}", round);
                         (None, None, None)
                     }
                 } else {
@@ -662,6 +804,13 @@ impl SigningNode {
                         // ClaimReward transactions should never have an intent_hash
                         error!(
                             "❌ [SIGNING] ClaimReward transaction type found with intent_hash - this is invalid."
+                        );
+                        return;
+                    }
+                    Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                        // ClaimPlatformFee transactions should never have an intent_hash
+                        error!(
+                            "❌ [SIGNING] ClaimPlatformFee transaction type found with intent_hash - this is invalid."
                         );
                         return;
                     }
@@ -888,6 +1037,72 @@ impl SigningNode {
                                 round, tx_id
                             );
                         }
+                    }
+                } else if matches!(
+                    transaction_type,
+                    Some(crate::types::TransactionType::ClaimPlatformFee)
+                ) {
+                    // ClaimPlatformFee: check TICS store first (contract call), then BTC store.
+                    // TICS tx-id (0x prefix) → handler marks Completed. BTC tx-id → handler stores tx_id only.
+                    let claim_pf_pending_tics = self
+                        .pending
+                        .claim_platform_fee_pending_transactions_tics
+                        .read()
+                        .await;
+                    let tics_identifiers: Option<Vec<String>> = claim_pf_pending_tics
+                        .get(&round)
+                        .and_then(|(_, _, identifiers, _, _, _)| identifiers.clone());
+                    drop(claim_pf_pending_tics);
+
+                    let batch_identifiers = if let Some(ids) = tics_identifiers {
+                        ids
+                    } else {
+                        // Fallback to BTC store
+                        let claim_pf_pending_btc = self
+                            .pending
+                            .claim_platform_fee_pending_transactions_btc
+                            .read()
+                            .await;
+                        claim_pf_pending_btc
+                            .get(&round)
+                            .and_then(|(_, _, identifiers, _, _)| identifiers.clone())
+                            .unwrap_or_default()
+                    };
+
+                    let batch_requests: Vec<(String, String)> = batch_identifiers
+                        .iter()
+                        .filter_map(|encoded| {
+                            encoded.split_once('|').map(|(req_id, admin)| {
+                                (req_id.to_string(), admin.to_string())
+                            })
+                        })
+                        .collect();
+
+                    if !batch_requests.is_empty() {
+                        let network_label = crate::types::network::network_type().as_str();
+                        info!(
+                            "📡 [SIGNING] Broadcasting claim-platform-fee txid {} for round {} with {} requests via ClaimPlatformFeeTxIdBroadcast",
+                            tx_id, round, batch_requests.len()
+                        );
+                        let msg =
+                            crate::types::ChannelMessage::ClaimPlatformFeeTxIdBroadcast {
+                                txid: tx_id.to_string(),
+                                network: network_label.to_string(),
+                                batch_id: format!("claim-platform-fee-round-{}", round),
+                                requests: batch_requests,
+                                node_id: self.id.clone(),
+                            };
+                        if let Err(e) = self.message_tx.send(msg).await {
+                            error!(
+                                "❌ [SIGNING] Failed to send ClaimPlatformFeeTxIdBroadcast for round {}: {}",
+                                round, e
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "⚠️ [SIGNING] ClaimPlatformFee round {} has no batch identifiers; skipping broadcast for tx_id={}",
+                            round, tx_id
+                        );
                     }
                 } else if matches!(
                     transaction_type,

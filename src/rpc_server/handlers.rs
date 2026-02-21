@@ -3094,9 +3094,10 @@ pub(crate) async fn handle_withdraw_liquidity(
     // - the normalized solver address
     // - the validated destination address
     //
-    // Reject if this solver already has a withdraw request in Pending or Batched status
-    // (one in-flight withdraw per solver at a time; persists over gossip so no duplicate on any node).
+    // Reject if this solver already has a withdraw request for the same asset in Pending or Batched status
+    // (one in-flight withdraw per solver per asset; persists over gossip so no duplicate on any node).
     {
+        let withdraw_asset = if withdraw_tics_amount.is_some() { "TICS" } else { "BTC" };
         let db = user_intent_manager.get_database();
         let prefix = format!(
             "pending_withdraw_liquidity:{}:",
@@ -3127,11 +3128,11 @@ pub(crate) async fn handle_withdraw_liquidity(
         };
         let has_pending_or_batched = entries
             .iter()
-            .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+            .any(|(_, r)| r.asset == withdraw_asset && (r.status == "Pending" || r.status == "Batched"));
         if has_pending_or_batched {
             info!(
-                "🚫 [WITHDRAW_LIQUIDITY] Rejecting withdraw for solver {}: already has a request in Pending/Batched",
-                normalized_address
+                "🚫 [WITHDRAW_LIQUIDITY] Rejecting {} withdraw for solver {}: already has a {} request in Pending/Batched",
+                withdraw_asset, normalized_address, withdraw_asset
             );
             return Ok(warp::reply::json(&WithdrawLiquidityResponse {
                 status: "error".to_string(),
@@ -3142,8 +3143,8 @@ pub(crate) async fn handle_withdraw_liquidity(
                 btc_address: req.btc_address.clone(),
                 tics_withdraw_tx_id: None,
                 btc_withdraw_tx_id: None,
-                message: "You already have a withdraw request in progress (Pending or Batched). Wait for it to complete.".to_string(),
-                error_message: Some("One withdraw request at a time per solver".to_string()),
+                message: format!("You already have a {} withdraw request in progress (Pending or Batched). Wait for it to complete.", withdraw_asset),
+                error_message: Some(format!("One {} withdraw request at a time per solver", withdraw_asset)),
             }));
         }
     }
@@ -3684,6 +3685,7 @@ pub(crate) async fn handle_check_peer_connection(
 pub(crate) async fn handle_claim_platform_fee(
     req: ClaimPlatformFeeRequest,
     message_tx: Arc<Mutex<mpsc::Sender<ChannelMessage>>>,
+    db: Arc<crate::database::Database>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     info!(
         "💰 HTTP: claim_platform_fee request — amount={}, tics_target={:?}, btc_target={:?}",
@@ -3738,23 +3740,22 @@ pub(crate) async fn handle_claim_platform_fee(
         }));
     }
 
-    // --- 3. Load VERIFICATION_ADDRESS and verify admin signature ---
-    let verification_address_raw =
-        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| {
-            "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string()
-        });
-    if verification_address_raw.trim().is_empty() {
-        warn!("❌ [PLATFORM_FEE] VERIFICATION_ADDRESS not configured");
-        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
-            status: "error".to_string(),
-            request_id: None,
-            amount: req.amount.clone(),
-            tics_target_address: req.tics_target_address.clone(),
-            btc_target_address: req.btc_target_address.clone(),
-            message: "VERIFICATION_ADDRESS not configured".to_string(),
-            error_message: Some("VERIFICATION_ADDRESS env var is missing".to_string()),
-        }));
-    }
+    // --- 3. Load ADMIN_PUBLIC_ADDRESS and verify admin signature ---
+    let admin_public_address = match std::env::var("ADMIN_PUBLIC_ADDRESS") {
+        Ok(addr) if !addr.trim().is_empty() => addr.trim().to_string(),
+        _ => {
+            warn!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS not configured");
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "ADMIN_PUBLIC_ADDRESS not configured".to_string(),
+                error_message: Some("ADMIN_PUBLIC_ADDRESS env var is missing".to_string()),
+            }));
+        }
+    };
 
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
@@ -3797,10 +3798,10 @@ pub(crate) async fn handle_claim_platform_fee(
         },
     };
 
-    if recovered_address.to_lowercase() != verification_address_raw.to_lowercase() {
+    if recovered_address.to_lowercase() != admin_public_address.to_lowercase() {
         warn!(
-            "❌ [PLATFORM_FEE] Unauthorized: recovered={}, expected={}",
-            recovered_address, verification_address_raw
+            "❌ [PLATFORM_FEE] Unauthorized: recovered={}, expected ADMIN_PUBLIC_ADDRESS={}",
+            recovered_address, admin_public_address
         );
         return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
             status: "error".to_string(),
@@ -3810,17 +3811,193 @@ pub(crate) async fn handle_claim_platform_fee(
             btc_target_address: req.btc_target_address.clone(),
             message: "Unauthorized claim_platform_fee request".to_string(),
             error_message: Some(
-                "Recovered signer does not match VERIFICATION_ADDRESS".to_string(),
+                "Recovered signer does not match ADMIN_PUBLIC_ADDRESS".to_string(),
             ),
         }));
     }
 
-    // --- 4. Build the pending request record ---
+    // --- 4. Validate requested amount against on-chain unclaimed balance ---
     let asset = if req.tics_target_address.is_some() {
         "TICS"
     } else {
         "BTC"
     };
+
+    // chainId: 0 for BTC, 9029 for TICS (matches contract REQUIRED_CHAIN_BTC / REQUIRED_CHAIN_TICS)
+    let on_chain_id: u64 = if asset == "BTC" { 0 } else { 9029 };
+
+    let requested_amount = match req.amount.trim().parse::<u128>() {
+        Ok(a) => ethers::types::U256::from(a),
+        Err(_) => {
+            warn!(
+                "❌ [PLATFORM_FEE] Cannot parse amount '{}' as u128",
+                req.amount
+            );
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Invalid amount format".to_string(),
+                error_message: Some("amount must be a valid decimal integer string".to_string()),
+            }));
+        }
+    };
+
+    {
+        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
+            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+        let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
+            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+            .unwrap_or_else(|_| "9029".to_string())
+            .parse::<u64>()
+            .unwrap_or(9029);
+
+        let contract_addr: Address = match contract_address_str.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                warn!(
+                    "⚠️ [PLATFORM_FEE] Invalid SOLVER_CONTRACT_ADDRESS: {}",
+                    e
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Solver contract configuration error".to_string(),
+                    error_message: Some("Invalid contract address".to_string()),
+                }));
+            }
+        };
+
+        let config = ContractConfig {
+            rpc_url,
+            contract_address: contract_addr,
+            chain_id,
+        };
+        let client = match ContractClient::new(config.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("⚠️ [PLATFORM_FEE] Contract client failed: {}", e);
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Failed to connect to solver contract".to_string(),
+                    error_message: Some("Contract client unavailable".to_string()),
+                }));
+            }
+        };
+        let contract = match SolverManagerContract::new(&config, client.provider()) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "⚠️ [PLATFORM_FEE] SolverManagerContract::new failed: {}",
+                    e
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Failed to initialize solver contract".to_string(),
+                    error_message: Some("Contract interface unavailable".to_string()),
+                }));
+            }
+        };
+
+        let unclaimed = match contract
+            .get_platform_unclaimed_fee(ethers::types::U256::from(on_chain_id))
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "⚠️ [PLATFORM_FEE] getPlatformUnclaimedFee call failed: {}",
+                    e
+                );
+                return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                    status: "error".to_string(),
+                    request_id: None,
+                    amount: req.amount.clone(),
+                    tics_target_address: req.tics_target_address.clone(),
+                    btc_target_address: req.btc_target_address.clone(),
+                    message: "Failed to query on-chain unclaimed platform fee".to_string(),
+                    error_message: Some(format!(
+                        "getPlatformUnclaimedFee failed: {e}"
+                    )),
+                }));
+            }
+        };
+
+        info!(
+            "📊 [PLATFORM_FEE] On-chain unclaimed {} fee: {}, requested: {}",
+            asset, unclaimed, requested_amount
+        );
+
+        if requested_amount > unclaimed {
+            warn!(
+                "❌ [PLATFORM_FEE] Requested amount {} exceeds unclaimed {} fee {} on-chain",
+                requested_amount, asset, unclaimed
+            );
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: format!(
+                    "Requested amount exceeds available unclaimed {} platform fee",
+                    asset
+                ),
+                error_message: Some(format!(
+                    "Requested {} but only {} is available on-chain",
+                    requested_amount, unclaimed
+                )),
+            }));
+        }
+    }
+
+    // --- 5. One-claim-per-chain enforcement ---
+    // Reject if there is already a Pending or Batched platform fee claim for the same asset.
+    {
+        let prefix = crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE;
+        let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
+            db.get_values_with_prefix(prefix).unwrap_or_default();
+        let active = entries.iter().find(|(_, r)| {
+            r.asset == asset && (r.status == "Pending" || r.status == "Batched")
+        });
+        if let Some((_, existing)) = active {
+            warn!(
+                "❌ [PLATFORM_FEE] Duplicate {} claim rejected — existing request_id={} is {}",
+                asset, existing.request_id, existing.status
+            );
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: format!(
+                    "A {} platform fee claim is already in progress (request_id={})",
+                    asset, existing.request_id
+                ),
+                error_message: Some(format!(
+                    "Existing {} request {} has status '{}' — only one per chain allowed",
+                    asset, existing.request_id, existing.status
+                )),
+            }));
+        }
+    }
+
+    // --- 6. Build the pending request record ---
     let request_id = format!("platform-fee-{}", uuid::Uuid::new_v4());
 
     let pending = PendingClaimPlatformFeeRequest {
@@ -3830,10 +4007,11 @@ pub(crate) async fn handle_claim_platform_fee(
         tics_target_address: req.tics_target_address.clone(),
         btc_target_address: req.btc_target_address.clone(),
         message: req.message.clone(),
+        tx_id: None,
         status: "Pending".to_string(),
     };
 
-    // --- 5. Broadcast to all nodes (local + peers) via channel ---
+    // --- 6. Broadcast to all nodes (local + peers) via channel ---
     let tx = message_tx.lock().await;
     if let Err(e) = tx
         .send(ChannelMessage::PendingClaimPlatformFeeRequestBroadcast {

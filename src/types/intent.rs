@@ -7,6 +7,8 @@ pub enum TransactionType {
     WithdrawLiquidity,
     /// Claim-reward batch (same as WithdrawLiquidity: TICS vs BTC determined at runtime from tx_id / pending store).
     ClaimReward,
+    /// Claim-platform-fee batch (BTC transfer to admin target address; TICS handled by contract call).
+    ClaimPlatformFee,
     IntentStatusUpdate,
     /// invalidateSolverIds contract call; tx confirmation triggers PeerInvalidationTxConfirmed so all nodes clear PENDING_DISCONNECTION.
     PeerInvalidation,

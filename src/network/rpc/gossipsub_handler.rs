@@ -2052,6 +2052,7 @@ impl MpcNetworkLayer {
                                         None,
                                         None, // tics_withdraw_identifiers (not applicable)
                                         None, // tics_claim_reward_identifiers (not applicable)
+                                        None, // tics_claim_platform_fee_identifiers (not applicable)
                                         nonce_tuple_id.clone(), // COORDINATED nonce from coordinator
                                     )
                                     .await?;
@@ -3632,6 +3633,7 @@ impl MpcNetworkLayer {
                             None,
                             Some(used_identifiers.clone()), // for tx-id broadcast to update each request
                             None, // tics_claim_reward_identifiers (not applicable)
+                            None, // tics_claim_platform_fee_identifiers (not applicable)
                             nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                         )
                         .await?;
@@ -3941,6 +3943,7 @@ impl MpcNetworkLayer {
                             None,
                             None, // tics_withdraw_identifiers (not applicable)
                             Some(used_identifiers.clone()), // for tx-id broadcast: store tx_id on TICS, mark done for all
+                            None, // tics_claim_platform_fee_identifiers (not applicable)
                             nonce_tuple_id.clone(), // coordinated nonce for threshold signing
                         )
                         .await
@@ -4380,6 +4383,7 @@ impl MpcNetworkLayer {
                                 None,
                                 None,
                                 None,
+                                None, // tics_claim_platform_fee_identifiers (not applicable)
                                 nonce_tuple_id.clone(),
                             )
                             .await?;
@@ -4450,7 +4454,7 @@ impl MpcNetworkLayer {
                     request.request_id, request.solver_address, request.asset
                 );
 
-                // Persist only if this solver has no existing Pending/Batched request (one in-flight per solver).
+                // Persist only if this solver has no existing Pending/Batched request for the same asset (one in-flight per solver per asset).
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
                 let existing: Vec<(String, PendingWithdrawRequest)> = match self
@@ -4468,11 +4472,11 @@ impl MpcNetworkLayer {
                 };
                 let has_pending_or_batched = existing
                     .iter()
-                    .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+                    .any(|(_, r)| r.asset == request.asset && (r.status == "Pending" || r.status == "Batched"));
                 if has_pending_or_batched {
                     info!(
-                        "🚫 [WITHDRAW_LIQUIDITY] Ignoring duplicate withdraw request {} for solver {}: already has Pending/Batched",
-                        request.request_id, request.solver_address
+                        "🚫 [WITHDRAW_LIQUIDITY] Ignoring duplicate {} withdraw request {} for solver {}: already has Pending/Batched",
+                        request.asset, request.request_id, request.solver_address
                     );
                     return Ok(());
                 }
@@ -4526,6 +4530,93 @@ impl MpcNetworkLayer {
                         request.request_id
                     );
                     return Ok(());
+                }
+
+                // --- One-claim-per-chain enforcement ---
+                {
+                    let prefix = crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE;
+                    let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
+                        self.db.get_values_with_prefix(prefix).unwrap_or_default();
+                    let has_active = entries.iter().any(|(_, r)| {
+                        r.asset == request.asset
+                            && (r.status == "Pending" || r.status == "Batched")
+                    });
+                    if has_active {
+                        info!(
+                            "🚫 [PLATFORM_FEE] Rejecting gossip claim {} — active {} claim already exists",
+                            request.request_id, request.asset
+                        );
+                        return Ok(());
+                    }
+                }
+
+                // --- On-chain amount validation ---
+                {
+                    use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                    use ethers::types::Address;
+
+                    let on_chain_id: u64 = match request.asset.as_str() {
+                        "BTC" => 0,
+                        "TICS" => 9029,
+                        _ => {
+                            warn!(
+                                "⚠️ [PLATFORM_FEE] Unknown asset '{}' in gossip claim — skipping on-chain check",
+                                request.asset
+                            );
+                            0
+                        }
+                    };
+
+                    let rpc_url = std::env::var("TICS_CHAIN_RPC_URL")
+                        .unwrap_or_else(|_| "https://rpc.qubetics.com".to_string());
+                    let chain_id: u64 = std::env::var("TICS_CHAIN_ID")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(9029);
+                    let contract_address_env =
+                        std::env::var("SOLVER_MANAGER_CONTRACT_ADDRESS").unwrap_or_default();
+                    if let Ok(contract_address) = contract_address_env.parse::<Address>() {
+                        let config = ContractConfig {
+                            rpc_url: rpc_url.clone(),
+                            contract_address,
+                            chain_id,
+                        };
+                        if let Ok(client) = ContractClient::new(config.clone()) {
+                            if let Ok(contract) =
+                                SolverManagerContract::new(&config, client.provider())
+                            {
+                                match contract
+                                    .get_platform_unclaimed_fee(ethers::types::U256::from(
+                                        on_chain_id,
+                                    ))
+                                    .await
+                                {
+                                    Ok(unclaimed) => {
+                                        let requested =
+                                            ethers::types::U256::from_dec_str(&request.amount)
+                                                .unwrap_or_default();
+                                        if requested > unclaimed {
+                                            warn!(
+                                                "❌ [PLATFORM_FEE] Gossip claim {} rejected: requested {} > on-chain unclaimed {}",
+                                                request.request_id, requested, unclaimed
+                                            );
+                                            return Ok(());
+                                        }
+                                        info!(
+                                            "✅ [PLATFORM_FEE] Gossip on-chain validation passed for {}: requested={}, unclaimed={}",
+                                            request.request_id, requested, unclaimed
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "⚠️ [PLATFORM_FEE] getPlatformUnclaimedFee failed during gossip validation: {} — storing anyway",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if let Err(e) = self.db.put_string_async(&key, &request).await {
@@ -4781,6 +4872,601 @@ impl MpcNetworkLayer {
                             warn!("⚠️ [PEER_SYNC] Failed to re-announce ourselves: {}", e);
                         }
                     }
+                }
+            }
+            GossipsubMessage::BtcClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use crate::signing::chains::bitcoin_batch::{
+                    build_batch_unsigned_tx, select_utxos_for_batch,
+                };
+                use crate::signing::chains::bitcoin_batch::{BatchOutput, BatchPolicy, BatchUtxo};
+                use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+
+                info!(
+                    "📦 [BTC_CLAIM_PLATFORM_FEE] Received BTC claim-platform-fee batch {} from node {} (round {}, timestamp {})",
+                    batch_id, node_id, round, timestamp
+                );
+
+                // Remove coordinator-assigned nonce from local available pool
+                if let Some(ref nonce_id) = nonce_tuple_id {
+                    if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.remove_nonces_from_available_pool(&[nonce_id.clone()]).await;
+                    }
+                }
+
+                // Load all pending platform-fee claim records
+                let db = &self.db;
+                let all_claims: Vec<(String, PendingClaimPlatformFeeRequest)> =
+                    match db.get_values_with_prefix(crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE) {
+                        Ok(entries) => entries,
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_PLATFORM_FEE] Failed to load pending platform fee claims: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                // Build lookup by request_id
+                let mut claim_map: std::collections::HashMap<String, PendingClaimPlatformFeeRequest> =
+                    std::collections::HashMap::new();
+                for (_key, req) in all_claims {
+                    claim_map.insert(req.request_id.clone(), req);
+                }
+
+                // Build BatchOutput list from platform-fee requests
+                let mut batch_outputs: Vec<BatchOutput> = Vec::new();
+                let mut used_requests: Vec<(String, String)> = Vec::new();
+
+                for (request_id, btc_target_address) in &requests {
+                    if let Some(req) = claim_map.get(request_id) {
+                        if req.asset != "BTC"
+                            || req.status != "Pending"
+                            || req.tx_id.is_some()
+                        {
+                            continue;
+                        }
+
+                        let amount_sats: u64 = match req.amount.parse() {
+                            Ok(amt) => amt,
+                            Err(e) => {
+                                warn!(
+                                    "⚠️ [BTC_CLAIM_PLATFORM_FEE] Invalid amount for request {}: {}",
+                                    request_id, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        if amount_sats < 546 {
+                            warn!(
+                                "⚠️ [BTC_CLAIM_PLATFORM_FEE] Request {} amount {} sats below dust threshold, skipping",
+                                request_id, amount_sats
+                            );
+                            continue;
+                        }
+
+                        batch_outputs.push(BatchOutput {
+                            address: btc_target_address.clone(),
+                            amount: amount_sats,
+                        });
+                        used_requests.push((request_id.clone(), btc_target_address.clone()));
+
+                        info!(
+                            "💰 [BTC_CLAIM_PLATFORM_FEE] Added output: {} sats to {} (request_id={})",
+                            amount_sats, btc_target_address, request_id
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ [BTC_CLAIM_PLATFORM_FEE] Request {} not found in DB",
+                            request_id
+                        );
+                    }
+                }
+
+                if batch_outputs.is_empty() {
+                    warn!("⚠️ [BTC_CLAIM_PLATFORM_FEE] No valid outputs after filtering");
+                    return Ok(());
+                }
+
+                // Get network's DKG Bitcoin address
+                let dkg_node = match &self.dkg_node {
+                    Some(node) => node,
+                    None => {
+                        error!("❌ [BTC_CLAIM_PLATFORM_FEE] DKG node not available");
+                        return Ok(());
+                    }
+                };
+
+                let group_key = match dkg_node.get_final_public_key().await {
+                    Some(key) => key,
+                    None => {
+                        error!("❌ [BTC_CLAIM_PLATFORM_FEE] Network group key not available");
+                        return Ok(());
+                    }
+                };
+
+                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+
+                info!(
+                    "🏦 [BTC_CLAIM_PLATFORM_FEE] Using network BTC address: {}",
+                    network_btc_address
+                );
+
+                // Fetch network BTC UTXOs
+                let is_testnet = crate::types::network::network_type().is_testnet();
+                let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
+                    &network_btc_address,
+                    is_testnet,
+                )
+                .await
+                {
+                    Ok(utxos) => utxos,
+                    Err(e) => {
+                        error!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to fetch UTXOs: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "📦 [BTC_CLAIM_PLATFORM_FEE] Fetched {} UTXOs",
+                    utxos.len()
+                );
+
+                // Convert BitcoinUtxo → BatchUtxo
+                let network_script_pubkey =
+                    match crate::utils::transaction::create_bitcoin_script_pubkey(
+                        &network_btc_address,
+                    ) {
+                        Ok(spk) => spk,
+                        Err(e) => {
+                            error!(
+                                "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to create script pubkey: {}",
+                                e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                let mut batch_utxos: Vec<BatchUtxo> = Vec::new();
+                for utxo in utxos {
+                    if !utxo.status.confirmed {
+                        continue;
+                    }
+                    batch_utxos.push(BatchUtxo {
+                        txid: utxo.txid,
+                        vout: utxo.vout,
+                        value: utxo.value,
+                        script_pubkey: network_script_pubkey.clone(),
+                    });
+                }
+
+                // Select UTXOs for batch transaction
+                let policy = BatchPolicy {
+                    fee_rate: std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1),
+                    dust_threshold: 546,
+                    change_address: network_btc_address.clone(),
+                };
+
+                let selected = match select_utxos_for_batch(&batch_utxos, &batch_outputs, &policy) {
+                    Ok(sel) => sel,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_PLATFORM_FEE] UTXO selection failed: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "💰 [BTC_CLAIM_PLATFORM_FEE] Selected {} UTXOs: total={} sats, fee={} sats, change={} sats",
+                    selected.utxos.len(),
+                    selected.total_input_value,
+                    selected.fee,
+                    selected.change
+                );
+
+                // Build unsigned transaction
+                let unsigned_tx = match build_batch_unsigned_tx(&selected, &batch_outputs, &policy) {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        error!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to build unsigned transaction: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                info!(
+                    "🔨 [BTC_CLAIM_PLATFORM_FEE] Built unsigned tx: {} inputs, {} outputs",
+                    unsigned_tx.input.len(),
+                    unsigned_tx.output.len()
+                );
+
+                // Convert to internal BitcoinTransaction type
+                let mut our_inputs = Vec::new();
+                for (i, tx_in) in unsigned_tx.input.iter().enumerate() {
+                    our_inputs.push(crate::types::BitcoinInput {
+                        txid: tx_in.previous_output.txid.to_string(),
+                        vout: tx_in.previous_output.vout,
+                        script_sig: vec![],
+                        sequence: tx_in.sequence.0,
+                        witness_utxo: Some(crate::types::BitcoinWitnessUtxo {
+                            value: selected.utxos[i].value,
+                            script_pubkey: selected.utxos[i].script_pubkey.clone(),
+                        }),
+                    });
+                }
+
+                let mut our_outputs = Vec::new();
+                for tx_out in &unsigned_tx.output {
+                    our_outputs.push(crate::types::BitcoinOutput {
+                        value: tx_out.value.to_sat(),
+                        script_pubkey: tx_out.script_pubkey.as_bytes().to_vec(),
+                    });
+                }
+
+                let our_btc_tx = crate::types::BitcoinTransaction {
+                    version: unsigned_tx.version.0 as u32,
+                    inputs: our_inputs,
+                    outputs: our_outputs,
+                    lock_time: unsigned_tx.lock_time.to_consensus_u32(),
+                    witness: None,
+                };
+
+                // Trigger signing
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let mut chain_handler_box =
+                        crate::chain_abstraction::ChainHandlerFactory::create_bitcoin_handler(
+                            crate::types::network::network_type()
+                                .bitcoin_network_label()
+                                .to_string(),
+                        );
+
+                    // Set network's DKG group key
+                    if let Some(dkg_node) = &self.dkg_node {
+                        if let Some(group_key) = dkg_node.get_final_public_key().await {
+                            let affine_point = group_key.to_affine();
+                            let encoded_point = k256::EncodedPoint::from(affine_point);
+                            let compressed_bytes = encoded_point.compress().to_bytes().to_vec();
+
+                            if let Some(btc_handler) = chain_handler_box
+                                .as_any_mut()
+                                .downcast_mut::<crate::chain_abstraction::BitcoinChainHandler>()
+                            {
+                                btc_handler.set_group_public_key(compressed_bytes);
+                                info!("🔑 [BTC_CLAIM_PLATFORM_FEE] Set network DKG group public key");
+                            }
+                        }
+                    }
+
+                    let chain_handler: std::sync::Arc<dyn crate::chain_abstraction::ChainHandler> =
+                        std::sync::Arc::from(chain_handler_box);
+
+                    let tx_bytes = chain_handler.create_transaction_bytes(
+                        &crate::chain_abstraction::ChainTransaction::Bitcoin(our_btc_tx.clone()),
+                    )?;
+
+                    let signing_key = if let Some(dkg_node) = &self.dkg_node {
+                        dkg_node.get_final_secret_share().await
+                    } else {
+                        None
+                    };
+
+                    info!("🔐 [BTC_CLAIM_PLATFORM_FEE] Starting Bitcoin claim-platform-fee signing process...");
+
+                    // Encode batch metadata as "request_id|admin"
+                    let claim_identifiers: Vec<String> = used_requests
+                        .iter()
+                        .map(|(req_id, _)| format!("{}|admin", req_id))
+                        .collect();
+
+                    use crate::signing::chains::BitcoinSigner;
+                    let mut btc_signer = BitcoinSigner::new(&mut signing_node);
+                    btc_signer
+                        .sign_transaction(
+                            tx_bytes,
+                            &chain_handler,
+                            Some(our_btc_tx),
+                            None, // No user eth address
+                            claim_identifiers,
+                            Some(crate::types::TransactionType::ClaimPlatformFee),
+                            signing_key,
+                            None, // No solver address
+                            signing_key,
+                            nonce_tuple_id.clone(),
+                        )
+                        .await?;
+
+                    info!("✅ [BTC_CLAIM_PLATFORM_FEE] Bitcoin claim-platform-fee transaction signing initiated");
+                } else {
+                    error!("❌ [BTC_CLAIM_PLATFORM_FEE] Signing node not available");
+                }
+            }
+            GossipsubMessage::TicsClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round: _,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+                use crate::utils::transaction::create_claim_platform_fee_transaction;
+                use ethers::types::U256;
+
+                info!(
+                    "📦 [TICS_CLAIM_PLATFORM_FEE] Received TICS claim-platform-fee batch {} from node {} (timestamp {})",
+                    batch_id, node_id, timestamp
+                );
+
+                // Remove coordinator-assigned nonce from local available pool
+                if let Some(ref nonce_id) = nonce_tuple_id {
+                    if let Some(arc) = &self.signing_node {
+                        let node = arc.lock().await;
+                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                            .await;
+                    }
+                }
+
+                if requests.is_empty() {
+                    info!("ℹ️  [TICS_CLAIM_PLATFORM_FEE] Empty batch received, nothing to do");
+                    return Ok(());
+                }
+
+                // We process one claim at a time (from the settlement function)
+                let entry = &requests[0];
+                let db = &self.db;
+
+                // Load the claim from DB and validate
+                let db_key = format!("pending_claim_platform_fee:{}", entry.request_id);
+                let claim: PendingClaimPlatformFeeRequest = match db.get_string(&db_key) {
+                    Ok(Some(req)) => req,
+                    Ok(None) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Claim {} not found in DB",
+                            entry.request_id
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Failed to load claim {}: {}",
+                            entry.request_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let is_pending_or_batched = |s: &str| s == "Pending" || s == "Batched";
+                if !is_pending_or_batched(&claim.status) {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_PLATFORM_FEE] Claim {} has status {} (expected Pending/Batched); skipping",
+                        entry.request_id, claim.status
+                    );
+                    return Ok(());
+                }
+
+                // Build identifier for tx-id broadcast
+                let used_identifiers: Vec<String> =
+                    vec![format!("{}|admin", entry.request_id)];
+
+                // Look up admin registration to get derived_eth_address + tweaked_secret_share + group_key
+                let user_intent_manager = match &self.user_intent_manager {
+                    Some(uim) => uim.clone(),
+                    None => {
+                        warn!("❌ [TICS_CLAIM_PLATFORM_FEE] UserIntentManager not available");
+                        return Ok(());
+                    }
+                };
+
+                let admin_reg = match user_intent_manager
+                    .get_admin_by_address(&entry.admin_tics_address)
+                    .await
+                {
+                    Some(reg) => reg,
+                    None => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Admin not found for address {}",
+                            entry.admin_tics_address
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let admin_derived_eth = match &admin_reg.derived_eth_address {
+                    Some(addr) => addr.clone(),
+                    None => {
+                        warn!("⚠️ [TICS_CLAIM_PLATFORM_FEE] Admin has no derived_eth_address");
+                        return Ok(());
+                    }
+                };
+
+                let admin_tweaked_share = match &admin_reg.tweaked_secret_share {
+                    Some(s) => Some(s.0),
+                    None => {
+                        warn!("⚠️ [TICS_CLAIM_PLATFORM_FEE] Admin has no tweaked_secret_share");
+                        return Ok(());
+                    }
+                };
+
+                let admin_group_key = match &admin_reg.user_group_key {
+                    Some(k) => k.0.into(), // SerializablePoint → AffinePoint → ProjectivePoint
+                    None => {
+                        warn!("⚠️ [TICS_CLAIM_PLATFORM_FEE] Admin has no user_group_key");
+                        return Ok(());
+                    }
+                };
+
+                // Parse amount
+                let amount = match U256::from_dec_str(&entry.amount) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Invalid amount '{}': {}",
+                            entry.amount, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                // Build contract transaction: claimPlatformFee(amount, chainType, recipient)
+                let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
+                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    .unwrap_or_else(|_| "9029".to_string())
+                    .parse::<u64>()
+                    .unwrap_or(9029);
+                let contract_chain_name = if contract_chain_id == 9029 {
+                    "qubetics"
+                } else {
+                    "tics"
+                };
+
+                let chain_tx = match create_claim_platform_fee_transaction(
+                    &admin_derived_eth,
+                    amount,
+                    entry.chain_type,
+                    &entry.target_address,
+                    &contract_address_str,
+                    contract_chain_id,
+                    contract_chain_name,
+                )
+                .await
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Failed to create claimPlatformFee tx: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let crate::chain_abstraction::ChainTransaction::Tics(eth_tx) = &chain_tx else {
+                    warn!("❌ [TICS_CLAIM_PLATFORM_FEE] Expected TICS transaction");
+                    return Ok(());
+                };
+
+                // Set up signing with admin key
+                let _dkg_node = if let Some(node) = &self.dkg_node {
+                    node
+                } else {
+                    warn!("❌ [TICS_CLAIM_PLATFORM_FEE] DKG node unavailable");
+                    return Ok(());
+                };
+
+                if let Some(arc) = &self.signing_node {
+                    let mut signing_node = arc.lock().await;
+                    let available_nodes: Vec<PeerId> =
+                        self.node_manager.get_active_nodes().into_iter().collect();
+                    signing_node.set_available_nodes(available_nodes);
+                    signing_node.set_chain_handler(
+                        crate::chain_abstraction::ChainHandlerFactory::create_tics_handler(
+                            eth_tx.chain_id,
+                        )
+                        .into(),
+                    );
+
+                    // Use admin's group key (not vault key)
+                    signing_node.set_vault_group_key(admin_group_key);
+
+                    let contract_tx = crate::types::intent::ContractTransaction {
+                        to: eth_tx.to.clone(),
+                        value: eth_tx.value.clone(),
+                        nonce: eth_tx.nonce,
+                        gas_limit: eth_tx.gas_limit,
+                        gas_price: eth_tx.gas_price.clone(),
+                        chain_id: eth_tx.chain_id,
+                        data: eth_tx
+                            .data
+                            .as_ref()
+                            .map(|d| format!("0x{}", hex::encode(d)))
+                            .unwrap_or_else(|| "0x".to_string()),
+                    };
+
+                    let contract_tx_bytes =
+                        crate::utils::transaction::create_transaction_for_signing_contract(
+                            &contract_tx,
+                        );
+                    let contract_chain_handler =
+                        signing_node.get_contract_chain_handler().clone();
+                    let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
+
+                    // Sign with admin's tweaked share (passed as user_tweaked_share + signing_key_override)
+                    // user_tics_address = admin's tics_address (for share pubkey lookup during verification)
+                    if let Err(e) = eth_signer
+                        .sign_contract_message(
+                            contract_tx_bytes,
+                            &contract_chain_handler,
+                            &contract_tx,
+                            admin_tweaked_share,                         // user_tweaked_share: admin's share
+                            Some(entry.admin_tics_address.clone()),       // user_tics_address: for pubkey lookup
+                            vec![],                                      // intent_hashes
+                            admin_tweaked_share,                         // signing_key_override: same admin share
+                            None,                                        // request_id
+                            None,                                        // original_request
+                            None,                                        // tics_withdraw_identifiers
+                            None,                                        // tics_claim_reward_identifiers
+                            Some(used_identifiers.clone()),              // tics_claim_platform_fee_identifiers
+                            nonce_tuple_id.clone(),                      // coordinated nonce
+                        )
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Failed to sign contract message: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                }
+
+                info!(
+                    "✅ [TICS_CLAIM_PLATFORM_FEE] Signing initiated for batch {} (claim {})",
+                    batch_id, entry.request_id
+                );
+            }
+            GossipsubMessage::ClaimPlatformFeeTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                requests,
+                node_id,
+            } => {
+                info!(
+                    "📡 [CLAIM_PLATFORM_FEE_TXID] Received txid broadcast from node {}: txid={}, network={}, batch_id={}, requests={}",
+                    node_id, txid, network, batch_id, requests.len()
+                );
+                if !requests.is_empty() {
+                    if let Err(e) = self
+                        .handle_claim_platform_fee_transaction_id_storage_batch(&txid, &requests)
+                        .await
+                    {
+                        warn!(
+                            "⚠️ [CLAIM_PLATFORM_FEE_TXID] Batch storage failed for txid {} ({} requests): {}",
+                            txid, requests.len(), e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_PLATFORM_FEE_TXID] Empty requests in txid broadcast: txid={}, batch_id={}",
+                        txid, batch_id
+                    );
                 }
             }
         }

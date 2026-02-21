@@ -688,6 +688,104 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
+    /// Platform-fee claim tx-id storage for a single request.
+    /// BTC (no 0x prefix): store tx_id, do NOT mark done.
+    /// TICS (0x prefix): store tx_id AND mark Completed.
+    pub(crate) async fn handle_claim_platform_fee_transaction_id_storage(
+        &mut self,
+        request_id: &str,
+        transaction_id: &str,
+    ) -> Result<()> {
+        use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+
+        let key = format!(
+            "{}{}",
+            crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE,
+            request_id
+        );
+        let db = &self.db;
+
+        let maybe_req: Option<PendingClaimPlatformFeeRequest> = match db
+            .get_string::<PendingClaimPlatformFeeRequest>(&key)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "⚠️ [CLAIM_PLATFORM_FEE_TXID] Failed to load pending claim {} when applying txid {}: {}",
+                    request_id, transaction_id, e
+                );
+                return Ok(());
+            }
+        };
+
+        if let Some(mut req) = maybe_req {
+            let is_tics_tx = transaction_id.starts_with("0x");
+
+            if is_tics_tx {
+                // TICS tx_id (0x-prefixed): claimPlatformFee contract call completed.
+                // Mark as Completed — for BTC claims tx_id already holds the BTC txid,
+                // for TICS claims this is the only tx_id.
+                if req.status == "Completed" {
+                    return Ok(());
+                }
+                if req.asset == "TICS" {
+                    req.tx_id = Some(transaction_id.to_string());
+                }
+                req.status = "Completed".to_string();
+            } else {
+                // BTC tx_id (no 0x prefix): BTC funds transfer completed.
+                // Store tx_id, keep status "Pending" — awaiting TICS contract call in epoch_3.
+                if req.tx_id.is_some() {
+                    return Ok(());
+                }
+                req.tx_id = Some(transaction_id.to_string());
+            }
+
+            if let Err(e) = db.put_string(&key, &req) {
+                warn!(
+                    "⚠️ [CLAIM_PLATFORM_FEE_TXID] Failed to update tx_id for claim {}: {}",
+                    request_id, e
+                );
+            } else {
+                info!(
+                    "💾 [CLAIM_PLATFORM_FEE_TXID] Updated claim {} tx_id={} {}",
+                    request_id,
+                    transaction_id,
+                    if is_tics_tx { "(Completed)" } else { "(Pending — awaiting contract call)" }
+                );
+            }
+        } else {
+            warn!(
+                "⚠️ [CLAIM_PLATFORM_FEE_TXID] Pending claim {} not found when applying txid {}",
+                request_id, transaction_id
+            );
+        }
+        Ok(())
+    }
+
+    /// Platform-fee claim tx-id storage for batch. Calls per-request handler for each entry.
+    pub(crate) async fn handle_claim_platform_fee_transaction_id_storage_batch(
+        &mut self,
+        transaction_id: &str,
+        requests: &[(String, String)],
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        for (request_id, _btc_target) in requests {
+            if let Err(e) = self
+                .handle_claim_platform_fee_transaction_id_storage(request_id, transaction_id)
+                .await
+            {
+                warn!(
+                    "⚠️ [CLAIM_PLATFORM_FEE_TXID] Failed to apply txid {} for claim {}: {}",
+                    transaction_id, request_id, e
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Claim-reward tx-id storage for multiple (request_id, solver_address). Calls the unified handler per request (same as withdraw batch).
     pub(crate) async fn handle_claim_reward_transaction_id_storage_batch(
         &mut self,

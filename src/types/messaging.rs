@@ -58,6 +58,26 @@ pub struct TicsClaimRewardBatchRequest {
     pub tx_id: Option<String>,
 }
 
+/// Per-request metadata for TICS platform-fee claim batches.
+/// - TICS: pending claims with tics_target_address; contract calls claimPlatformFee(amount, 1, recipient).
+/// - BTC: pending claims that already have tx_id; contract calls claimPlatformFee(amount, 0, recipient); marks done.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicsClaimPlatformFeeBatchRequest {
+    pub request_id: String,
+    /// "TICS" or "BTC"
+    pub asset: String,
+    /// Amount as decimal string in smallest units
+    pub amount: String,
+    /// 0 = BTC, 1 = TICS (for claimPlatformFee chainType param)
+    pub chain_type: u8,
+    /// For BTC entries: already-set tx_id to register on contract
+    pub tx_id: Option<String>,
+    /// Recipient address for claimPlatformFee (tics_target_address or btc_target_address from the request)
+    pub target_address: String,
+    /// Admin's original tics_address (used for admin share pubkey lookup during signing verification)
+    pub admin_tics_address: String,
+}
+
 #[derive(Debug)]
 pub enum ChannelMessage {
     Broadcast {
@@ -306,6 +326,36 @@ pub enum ChannelMessage {
     PendingClaimPlatformFeeRequestBroadcast {
         request: crate::types::rpc_server::PendingClaimPlatformFeeRequest,
     },
+    /// BTC claim-platform-fee batch broadcast (same flow as BtcWithdrawBatch).
+    /// Final node broadcasts selected pending BTC platform fee claims for distributed signing.
+    BtcClaimPlatformFeeBatch {
+        batch_id: String,
+        /// (request_id, btc_target_address) pairs
+        requests: Vec<(String, String)>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+        /// Coordinated nonce tuple ID for threshold signing
+        nonce_tuple_id: Option<String>,
+    },
+    /// Claim-platform-fee transaction ID broadcast (same pattern as ClaimRewardTxIdBroadcast).
+    ClaimPlatformFeeTxIdBroadcast {
+        txid: String,
+        network: String,
+        batch_id: String,
+        /// (request_id, btc_target_address) pairs
+        requests: Vec<(String, String)>,
+        node_id: String,
+    },
+    TicsClaimPlatformFeeBatch {
+        batch_id: String,
+        requests: Vec<TicsClaimPlatformFeeBatchRequest>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        nonce_tuple_id: Option<String>,
+    },
     UserRegistration {
         tics_address: String,
         node_id: String,
@@ -550,6 +600,36 @@ pub enum GossipsubMessage {
     /// Sent by the node that received the claim_platform_fee admin RPC.
     PendingClaimPlatformFeeRequestBroadcast {
         request: crate::types::rpc_server::PendingClaimPlatformFeeRequest,
+    },
+    /// BTC claim-platform-fee batch broadcast (same flow as BtcWithdrawBatch).
+    BtcClaimPlatformFeeBatch {
+        batch_id: String,
+        /// (request_id, btc_target_address) pairs
+        requests: Vec<(String, String)>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
+    },
+    /// Claim-platform-fee transaction ID broadcast.
+    ClaimPlatformFeeTxIdBroadcast {
+        txid: String,
+        network: String,
+        batch_id: String,
+        /// (request_id, btc_target_address) pairs
+        requests: Vec<(String, String)>,
+        node_id: String,
+    },
+    TicsClaimPlatformFeeBatch {
+        batch_id: String,
+        requests: Vec<TicsClaimPlatformFeeBatchRequest>,
+        round: u64,
+        timestamp: String,
+        node_id: String,
+        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        #[serde(default)]
+        nonce_tuple_id: Option<String>,
     },
     /// Acknowledgment messages for critical message retry mechanism
     CriticalMessageAck {

@@ -718,6 +718,194 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            ChannelMessage::BtcClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::BtcClaimPlatformFeeBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                    nonce_tuple_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to serialize BtcClaimPlatformFeeBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to process local BtcClaimPlatformFeeBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [BTC_CLAIM_PLATFORM_FEE] Failed to publish BtcClaimPlatformFeeBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [BTC_CLAIM_PLATFORM_FEE] No peers available for broadcasting BtcClaimPlatformFeeBatch"
+                    );
+                }
+            }
+            ChannelMessage::ClaimPlatformFeeTxIdBroadcast {
+                txid,
+                network,
+                batch_id,
+                requests,
+                node_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                info!(
+                    "📡 [CLAIM_PLATFORM_FEE_TXID] Received claim-platform-fee txid broadcast: txid={}, network={}, batch_id={}, requests={}",
+                    txid, network, batch_id, requests.len()
+                );
+
+                let gossip_msg = crate::types::GossipsubMessage::ClaimPlatformFeeTxIdBroadcast {
+                    txid,
+                    network,
+                    batch_id,
+                    requests,
+                    node_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to serialize ClaimPlatformFeeTxIdBroadcast: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to process local ClaimPlatformFeeTxIdBroadcast: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [CLAIM_PLATFORM_FEE_TXID] Failed to publish ClaimPlatformFeeTxIdBroadcast to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [CLAIM_PLATFORM_FEE_TXID] No peers available for broadcasting ClaimPlatformFeeTxIdBroadcast"
+                    );
+                }
+            }
+            ChannelMessage::TicsClaimPlatformFeeBatch {
+                batch_id,
+                requests,
+                round,
+                timestamp,
+                node_id,
+                nonce_tuple_id,
+            } => {
+                use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+
+                let gossip_msg = crate::types::GossipsubMessage::TicsClaimPlatformFeeBatch {
+                    batch_id,
+                    requests,
+                    round,
+                    timestamp,
+                    node_id,
+                    nonce_tuple_id,
+                };
+
+                let data = match serde_json::to_vec(&gossip_msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to serialize TicsClaimPlatformFeeBatch: {}",
+                            e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let topic = TOPIC_PLATFORM_FEE.to_string();
+                let topic_hash = IdentTopic::new(topic.clone());
+                let local_msg = GossipMessage {
+                    source: Some(self.local_peer_id),
+                    data: data.clone(),
+                    sequence_number: None,
+                    topic: topic_hash.hash(),
+                };
+
+                if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                    warn!(
+                        "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to process local TicsClaimPlatformFeeBatch: {}",
+                        e
+                    );
+                }
+
+                let swarm_mut = swarm.behaviour_mut();
+                let peer_count = swarm_mut.gossipsub.all_peers().count();
+
+                if peer_count > 0 {
+                    if let Err(e) = swarm_mut.gossipsub.publish(topic_hash, data) {
+                        warn!(
+                            "❌ [TICS_CLAIM_PLATFORM_FEE] Failed to publish TicsClaimPlatformFeeBatch to topic {}: {:?}",
+                            topic, e
+                        );
+                    }
+                } else {
+                    warn!(
+                        "⚠️ [TICS_CLAIM_PLATFORM_FEE] No peers available for broadcasting TicsClaimPlatformFeeBatch"
+                    );
+                }
+            }
             ChannelMessage::PeerInvalidationBatch {
                 solver_ids,
                 round,
@@ -3145,6 +3333,7 @@ impl MpcNetworkLayer {
                         None,
                         None, // tics_withdraw_identifiers (not applicable)
                         None, // tics_claim_reward_identifiers (not applicable)
+                        None, // tics_claim_platform_fee_identifiers (not applicable)
                         nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                     )
                     .await?;
@@ -3397,6 +3586,7 @@ impl MpcNetworkLayer {
                     None,     // original_request
                     None,     // tics_withdraw_identifiers (not applicable)
                     None,     // tics_claim_reward_identifiers (not applicable)
+                    None,     // tics_claim_platform_fee_identifiers (not applicable)
                     nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
                 )
                 .await?;

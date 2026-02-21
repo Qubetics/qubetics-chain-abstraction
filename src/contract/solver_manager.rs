@@ -22,6 +22,7 @@ abigen!(
         function isSolverActive(string solverId) view returns (bool)
         function isSolverIdValidated(string solverId) view returns (bool)
         function invalidateSolverIds(string[] solverIds)
+        function getPlatformUnclaimedFee(uint256 chainId) view returns (uint256)
     ]"#
 );
 
@@ -256,5 +257,18 @@ impl SolverManagerContract {
             .calldata()
             .ok_or_else(|| anyhow!("Failed to encode calldata"))?;
         Ok(calldata.to_vec())
+    }
+
+    /// Query the unclaimed platform fee for a given chain.
+    /// `chain_id`: 0 for BTC, 9029 for TICS (matches contract constants).
+    pub async fn get_platform_unclaimed_fee(
+        &self,
+        chain_id: ethers::types::U256,
+    ) -> Result<ethers::types::U256> {
+        self.inner
+            .get_platform_unclaimed_fee(chain_id)
+            .call()
+            .await
+            .map_err(|e| anyhow!("getPlatformUnclaimedFee call failed: {}", e))
     }
 }

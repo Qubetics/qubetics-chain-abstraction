@@ -1056,6 +1056,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 "ClaimReward is not valid for deposit intent flow"
             ));
         }
+        crate::types::TransactionType::ClaimPlatformFee => {
+            return Err(anyhow::anyhow!(
+                "ClaimPlatformFee is not valid for deposit intent flow"
+            ));
+        }
         crate::types::TransactionType::PeerInvalidation => {
             return Err(anyhow::anyhow!(
                 "PeerInvalidation is not valid for deposit intent flow"
@@ -1158,6 +1163,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     "ClaimReward is not valid for deposit intent flow"
                 ));
             }
+            crate::types::TransactionType::ClaimPlatformFee => {
+                return Err(anyhow::anyhow!(
+                    "ClaimPlatformFee is not valid for deposit intent flow"
+                ));
+            }
             crate::types::TransactionType::PeerInvalidation => {
                 return Err(anyhow::anyhow!(
                     "PeerInvalidation is not valid for deposit intent flow"
@@ -1230,6 +1240,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::ClaimReward => {
                 return Err(anyhow::anyhow!(
                     "ClaimReward is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::ClaimPlatformFee => {
+                return Err(anyhow::anyhow!(
+                    "ClaimPlatformFee is not valid for deposit intent flow"
                 ));
             }
             crate::types::TransactionType::PeerInvalidation => {
@@ -1305,6 +1320,11 @@ pub async fn create_chain_transaction_from_contract_call(
         crate::types::TransactionType::ClaimReward => {
             return Err(anyhow::anyhow!(
                 "ClaimReward is not valid for deposit intent flow"
+            ));
+        }
+        crate::types::TransactionType::ClaimPlatformFee => {
+            return Err(anyhow::anyhow!(
+                "ClaimPlatformFee is not valid for deposit intent flow"
             ));
         }
         crate::types::TransactionType::PeerInvalidation => {

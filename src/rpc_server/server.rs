@@ -245,6 +245,7 @@ pub async fn start_http_server(
         ))
         .and(limited_json_body::<ClaimPlatformFeeRequest>())
         .and(with_message_tx(message_tx.clone()))
+        .and(with_database(database.clone()))
         .and(with_auth())
         .and_then(handle_claim_platform_fee);
 

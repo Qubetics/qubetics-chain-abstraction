@@ -138,6 +138,26 @@ pub struct PendingStore {
         >,
     >,
     pub claim_reward_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// BTC claim-platform-fee batch: same shape as claim_reward_pending_transactions_btc.
+    pub claim_platform_fee_pending_transactions_btc: Arc<RwLock<HashMap<u64, PendingValue>>>,
+    pub claim_platform_fee_rounds: Arc<RwLock<HashSet<u64>>>,
+    /// TICS claim-platform-fee batch: same shape as claim_reward_pending_transactions_tics.
+    /// Signed with admin's tweaked share; tx-id broadcast marks requests Completed.
+    pub claim_platform_fee_pending_transactions_tics: Arc<
+        RwLock<
+            HashMap<
+                u64,
+                (
+                    ChainTransaction,
+                    Vec<u8>,
+                    Option<Vec<String>>,     // identifiers: "request_id|admin"
+                    Option<TransactionType>, // ClaimPlatformFee
+                    Option<String>,          // unused (request_id for retry)
+                    Option<()>,              // deprecated original_request
+                ),
+            >,
+        >,
+    >,
     /// Per-round list of intent hashes (single intent = len 1, batch = len >1, solver-only = empty)
     pub intent_hashes_by_round: Arc<RwLock<HashMap<u64, Vec<String>>>>,
     /// TICS UserToVault batch: round -> [(intent_hash, user_eth, chain_tx, tx_bytes)]. Same round, multiple txs.
@@ -196,6 +216,9 @@ impl PendingStore {
             claim_reward_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
             claim_reward_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             claim_reward_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_platform_fee_pending_transactions_btc: Arc::new(RwLock::new(HashMap::new())),
+            claim_platform_fee_rounds: Arc::new(RwLock::new(HashSet::new())),
+            claim_platform_fee_pending_transactions_tics: Arc::new(RwLock::new(HashMap::new())),
             intent_hashes_by_round: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_tics_batch: Arc::new(RwLock::new(HashMap::new())),
             user_to_vault_btc_batch: Arc::new(RwLock::new(HashMap::new())),

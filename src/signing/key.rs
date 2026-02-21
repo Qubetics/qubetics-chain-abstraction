@@ -182,6 +182,7 @@ impl KeyStore {
             | Some(TransactionType::IntentStatusUpdate)
             | Some(TransactionType::WithdrawLiquidity)
             | Some(TransactionType::ClaimReward)
+            | Some(TransactionType::ClaimPlatformFee)
             | Some(TransactionType::PeerInvalidation) => {
                 // All these transaction types use network group key
                 let type_name = match transaction_type {
@@ -189,6 +190,7 @@ impl KeyStore {
                     Some(TransactionType::IntentStatusUpdate) => "IntentStatusUpdate",
                     Some(TransactionType::WithdrawLiquidity) => "WithdrawLiquidity",
                     Some(TransactionType::ClaimReward) => "ClaimReward (BTC)",
+                    Some(TransactionType::ClaimPlatformFee) => "ClaimPlatformFee (BTC)",
                     Some(TransactionType::PeerInvalidation) => "PeerInvalidation",
                     _ => unreachable!(),
                 };

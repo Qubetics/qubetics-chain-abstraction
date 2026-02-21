@@ -453,6 +453,9 @@ pub struct PendingClaimPlatformFeeRequest {
     pub btc_target_address: Option<String>,
     /// Original signed message payload from the HTTP request.
     pub message: String,
+    /// Optional on-chain transaction ID once the BTC transfer is broadcast (or TICS contract call).
+    #[serde(default)]
+    pub tx_id: Option<String>,
     /// Logical status: "Pending", "Batched", "Completed", "Failed", etc.
     pub status: String,
 }

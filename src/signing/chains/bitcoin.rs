@@ -807,6 +807,21 @@ impl SigningNode {
                     "💾 [BTC-SIGNING] Node {} stored BTC claim-reward transaction for round {} with {} requests (inputs={})",
                     self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
                 );
+            } else if let Some(TransactionType::ClaimPlatformFee) = transaction_type {
+                // BTC claim-platform-fee batch: encoded as "request_id|admin".
+                self.store_claim_platform_fee_transaction_btc(
+                    current_round,
+                    ChainTransaction::Bitcoin(original_tx.clone()),
+                    tx_bytes.clone(),
+                    intent_hashes.clone(),
+                    extras,
+                )
+                .await;
+
+                info!(
+                    "💾 [BTC-SIGNING] Node {} stored BTC claim-platform-fee transaction for round {} with {} requests (inputs={})",
+                    self.id, current_round, intent_hashes.len(), original_tx.inputs.len()
+                );
             } else {
                 // This is an intent-based transaction - store in regular pending transactions
                 let mut pending = self.pending.pending_transactions_btc.write().await;

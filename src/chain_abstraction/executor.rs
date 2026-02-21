@@ -123,6 +123,7 @@ impl MpcChainExecutor {
                                 None,
                                 None, // tics_withdraw_identifiers (not applicable)
                                 None, // tics_claim_reward_identifiers (not applicable)
+                                None, // tics_claim_platform_fee_identifiers (not applicable)
                                 nonce_tuple_id.clone(), // Coordinated nonce (required for signing)
                             )
                             .await?;

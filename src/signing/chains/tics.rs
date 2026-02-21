@@ -81,6 +81,7 @@ impl<'a> TicsSigner<'a> {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        tics_claim_platform_fee_identifiers: Option<Vec<String>>,
         nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         self.node
@@ -96,6 +97,7 @@ impl<'a> TicsSigner<'a> {
                 original_request,
                 tics_withdraw_identifiers,
                 tics_claim_reward_identifiers,
+                tics_claim_platform_fee_identifiers,
                 nonce_tuple_id,
             )
             .await
@@ -644,6 +646,7 @@ impl SigningNode {
         original_request: Option<()>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        tics_claim_platform_fee_identifiers: Option<Vec<String>>,
         nonce_tuple_id: Option<String>,
     ) -> Result<()> {
         let has_dkg = self.has_dkg_share().await;
@@ -825,6 +828,7 @@ impl SigningNode {
             self.store_contract_tx_and_broadcast(
                 round, chain_transaction, tx_bytes, intent_hashes,
                 tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                tics_claim_platform_fee_identifiers,
                 request_id, original_request,
             ).await
         } else {
@@ -849,6 +853,7 @@ impl SigningNode {
             self.store_contract_tx_and_broadcast(
                 round, chain_transaction, tx_bytes, intent_hashes,
                 tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                tics_claim_platform_fee_identifiers,
                 request_id, original_request,
             ).await
         }
@@ -864,6 +869,7 @@ impl SigningNode {
         intent_hashes: Vec<String>,
         tics_withdraw_identifiers: Option<Vec<String>>,
         tics_claim_reward_identifiers: Option<Vec<String>>,
+        tics_claim_platform_fee_identifiers: Option<Vec<String>>,
         request_id: Option<String>,
         original_request: Option<()>,
     ) -> Result<()> {
@@ -919,6 +925,36 @@ impl SigningNode {
                 }
                 info!(
                     "💾 [SIGNING] Node {} stored TICS claim-reward batch contract transaction for round {} ({} request(s))",
+                    self.id, round, identifiers.len()
+                );
+                info!(
+                    "📤 [SIGNING] Node {} broadcasted TICS contract signature",
+                    self.id
+                );
+                return Ok(());
+            }
+        }
+
+        // TICS claim-platform-fee batch: store in claim_platform_fee_pending_transactions_tics with identifiers for tx-id broadcast
+        if let Some(ref identifiers) = tics_claim_platform_fee_identifiers {
+            if !identifiers.is_empty() {
+                self.store_claim_platform_fee_transaction_tics_batch(
+                    round,
+                    chain_transaction.clone(),
+                    tx_bytes.clone(),
+                    identifiers.clone(),
+                )
+                .await;
+                {
+                    let mut claim_pf_rounds = self.pending.claim_platform_fee_rounds.write().await;
+                    claim_pf_rounds.insert(round);
+                    info!(
+                        "💰 [SIGNING] Node {} added round {} to claim_platform_fee_rounds (TICS batch, {} request(s))",
+                        self.id, round, identifiers.len()
+                    );
+                }
+                info!(
+                    "💾 [SIGNING] Node {} stored TICS claim-platform-fee batch contract transaction for round {} ({} request(s))",
                     self.id, round, identifiers.len()
                 );
                 info!(
@@ -1023,6 +1059,11 @@ impl SigningNode {
             claim_reward_rounds.contains(&round)
         };
 
+        let is_claim_platform_fee_round = {
+            let r = self.pending.claim_platform_fee_rounds.read().await;
+            r.contains(&round)
+        };
+
         let user_tics_address = {
             let signatures_by_round = self.signatures.signatures_by_round.read().await;
             if let Some(round_signatures) = signatures_by_round.get(&round) {
@@ -1054,6 +1095,11 @@ impl SigningNode {
                     })
                 } else if is_claim_reward_round {
                     let store = self.pending.claim_reward_pending_transactions_tics.read().await;
+                    store.get(&round).map(|(chain_tx, _tx_bytes, _identifiers, transaction_type, _request_id, _original_request)| {
+                        (Some(chain_tx.clone()), transaction_type.clone())
+                    })
+                } else if is_claim_platform_fee_round {
+                    let store = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
                     store.get(&round).map(|(chain_tx, _tx_bytes, _identifiers, transaction_type, _request_id, _original_request)| {
                         (Some(chain_tx.clone()), transaction_type.clone())
                     })
@@ -1175,6 +1221,16 @@ impl SigningNode {
                             &group_address,
                             chain_id,
                             "ClaimReward (TICS) transaction",
+                        )
+                        .await?
+                    }
+                    Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                        let group_key = self.get_vault_group_public_key().await?;
+                        let group_address = get_eth_address_from_group_key(group_key);
+                        Self::fetch_nonce_and_log(
+                            &group_address,
+                            chain_id,
+                            "ClaimPlatformFee (TICS) transaction",
                         )
                         .await?
                     }
