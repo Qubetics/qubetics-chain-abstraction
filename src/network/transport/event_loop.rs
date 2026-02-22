@@ -482,7 +482,7 @@ impl MpcNetworkLayer {
             }
             signing_node.replicate_vrf_round_to_consensus(round);
 
-            if let Some(vrf_service) = signing_node.vrf_service() {
+            let selection_ok = if let Some(vrf_service) = signing_node.vrf_service() {
                 debug!(
                     "[CLOCK] Performing selection for round {} with {} nodes",
                     round,
@@ -506,11 +506,41 @@ impl MpcNetworkLayer {
                             selection_result.selected_nodes.len(),
                             selection_result.total_nodes,
                         );
-                        return Ok(());
+                        true
                     }
                     Err(e) => {
                         error!("❌ [CLOCK] Selection failed for round {}: {}", round, e);
                         return Err(e);
+                    }
+                }
+            } else {
+                false
+            };
+
+            // Immediately trigger consensus without waiting for other nodes' VRF
+            // selection broadcasts. HRW is deterministic — all nodes with the same
+            // DKG candidate list compute the same final node independently, so
+            // voting is unnecessary for clock operations.
+            if selection_ok {
+                info!(
+                    "⏰ [CLOCK] Triggering consensus directly for round {} (no vote wait)",
+                    round
+                );
+                match signing_node.start_consensus_for_round(round).await {
+                    Ok(Some(result)) => {
+                        info!(
+                            "✅ [CLOCK] Consensus completed for round {}: final node = {}",
+                            round, result.final_node.0
+                        );
+                    }
+                    Ok(None) => {
+                        debug!("[CLOCK] Consensus returned None for round {}", round);
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ [CLOCK] Direct consensus failed for round {}: {}",
+                            round, e
+                        );
                     }
                 }
             }
