@@ -1201,9 +1201,7 @@ impl MpcNetworkLayer {
                 // - *->TICS: Treasury Vault contract balance (TICS payouts come from vault).
                 // - *->BTC: DKG BTC address balance.
                 let network_address = if dst_is_tics {
-                    std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS").unwrap_or_else(|_| {
-                        "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string()
-                    })
+                    crate::env_defaults::treasury_vault_contract_address()
                 } else if let Some(dkg_node) = &self.dkg_node {
                     match dkg_node.get_final_public_key().await {
                         Some(final_public) => {
@@ -1335,7 +1333,7 @@ impl MpcNetworkLayer {
                 // Re-verify signature using VERIFICATION_ADDRESS before accepting into local queue.
                 use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
                 let verification_address =
-                    std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string());
+                    crate::env_defaults::verification_address();
                 if verification_address.is_empty() {
                     warn!(
                         "⚠️ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured; dropping request"
@@ -2257,9 +2255,7 @@ impl MpcNetworkLayer {
 
                             // Contract address for IntentManager (processBatchIntents)
                             let contract_address_env =
-                                std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(
-                                    |_| "0x0055Ca34A66D962d68A07a3e1BA6d75b9e4cD383".to_string(),
-                                );
+                                crate::env_defaults::intent_manager_contract_address();
                             if contract_address_env == "0x0000000000000000000000000000000000000000"
                             {
                                 warn!("❌ [TICS_BATCH] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
@@ -3617,15 +3613,11 @@ impl MpcNetworkLayer {
                         Err(_) => continue,
                     };
 
-                    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-                        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-                    let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                        .unwrap_or_else(|_| {
-                            "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string()
-                        });
-                    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+                    let contract_address_env = crate::env_defaults::solver_contract_address();
+                    let chain_id = crate::env_defaults::solver_contract_chain_id()
+                        .parse::<u64>()
                         .ok()
-                        .and_then(|v| v.parse().ok())
                         .unwrap_or(9029);
                     if contract_address_env == "0x0000000000000000000000000000000000000000" {
                         warn!("⚠️ [BTC_CLAIM_REWARD] Solver contract not configured; skipping unclaimed fetch");
@@ -4108,8 +4100,7 @@ impl MpcNetworkLayer {
                 let liquidity_operator_address =
                     crate::utils::get_eth_address_from_group_key(group_public_key);
 
-                let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+                let contract_address = crate::env_defaults::solver_contract_address();
                 if contract_address == "0x0000000000000000000000000000000000000000" {
                     warn!(
                         "⏭️ [TICS_WITHDRAW] Skipping TICS withdraw batch {} - solver contract address not configured",
@@ -4118,8 +4109,7 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-                    .unwrap_or_else(|_| "9029".to_string())
+                let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
                     .unwrap_or(9029);
                 let contract_chain_name = if contract_chain_id == 9029 {
@@ -4360,13 +4350,11 @@ impl MpcNetworkLayer {
                 }
 
                 // Fetch unclaimed TICS per solver via contract
-                let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-                    .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-                let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
-                let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
+                let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+                let contract_address_env = crate::env_defaults::solver_contract_address();
+                let chain_id = crate::env_defaults::solver_contract_chain_id()
+                    .parse::<u64>()
                     .ok()
-                    .and_then(|v| v.parse().ok())
                     .unwrap_or(9029);
                 if contract_address_env == "0x0000000000000000000000000000000000000000" {
                     warn!("⚠️ [TICS_CLAIM_REWARD] Solver contract not configured; skipping");
@@ -4463,10 +4451,8 @@ impl MpcNetworkLayer {
                 let liquidity_operator_address =
                     crate::utils::get_eth_address_from_group_key(group_public_key);
 
-                let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
-                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-                    .unwrap_or_else(|_| "9029".to_string())
+                let contract_address_str = crate::env_defaults::solver_contract_address();
+                let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
                     .unwrap_or(9029);
                 let contract_chain_name = if contract_chain_id == 9029 {
@@ -5458,8 +5444,7 @@ impl MpcNetworkLayer {
                 {
                     let requested_u128 = claimed_amount;
                     let (network_address, blockchain, liquidity_source) = if request.asset == "TICS" {
-                        let vault = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                            .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
+                        let vault = crate::env_defaults::treasury_vault_contract_address();
                         (vault, "eth", "treasury vault")
                     } else {
                         // BTC: derive address from DKG group key
@@ -6312,10 +6297,8 @@ impl MpcNetworkLayer {
                 };
 
                 // Build contract transaction: claimPlatformFee(amount, chainType, recipient)
-                let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
-                    .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
-                let contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-                    .unwrap_or_else(|_| "9029".to_string())
+                let contract_address_str = crate::env_defaults::solver_contract_address();
+                let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
                     .unwrap_or(9029);
                 let contract_chain_name = if contract_chain_id == 9029 {

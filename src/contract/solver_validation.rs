@@ -9,19 +9,16 @@ use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
 
 /// Get contract configuration from environment variables
 pub fn get_solver_contract_config() -> Result<Option<ContractConfig>> {
-    let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
+    let contract_address_env = crate::env_defaults::solver_contract_address();
 
     // Check if contract is configured
     if contract_address_env == "0x0000000000000000000000000000000000000000" {
         return Ok(None);
     }
 
-    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
 
-    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "9029".to_string())
+    let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
         .unwrap_or(9029);
 

@@ -866,7 +866,7 @@ impl SigningNode {
     ) -> Result<Option<String>> {
         let url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
             if is_testnet {
-                "https://stage-crypto-api.qubetics.work/api/v1/tx/broadcast".to_string()
+                crate::env_defaults::mpc_bitcoin_rpc_url()
             } else {
                 "https://mempool.space/api/tx".to_string()
             }

@@ -90,7 +90,7 @@ const SOLVERS = PEER_IDS.map((peerId, i) => generateSolverConfig(peerId, i));
 // CONTRACT SETUP
 // ============================================================
 const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL || process.env.RPC_URL;
-const CONTRACT_ADDRESS = process.env.SOLVER_CONTRACT_ADDRESS || process.env.SOLVER_MANAGER_ADDRESS;
+const CONTRACT_ADDRESS = "0x7A4710e8ae2e25416256720f75064Ec7A7B62C68";
 const VALIDATOR_PK = process.env.VALIDATOR_PK;
 const FUNDING_PK = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
 const FUND_AMOUNT = "10";

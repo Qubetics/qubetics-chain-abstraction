@@ -10,6 +10,7 @@ use mpc_node::{
     commands::CommandProcessor,
     consensus::{ConsensusNode, DatabaseConsensusNode},
     database::{Database, DatabaseConfig, DatabaseModule, DkgStorage},
+    env_defaults,
     network::transport::types::MpcNetworkLayer,
     protocols::DKGNode,
     rpc_server,
@@ -25,8 +26,6 @@ use tracing::level_filters::LevelFilter;
 use tracing::{info, warn};
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-const CHAIN_CODE_ENV: &str = "CHAIN_CODE_HEX";
 
 #[derive(Parser, Debug)]
 #[command(name = "mpc-node")]
@@ -60,14 +59,7 @@ impl ConfigBuilder {
     }
 
     fn with_env(mut self) -> Result<Self> {
-        self.rpc_port = Some(
-            std::env::var("RPC_PORT")
-                .ok()
-                .map(|port| port.parse::<u16>())
-                .transpose()
-                .context("RPC_PORT")?
-                .unwrap_or(8082),
-        );
+        self.rpc_port = Some(env_defaults::rpc_port());
 
         self.db_config =
             Some(DatabaseConfig::from_env().or_else(|_| DatabaseConfig::default().validate())?);
@@ -85,7 +77,7 @@ impl ConfigBuilder {
         }
 
         Ok(Config {
-            rpc_port: self.rpc_port.unwrap_or(8082),
+            rpc_port: self.rpc_port.unwrap_or(env_defaults::DEFAULT_RPC_PORT),
             db_config: self.db_config.unwrap_or_else(|| {
                 DatabaseConfig::default()
                     .validate()
@@ -97,11 +89,10 @@ impl ConfigBuilder {
 }
 
 fn load_chain_code() -> Result<[u8; 32]> {
-    let raw = std::env::var(CHAIN_CODE_ENV)
-        .unwrap_or_else(|_| "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194abe4".to_string());
+    let raw = env_defaults::chain_code_hex();
     let sanitized = raw.trim().trim_start_matches("0x");
     let chain_code = <[u8; 32]>::from_hex(sanitized)
-        .map_err(|e| anyhow!("invalid {} value: {}", CHAIN_CODE_ENV, e))?;
+        .map_err(|e| anyhow!("invalid CHAIN_CODE_HEX value: {}", e))?;
     Ok(chain_code)
 }
 

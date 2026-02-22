@@ -124,9 +124,7 @@ impl BroadcastConfig {
         }
 
         if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
-            btc_config.rpc_url = std::env::var("MPC_BITCOIN_RPC_URL").unwrap_or_else(|_| {
-                "https://stage-crypto-api.qubetics.work/api/v1/tx/broadcast".to_string()
-            });
+            btc_config.rpc_url = crate::env_defaults::mpc_bitcoin_rpc_url();
         }
 
         config
