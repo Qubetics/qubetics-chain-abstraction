@@ -5791,13 +5791,10 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let admin_tweaked_share = match &admin_reg.tweaked_secret_share {
-                    Some(s) => Some(s.0),
-                    None => {
-                        warn!("⚠️ [TICS_CLAIM_PLATFORM_FEE] Admin has no tweaked_secret_share");
-                        return Ok(());
-                    }
-                };
+                let admin_tweaked_share = admin_reg.tweaked_secret_share.as_ref().map(|s| s.0);
+                if admin_tweaked_share.is_none() {
+                    info!("ℹ️ [TICS_CLAIM_PLATFORM_FEE] Admin has no tweaked_secret_share (observer/syncing node) — will store pending tx but skip signing");
+                }
 
                 let admin_group_key = match &admin_reg.user_group_key {
                     Some(k) => k.0.into(), // SerializablePoint → AffinePoint → ProjectivePoint
