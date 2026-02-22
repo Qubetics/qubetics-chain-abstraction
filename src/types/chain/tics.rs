@@ -1,4 +1,4 @@
-/// Minimal RLP encoder used for constructing Ethereum transaction payloads.
+/// Minimal RLP encoder used for constructing TICS transaction payloads.
 pub struct RlpEncoder {
     pub data: Vec<u8>,
 }

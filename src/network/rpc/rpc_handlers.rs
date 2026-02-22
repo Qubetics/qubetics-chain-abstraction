@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::database::keys;
 use crate::types::p2p::SerializablePeerId;
-use crate::types::UserRegistration;
+use crate::types::{AdminRegistration, UserRegistration};
 use crate::types::signing::SigningMessage;
 use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
@@ -826,7 +826,7 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_eth_address, batch_identifiers) =
+        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_tics_address, batch_identifiers) =
             match signing_message {
                 SigningMessage::TransactionDataForFinalNode {
                     from,
@@ -836,7 +836,7 @@ impl MpcNetworkLayer {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 } => (
                     from,
@@ -846,7 +846,7 @@ impl MpcNetworkLayer {
                     request_id,
                     round,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 ),
                 _ => {
@@ -875,7 +875,7 @@ impl MpcNetworkLayer {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 )
                 .await
@@ -1005,6 +1005,7 @@ impl MpcNetworkLayer {
     fn state_sync_prefixes() -> &'static [&'static str] {
         &[
             keys::USER_REGISTRATION,
+            keys::ADMIN_REGISTRATION,
             keys::INTENT_REGISTRY,
             keys::INTENT_TRANSACTION_IDS,
             keys::USER_INTENT_HASH,
@@ -1024,6 +1025,12 @@ impl MpcNetworkLayer {
             keys::PENDING_CLAIM_REWARD,
             keys::PEER_ADDR,
             keys::PUBLIC_KEY,
+            // DKG commitments + per-node share pubkeys: observer/joining nodes need these
+            // to verify partial signatures and aggregate transactions as final node.
+            keys::DKG_ORIGINAL_COMMITMENT,
+            keys::NODE_SHARE_PUBKEY_NETWORK,
+            keys::NODE_SHARE_PUBKEY_VAULT,
+            keys::NODE_SHARE_PUBKEY_USER,
         ]
     }
 
@@ -1125,6 +1132,48 @@ impl MpcNetworkLayer {
                 Err(e) => {
                     error!("❌ [STATE_SYNC] Failed to export user batch: {}", e);
                     RPCResponse::Error(format!("Failed to export user batch: {e}"))
+                }
+            }
+        } else if prefix == keys::ADMIN_REGISTRATION {
+            // Export admin batch with tweaked_secret_share stripped (no private data).
+            match self
+                .db
+                .export_batch_with_prefix_async(keys::ADMIN_REGISTRATION, start, batch_size)
+                .await
+            {
+                Ok((entries, is_last_batch)) => {
+                    let mut out = Vec::with_capacity(entries.len());
+                    for (key, value) in entries {
+                        match bincode::deserialize::<AdminRegistration>(&value) {
+                            Ok(mut admin) => {
+                                admin.tweaked_secret_share = None;
+                                match bincode::serialize(&admin) {
+                                    Ok(value_clean) => {
+                                        out.push(crate::types::rpc::DatabaseEntry {
+                                            key,
+                                            value: value_clean,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        error!("❌ [STATE_SYNC] Failed to serialize admin: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ [STATE_SYNC] Failed to deserialize admin: {}", e);
+                            }
+                        }
+                    }
+                    RPCResponse::StateSyncBatch {
+                        prefix,
+                        batch_index,
+                        entries: out,
+                        is_last_batch,
+                    }
+                }
+                Err(e) => {
+                    error!("❌ [STATE_SYNC] Failed to export admin batch: {}", e);
+                    RPCResponse::Error(format!("Failed to export admin batch: {e}"))
                 }
             }
         } else if Self::state_sync_prefixes().iter().any(|p| *p == prefix.as_str()) {
@@ -1491,12 +1540,27 @@ impl MpcNetworkLayer {
         // 1️⃣ First, merge all peers (no threshold updates yet)
         let mut new_peers_added = false;
         for (i, SerializablePeerId(p)) in peers.into_iter().enumerate() {
-            // Add peer to node_manager if not already present
+            // Only add to node_manager if the peer is actually connected or is self.
+            // Unconnected peers will be added by handle_new_peer_connection when the dial succeeds.
+            // Without this check, PeerList re-adds disconnected peers, inflating total_nodes
+            // and causing the VRF selector to pick offline nodes for signing rounds.
             if !self.node_manager.get_active_nodes().contains(&p) {
-                self.node_manager
-                    .add_node(p)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                new_peers_added = true; // Mark if any new peer was added
+                if p == *self.get_local_peer_id() || self.connected_peers_cache.contains(&p) {
+                    self.node_manager
+                        .add_node(p)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    // Track connected peer for HRW candidate filtering
+                    if let Some(arc) = &self.signing_node {
+                        let mut signing_node = arc.lock().await;
+                        signing_node.add_connected_peer(p);
+                    }
+                    new_peers_added = true;
+                } else {
+                    info!(
+                        "⏭️ [PEER_LIST] Skipping add for {} — not connected",
+                        p
+                    );
+                }
             }
 
             // 🔧 FIX: Update peer_indices mapping for ALL peers in the peer list
@@ -1642,8 +1706,31 @@ impl MpcNetworkLayer {
         let (should_sync, sync_peer_opt, _new_node_index_opt, needs_retry) = if let Some(dkg_node) =
             &mut self.dkg_node
         {
-            dkg_node.update_node_params(total, threshold)?;
             let has_dkg_data = dkg_node.get_final_secret_share().await.is_some();
+
+            // If initial DKG is already complete, use the stored DKG signer count
+            // for params instead of node_manager values (which include observers).
+            // This prevents inflating total_nodes/threshold when observers are connected.
+            if has_dkg_data || dkg_node.is_initial_dkg_complete().await {
+                if let Some(dkg_count) = dkg_node.get_dkg_signer_count() {
+                    let dkg_threshold = dkg_count / 2 + 1;
+                    info!(
+                        "🔄 [RECONNECT] Using DKG signer count for params: total_nodes={}, threshold={} (node_manager has total={}, threshold={})",
+                        dkg_count, dkg_threshold, total, threshold
+                    );
+                    dkg_node.update_node_params(dkg_count, dkg_threshold)?;
+                } else {
+                    // Fallback: DKG data exists but signer count not stored yet
+                    info!(
+                        "⚠️ [RECONNECT] DKG data exists but signer count not found, using node_manager values: total={}, threshold={}",
+                        total, threshold
+                    );
+                    dkg_node.update_node_params(total, threshold)?;
+                }
+            } else {
+                // Initial DKG not yet complete - safe to use node_manager values
+                dkg_node.update_node_params(total, threshold)?;
+            }
 
             if has_dkg_data {
                 // Main DKG node restarting - preserve DKG shares and restore completed state

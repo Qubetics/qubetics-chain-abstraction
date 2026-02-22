@@ -27,5 +27,6 @@ pub fn get_bootstrap_nodes() -> Vec<Multiaddr> {
             }
         })
         .collect()
-}
+
+    }
 

@@ -95,8 +95,8 @@ async function registerUser(ethereumAddress, wallet, nodeUrl, nodeLabel) {
 
     const response = await axios.post(
       `${nodeUrl}/register_user`,
-      { 
-        ethereum_address: ethereumAddress,
+      {
+        tics_address: ethereumAddress,
         signature: signature,
         message: message
       },

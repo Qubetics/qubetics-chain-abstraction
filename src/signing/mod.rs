@@ -26,7 +26,7 @@ pub mod nonce;
 mod rewards;
 pub mod state;
 mod transactions;
-pub use chains::{BitcoinSigner, EthereumSigner};
+pub use chains::{BitcoinSigner, TicsSigner};
 pub use config::{BroadcastConfig, ChainBroadcastConfig};
 pub use coordination::Coordination;
 pub use db_signing::DatabaseSigningNode;
@@ -90,11 +90,51 @@ pub struct SigningNode {
     last_btc_user_to_vault_batch_hashes: Arc<RwLock<VecDeque<HashSet<String>>>>,
     /// Nonce manager for random k generation (optional until fully integrated)
     nonce_manager: Option<Arc<tokio::sync::Mutex<nonce::NonceManager>>>,
+    /// Currently connected peers (updated on connect/disconnect).
+    /// Used by HRW to filter candidates to only connected peers.
+    connected_peers: HashSet<PeerId>,
 }
 
 impl SigningNode {
     pub fn set_threshold(&mut self, new_threshold: usize) {
         self.threshold = new_threshold;
+    }
+
+    /// Mark a peer as connected (for HRW candidate filtering).
+    pub fn add_connected_peer(&mut self, peer: PeerId) {
+        self.connected_peers.insert(peer);
+    }
+
+    /// Mark a peer as disconnected (for HRW candidate filtering).
+    pub fn remove_connected_peer(&mut self, peer: &PeerId) {
+        self.connected_peers.remove(peer);
+    }
+
+    /// Get the set of currently connected peers.
+    pub fn get_connected_peers(&self) -> &HashSet<PeerId> {
+        &self.connected_peers
+    }
+
+    /// Sweep in-memory signature/pending data older than the latest 1000 rounds.
+    /// Should be called periodically (e.g. every 10 clock ticks) to bound memory growth.
+    pub async fn sweep_old_rounds(&self) {
+        // Determine cutoff from signatures_by_round (the primary round tracker)
+        let cutoff = {
+            let map = self.signatures.signatures_by_round.read().await;
+            if map.len() <= 1000 {
+                return; // nothing to sweep
+            }
+            let mut rounds: Vec<u64> = map.keys().copied().collect();
+            rounds.sort_unstable();
+            rounds[rounds.len() - 1000]
+        };
+
+        debug!("[SIGNING] Sweeping rounds older than {} (keeping latest 1000)", cutoff);
+
+        self.signatures.sweep_old_rounds().await;
+        self.pending.sweep_old_rounds(cutoff).await;
+        self.btc_state.sweep_old_rounds(cutoff).await;
+        self.btc_utv_state.sweep_old_rounds(cutoff).await;
     }
 
     /// Return (withdraw_rounds, claim_reward_rounds) for state sync (no private data).
@@ -197,6 +237,11 @@ impl SigningNode {
             last_tics_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
             last_btc_user_to_vault_batch_hashes: Arc::new(RwLock::new(VecDeque::new())),
             nonce_manager: None,       // Set via set_nonce_manager after database is available
+            connected_peers: {
+                let mut s = HashSet::new();
+                s.insert(peer_id); // Include self in connected peers
+                s
+            },
         }
     }
 
@@ -421,13 +466,13 @@ impl SigningNode {
     async fn get_group_public_key_bytes(
         &self,
         transaction_type: Option<crate::types::TransactionType>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
     ) -> Result<Vec<u8>> {
         use crate::types::TransactionType;
 
         match transaction_type {
             Some(TransactionType::UserToVault) => {
-                if let Some(user_addr) = &user_eth_address {
+                if let Some(user_addr) = &user_tics_address {
                     if let Some(user_intent_manager) = &self.user_intent_manager {
                         if let Some(user) = user_intent_manager.get_user_by_address(user_addr).await
                         {
@@ -444,13 +489,14 @@ impl SigningNode {
                         user_addr
                     ))
                 } else {
-                    Err(anyhow!("UserToVault transaction requires user_eth_address"))
+                    Err(anyhow!("UserToVault transaction requires user_tics_address"))
                 }
             }
             Some(TransactionType::NetworkToTarget) 
             | Some(TransactionType::IntentStatusUpdate)
             | Some(TransactionType::WithdrawLiquidity)
             | Some(TransactionType::ClaimReward)
+            | Some(TransactionType::ClaimPlatformFee)
             | Some(TransactionType::PeerInvalidation) => {
                 // All these transaction types use network group key
                 self.get_network_group_key_from_store_or_db()
@@ -848,7 +894,7 @@ impl SigningNode {
                 signature,
                 round,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
                 slot_id,
             } => {
                 // Final node picks signatures from broadcast (gossipsub) for aggregation
@@ -860,7 +906,7 @@ impl SigningNode {
                 signatures,
                 round,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
             } => {
                 // Final node picks BTC signatures from broadcast (gossipsub) for N2T aggregation
                 self.handle_btc_signatures_to_final_node(from, signatures, round)
@@ -872,7 +918,7 @@ impl SigningNode {
                 round,
                 slot_id,
                 timestamp: _timestamp,
-                user_eth_address: _user_eth_address,
+                user_tics_address: _user_tics_address,
             } => {
                 // BTC UserToVault batch: multi-input per-slot aggregation (NOT routed to TICS path)
                 info!(
@@ -927,7 +973,7 @@ impl SigningNode {
                 transaction_type,
                 request_id,
                 chain_tx_json,
-                user_eth_address,
+                user_tics_address,
                 batch_identifiers,
             } => {
                 info!(
@@ -942,7 +988,7 @@ impl SigningNode {
                     transaction_type,
                     request_id,
                     chain_tx_json,
-                    user_eth_address,
+                    user_tics_address,
                     batch_identifiers,
                 )
                 .await?;
@@ -1862,14 +1908,20 @@ impl SigningNode {
             None
         };
 
+        // Get available nodes from node_manager BEFORE borrowing consensus_node mutably.
+        // node_manager is synced across all nodes via PeerDiscovered gossip,
+        // NodeDisconnected broadcast, and ActivePeerList reconciliation.
+        let active_nodes: std::collections::HashSet<PeerId> = self.coordination.get_available_nodes().await.into_iter().collect();
+
         let consensus_node = self
             .coordination
             .consensus_node_mut()
             .ok_or_else(|| anyhow::anyhow!("Consensus node not available"))?;
 
         // HRW path: canonical final node from DKG candidate set
+        // Filter candidates to available nodes from node_manager (synced across all nodes)
         let all_selected_nodes: Vec<SerializablePeerId> = if let Some(ref dkg) = self.dkg_storage {
-            let candidates = match hrw::candidates::get_hrw_candidates(dkg) {
+            let candidates = match hrw::candidates::get_hrw_candidates(dkg, Some(&active_nodes)) {
                 Ok(c) if !c.is_empty() => c,
                 Ok(_) => {
                     info!(
@@ -1934,13 +1986,16 @@ impl SigningNode {
                 let cycle_number = current_epoch_secs / clock_interval_secs;
 
                 // Map global clock cycles into internal epochs:
-                // 0 mod 3 => epoch_1 (TICS batch + add_liquidity)
-                // 1 mod 3 => epoch_2 (BTC batch + BTC contract tx-id update + BTC withdraw)
-                // 2 mod 3 => epoch_3 (withdraw settlement / cleanup)
-                let epoch_type = match cycle_number % 3 {
+                // Signer key legend: (N) = network/main DKG key, (V) = vault/liquidity-operator key, (U) = user derived key, (A) = admin derived key
+                // 0 mod 4 => epoch_1: TICS phase1 processBatchIntents (N), add_liquidity batchTransfer (V), BTC claim-reward (N), TICS UTV (U)
+                // 1 mod 4 => epoch_2: BTC phase1 (N), BTC UTV (U), peer invalidation (V)
+                // 2 mod 4 => epoch_3: withdraw settlement removeLiquidity (V), TICS platform fee claimPlatformFee (A)
+                // 3 mod 4 => epoch_4: BTC platform fee (BTC key), TICS claim-reward claimRewardsBatch (V)
+                let epoch_type = match cycle_number % 4 {
                     0 => "epoch_1".to_string(),
                     1 => "epoch_2".to_string(),
-                    _ => "epoch_3".to_string(),
+                    2 => "epoch_3".to_string(),
+                    _ => "epoch_4".to_string(),
                 };
 
                 info!(
@@ -1982,7 +2037,7 @@ impl SigningNode {
                 let _ = consensus_node; // Release the mutable borrow
 
                 // Now we can safely borrow self immutably
-                self.broadcast("consensus-result", &broadcast_data).await?;
+                self.broadcast("consensus", &broadcast_data).await?;
 
                 info!(
                     "📤 [CONSENSUS] Broadcasted consensus result for round {}",
@@ -2105,7 +2160,7 @@ impl SigningNode {
                             .await?;
                     } else if operation_type.as_deref() == Some("epoch_3") {
                         info!(
-                            "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement), finalizing withdraw request statuses...",
+                            "⏰ [CLOCK] Round {} is epoch_3 (withdraw settlement + platform fee), finalizing withdraw request statuses...",
                             round
                         );
 
@@ -2115,9 +2170,10 @@ impl SigningNode {
                                 round, e
                             );
                         }
-                        if let Err(e) = self.process_tics_claim_reward_settlement_epoch(round).await {
+                        // TICS claim-platform-fee uses admin derived MPC key (no nonce conflict with withdraw's liquidity operator key)
+                        if let Err(e) = self.process_tics_claim_platform_fee_settlement_epoch(round).await {
                             warn!(
-                                "⚠️ [CLOCK] Failed to process TICS claim-reward settlement epoch for round {}: {}",
+                                "⚠️ [CLOCK] Failed to process TICS claim-platform-fee batch for round {}: {}",
                                 round, e
                             );
                         }
@@ -2129,7 +2185,29 @@ impl SigningNode {
                             );
                         }
 
-                        // Process phase 1 intents (UserToVault done, NetworkToTarget pending) for TICS
+                        self.trigger_aggregate_signature_for_final_node(round)
+                            .await?;
+                    } else if operation_type.as_deref() == Some("epoch_4") {
+                        info!(
+                            "⏰ [CLOCK] Round {} is epoch_4 (BTC platform fee + TICS claim-reward), processing...",
+                            round
+                        );
+
+                        if let Err(e) = self.process_btc_claim_platform_fee_batch_for_round(round).await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process BTC claim-platform-fee batch for round {}: {}",
+                                round, e
+                            );
+                        }
+
+                        // TICS claim-reward uses liquidity operator key — moved here from epoch_3
+                        // to avoid nonce conflict with withdraw settlement (also liquidity operator key)
+                        if let Err(e) = self.process_tics_claim_reward_settlement_epoch(round).await {
+                            warn!(
+                                "⚠️ [CLOCK] Failed to process TICS claim-reward settlement for round {}: {}",
+                                round, e
+                            );
+                        }
 
                         self.trigger_aggregate_signature_for_final_node(round)
                             .await?;
@@ -2184,8 +2262,10 @@ impl SigningNode {
     /// Handle consensus messages
     pub async fn handle_consensus_message(&mut self, msg: ConsensusMessage) -> Result<()> {
         let ConsensusMessage::FinalNodeResult { ref result, round } = msg;
+            // Use available nodes from node_manager (synced across all nodes) for HRW validation
+            let active_nodes: std::collections::HashSet<PeerId> = self.coordination.get_available_nodes().await.into_iter().collect();
             if let Some(ref dkg) = self.dkg_storage {
-                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg) {
+                if let Ok(candidates) = hrw::candidates::get_hrw_candidates(dkg, Some(&active_nodes)) {
                     if let Some(our_winner) =
                         hrw::select_final(round, &candidates, hrw::HRW_DOMAIN_FINAL_NODE)
                     {
@@ -2838,6 +2918,90 @@ impl SigningNode {
         Ok(())
     }
 
+    /// Pick pending BTC platform-fee claim requests and broadcast BtcClaimPlatformFeeBatch (called from epoch_4).
+    async fn process_btc_claim_platform_fee_batch_for_round(&self, round: u64) -> Result<()> {
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        let all_claims: Vec<(String, crate::types::rpc_server::PendingClaimPlatformFeeRequest)> =
+            db.get_values_with_prefix(crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE)
+                .map_err(|e| anyhow!("Failed to load pending claim platform fee requests: {}", e))?;
+
+        let btc_claim_pending: Vec<_> = all_claims
+            .into_iter()
+            .filter(|(_, req)| {
+                req.asset == "BTC"
+                    && req.status == "Pending"
+                    && req.tx_id.is_none()
+                    && req.btc_target_address.as_ref().map_or(false, |a| !a.trim().is_empty())
+            })
+            .collect();
+
+        if btc_claim_pending.is_empty() {
+            return Ok(());
+        }
+
+        // Platform fee: only one request at a time per chain, so take the first one
+        let (_, ref req) = btc_claim_pending[0];
+        let claim_requests: Vec<(String, String)> = vec![(
+            req.request_id.clone(),
+            req.btc_target_address.clone().unwrap_or_default(),
+        )];
+
+        let claim_batch_timestamp = chrono::Utc::now().to_rfc3339();
+        let claim_batch_id = format!(
+            "btc_claim_platform_fee_batch:{}:{}",
+            round,
+            chrono::Utc::now().timestamp_millis()
+        );
+
+        // Reserve a coordinated nonce for this BTC claim-platform-fee batch
+        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.reserve_nonces_for_batch(&[claim_batch_id.clone()]).await {
+                Ok(assignments) => {
+                    if let Some(tuple_id) = assignments.get(&claim_batch_id) {
+                        info!("🔐 [BTC_CLAIM_PLATFORM_FEE] Reserved nonce {} for batch {}", tuple_id, claim_batch_id);
+                        tuple_id.clone()
+                    } else {
+                        tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] No nonce assignment returned for batch {} - aborting (will retry next epoch)", claim_batch_id);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", claim_batch_id, e);
+                    return Ok(());
+                }
+            }
+        } else {
+            tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] NonceManager not available - aborting batch (will retry next epoch)");
+            return Ok(());
+        };
+
+        info!(
+            "📤 [CLOCK][BTC_CLAIM_PLATFORM_FEE] Broadcasting BTC claim-platform-fee batch {} with {} requests (nonce: {})",
+            claim_batch_id,
+            claim_requests.len(),
+            nonce_tuple_id
+        );
+        self.message_tx
+            .send(crate::types::ChannelMessage::BtcClaimPlatformFeeBatch {
+                batch_id: claim_batch_id,
+                requests: claim_requests,
+                round,
+                timestamp: claim_batch_timestamp,
+                node_id: self.id.clone(),
+                nonce_tuple_id: Some(nonce_tuple_id),
+            })
+            .await
+            .map_err(|e| anyhow!("Failed to send BtcClaimPlatformFeeBatch: {}", e))?;
+
+        Ok(())
+    }
+
     /// Trigger BTC contract update round in parallel to BTC batch transfer round
     /// This ONLY triggers selection - the final node will:
     /// 1. Get intents with network_to_target_tx_id but not Solved
@@ -3065,6 +3229,8 @@ impl SigningNode {
             signed_payload: String,
             timestamp_ms: i64,
             status: String,
+            #[serde(default)]
+            tx_id: Option<String>,
         }
 
         // Scan RocksDB for all keys with the prefix (async wrapper)
@@ -3371,7 +3537,7 @@ impl SigningNode {
     }
 
     /// TICS claim-reward settlement (same flow as withdraw settlement).
-    /// Picks TICS claim requests (pending, have ethereum_address) and BTC claim requests (pending, have tx_id) for contract.
+    /// Picks TICS claim requests (pending, have tics_address) and BTC claim requests (pending, have tx_id) for contract.
     /// On success: store TICS tx_id on TICS requests and mark done; mark BTC requests done only.
     async fn process_tics_claim_reward_settlement_epoch(&self, round: u64) -> Result<()> {
         use crate::types::messaging::TicsClaimRewardBatchRequest;
@@ -3418,8 +3584,8 @@ impl SigningNode {
                 continue;
             }
 
-            // TICS: pick pending requests that have ethereum_address (claim TICS to that address)
-            let has_eth = req.ethereum_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            // TICS: pick pending requests that have tics_address (claim TICS to that address)
+            let has_eth = req.tics_address.as_ref().map_or(false, |a| !a.trim().is_empty());
             if has_eth {
                 tics_claim_batch_requests.push(TicsClaimRewardBatchRequest {
                     request_id: req.request_id.clone(),
@@ -3527,6 +3693,177 @@ impl SigningNode {
             "✅ [CLOCK][TICS_CLAIM] Settlement epoch completed: {} TICS claim requests batched, {} BTC claim requests (with tx_id) batched for contract",
             tics_batched, btc_updated
         );
+
+        Ok(())
+    }
+
+    /// TICS platform-fee claim settlement: picks one eligible platform-fee claim (TICS-first, then BTC-with-txid),
+    /// builds a claimPlatformFee contract transaction signed by the admin's MPC-derived key, and broadcasts for signing.
+    async fn process_tics_claim_platform_fee_settlement_epoch(&self, round: u64) -> Result<()> {
+        use crate::types::messaging::TicsClaimPlatformFeeBatchRequest;
+        use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+
+        info!("🔍 [CLOCK] Processing TICS claim-platform-fee settlement epoch (epoch_3)...");
+
+        let user_intent_manager = self
+            .user_intent_manager
+            .as_ref()
+            .ok_or_else(|| anyhow!("User intent manager not available"))?;
+        let db = user_intent_manager.get_database();
+
+        // Load all pending platform fee claims from DB
+        let all_claims: Vec<(String, PendingClaimPlatformFeeRequest)> =
+            match db.get_values_with_prefix("pending_claim_platform_fee:") {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!("⚠️ [CLOCK][TICS_PF] Failed to load pending platform fee claims: {}", e);
+                    return Ok(());
+                }
+            };
+
+        if all_claims.is_empty() {
+            info!("ℹ️  [CLOCK][TICS_PF] No platform fee claims found for settlement epoch");
+            return Ok(());
+        }
+
+        // Look up admin registration to get admin_tics_address for the batch request
+        let admin_public_address = std::env::var("ADMIN_PUBLIC_ADDRESS").unwrap_or_default();
+        if admin_public_address.is_empty() {
+            warn!("⚠️ [CLOCK][TICS_PF] ADMIN_PUBLIC_ADDRESS not configured; skipping platform fee settlement");
+            return Ok(());
+        }
+        let admin_reg = match user_intent_manager
+            .get_admin_by_address(&admin_public_address)
+            .await
+        {
+            Some(reg) => reg,
+            None => {
+                warn!("⚠️ [CLOCK][TICS_PF] Admin not registered ({}); skipping", admin_public_address);
+                return Ok(());
+            }
+        };
+        if admin_reg.derived_eth_address.is_none() || admin_reg.tweaked_secret_share.is_none() {
+            warn!("⚠️ [CLOCK][TICS_PF] Admin missing derived_eth_address or tweaked_secret_share; skipping");
+            return Ok(());
+        }
+
+        // Pick first eligible claim: TICS first, then BTC-with-txid
+        let mut selected: Option<(String, PendingClaimPlatformFeeRequest)> = None;
+
+        // Priority 1: TICS claims
+        for (key, req) in &all_claims {
+            if req.status == "Pending" && req.asset == "TICS" {
+                selected = Some((key.clone(), req.clone()));
+                break;
+            }
+        }
+
+        // Priority 2: BTC claims with tx_id (need on-chain registration)
+        if selected.is_none() {
+            for (key, req) in &all_claims {
+                if req.status == "Pending"
+                    && req.asset == "BTC"
+                    && req.tx_id.as_ref().map_or(false, |t| !t.is_empty())
+                {
+                    selected = Some((key.clone(), req.clone()));
+                    break;
+                }
+            }
+        }
+
+        let (db_key, mut req) = match selected {
+            Some(s) => s,
+            None => {
+                info!("ℹ️  [CLOCK][TICS_PF] No eligible platform fee claims for TICS settlement");
+                return Ok(());
+            }
+        };
+
+        let chain_type: u8 = if req.asset == "TICS" { 1 } else { 0 };
+        // For TICS claims: recipient = tics_target_address (the actual receiver on TICS chain)
+        // For BTC claims: recipient = admin's derived_eth_address (BTC already sent to btc_target_address
+        //   in epoch_4; this contract call just updates on-chain accounting)
+        let target_address = if req.asset == "TICS" {
+            req.tics_target_address.clone().unwrap_or_default()
+        } else {
+            // BTC: use admin's derived EVM address for the contract call recipient
+            admin_reg.derived_eth_address.clone().unwrap_or_default()
+        };
+
+        if target_address.is_empty() {
+            warn!("⚠️ [CLOCK][TICS_PF] No target address for claim {}; skipping", req.request_id);
+            return Ok(());
+        }
+
+        let batch_request = TicsClaimPlatformFeeBatchRequest {
+            request_id: req.request_id.clone(),
+            asset: req.asset.clone(),
+            amount: req.amount.clone(),
+            chain_type,
+            tx_id: req.tx_id.clone(),
+            target_address,
+            admin_tics_address: admin_reg.tics_address.clone(),
+        };
+
+        // Mark as Batched
+        req.status = "Batched".to_string();
+        if let Err(e) = db.put_string(&db_key, &req) {
+            warn!("⚠️ [CLOCK][TICS_PF] Failed to mark claim {} as Batched: {}", req.request_id, e);
+        }
+
+        let batch_timestamp = chrono::Utc::now().to_rfc3339();
+        let batch_id = format!(
+            "tics_claim_platform_fee_batch:{}:{}",
+            round,
+            chrono::Utc::now().timestamp_millis()
+        );
+
+        info!(
+            "📦 [CLOCK][TICS_PF] Creating TICS platform-fee batch {} for {} claim (request_id={}) at round {}",
+            batch_id, req.asset, req.request_id, round
+        );
+
+        // Reserve nonce
+        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard
+                .reserve_nonces_for_batch(&[batch_id.clone()])
+                .await
+            {
+                Ok(assignments) => {
+                    if let Some(tuple_id) = assignments.get(&batch_id) {
+                        info!("🔐 [TICS_PF] Reserved nonce {} for batch {}", tuple_id, batch_id);
+                        tuple_id.clone()
+                    } else {
+                        tracing::error!("🔴 [TICS_PF] No nonce assignment for batch {} - aborting", batch_id);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("🔴 [TICS_PF] Failed to reserve nonce for batch {}: {} - aborting", batch_id, e);
+                    return Ok(());
+                }
+            }
+        } else {
+            tracing::error!("🔴 [TICS_PF] NonceManager not available - aborting");
+            return Ok(());
+        };
+
+        let message = ChannelMessage::TicsClaimPlatformFeeBatch {
+            batch_id,
+            requests: vec![batch_request],
+            round,
+            timestamp: batch_timestamp,
+            node_id: self.id.clone(),
+            nonce_tuple_id: Some(nonce_tuple_id),
+        };
+
+        if let Err(e) = self.message_tx.send(message).await {
+            warn!(
+                "⚠️ [CLOCK][TICS_PF] Failed to send TicsClaimPlatformFeeBatch channel message: {}",
+                e
+            );
+        }
 
         Ok(())
     }
@@ -3739,7 +4076,7 @@ impl SigningNode {
                             signature: our_sig.clone(),
                             round,
                             timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                            user_eth_address: our_sig.user_eth_address.clone(),
+                            user_tics_address: our_sig.user_tics_address.clone(),
                             slot_id: Some(intent_hash.clone()),
                         };
                         let gossipsub_msg = crate::types::GossipsubMessage::Signing(signature_msg);
@@ -3779,7 +4116,7 @@ impl SigningNode {
                     signature: our_signature.clone(),
                     round,
                     timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                    user_eth_address: our_signature.user_eth_address.clone(),
+                    user_tics_address: our_signature.user_tics_address.clone(),
                     slot_id: None,
                 };
 
@@ -3827,7 +4164,7 @@ impl SigningNode {
                     transaction_type: $tx_type,
                     request_id: $request_id,
                     chain_tx_json,
-                    user_eth_address: None,
+                    user_tics_address: None,
                     batch_identifiers: $batch_ids,
                 };
                 let gossipsub_msg = crate::types::GossipsubMessage::Signing(tx_data_msg);
@@ -3952,7 +4289,7 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Handle signature aggregation for Ethereum transactions only (Bitcoin has separate flow)
+    /// Handle signature aggregation for TICS transactions only (Bitcoin has separate flow)
     pub async fn handle_signature_for_round(
         &mut self,
         from: String,
@@ -4198,7 +4535,7 @@ impl SigningNode {
                 );
 
                 // Get chain_id from environment variable for v calculation
-                let chain_id_for_v = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+                let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
                     .ok()
                     .and_then(|id| id.parse::<u64>().ok())
                     .unwrap_or(9029); // Default: Qubetics chain ID
@@ -4265,6 +4602,10 @@ impl SigningNode {
                             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
                             claim_reward_rounds.contains(&round)
                         };
+                        let is_claim_platform_fee_round = {
+                            let r = self.pending.claim_platform_fee_rounds.read().await;
+                            r.contains(&round)
+                        };
 
                         let has_dkg = self.has_dkg_share().await;
 
@@ -4278,7 +4619,7 @@ impl SigningNode {
                                 let found = if is_withdraw_round {
                                     let store = self.pending.withdraw_pending_transactions_tics.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
@@ -4287,16 +4628,39 @@ impl SigningNode {
                                 } else if is_claim_reward_round {
                                     let store = self.pending.claim_reward_pending_transactions_tics.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
                                         _ => None,
                                     })
+                                } else if is_claim_platform_fee_round {
+                                    // Check TICS store first (contract call), then BTC store
+                                    let tics_store = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
+                                    let found = tics_store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
+                                        ChainTransaction::Tics(eth_tx) => {
+                                            let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
+                                            Some((is_contract, Some(eth_tx.chain_id)))
+                                        }
+                                        _ => None,
+                                    });
+                                    if found.is_some() {
+                                        found
+                                    } else {
+                                        drop(tics_store);
+                                        let store = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
+                                        store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
+                                            ChainTransaction::Tics(eth_tx) => {
+                                                let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
+                                                Some((is_contract, Some(eth_tx.chain_id)))
+                                            }
+                                            _ => None,
+                                        })
+                                    }
                                 } else {
                                     let store = self.pending.pending_transactions.read().await;
                                     store.get(&round).and_then(|(chain_tx, ..)| match chain_tx {
-                                        ChainTransaction::Ethereum(eth_tx) => {
+                                        ChainTransaction::Tics(eth_tx) => {
                                             let is_contract = eth_tx.data.as_ref().map_or(false, |d| !d.is_empty());
                                             Some((is_contract, Some(eth_tx.chain_id)))
                                         }
@@ -4324,7 +4688,7 @@ impl SigningNode {
                         };
 
                         info!(
-                            "🔍 [SIGNING] Processing Ethereum transaction (is_contract: {})",
+                            "🔍 [SIGNING] Processing TICS transaction (is_contract: {})",
                             is_contract_tx
                         );
 
@@ -4334,14 +4698,14 @@ impl SigningNode {
                         canonical_signature_bytes[32..64].copy_from_slice(&s);
 
                         if let Ok(Some(signed_tx_hex)) = self
-                            .reconstruct_signed_ethereum_transaction(
+                            .reconstruct_signed_tics_transaction(
                                 round,
                                 &canonical_signature_bytes,
                                 recovery_id.to_i32() as u8,
                             )
                             .await
                         {
-                            info!("🎉 [SIGNING] 🔗 SIGNED ETHEREUM TRANSACTION READY! 🔗");
+                            info!("🎉 [SIGNING] 🔗 SIGNED TICS TRANSACTION READY! 🔗");
                             info!("📄 Raw signed transaction: {}", signed_tx_hex);
 
                             // Get chain ID for broadcasting from the stored original transaction
@@ -4367,11 +4731,11 @@ impl SigningNode {
                                     (req_id.clone(), orig_req.clone())
                                 }).unwrap_or((None, None))
                             };
-                            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id)
+                            match Self::broadcast_tics_transaction(&signed_tx_hex, chain_id)
                                 .await
                             {
                                 Ok(Some(tx_hash)) => {
-                                    info!("✅ [SIGNING] Ethereum transaction broadcasted successfully: {}", tx_hash);
+                                    info!("✅ [SIGNING] TICS transaction broadcasted successfully: {}", tx_hash);
                                     self.store_transaction_id_for_round(
                                         round,
                                         &tx_hash,
@@ -4384,7 +4748,7 @@ impl SigningNode {
                                     }
                                 }
                                 Ok(None) => {
-                                    warn!("⚠️ [SIGNING] Ethereum transaction broadcasted but no tx_hash returned");
+                                    warn!("⚠️ [SIGNING] TICS transaction broadcasted but no tx_hash returned");
                                     if let Some(ref req_id) = request_id {
                                         let original_request = {
                                             let pending = self.pending.pending_transactions.read().await;
@@ -4395,7 +4759,7 @@ impl SigningNode {
                                 }
                                 Err(e) => {
                                     error!(
-                                        "❌ [SIGNING] Failed to broadcast Ethereum transaction: {}",
+                                        "❌ [SIGNING] Failed to broadcast TICS transaction: {}",
                                         e
                                     );
                                     self.store_transaction_error_for_round(
@@ -4415,7 +4779,7 @@ impl SigningNode {
                             }
                         } else {
                             warn!(
-                            "❌ [SIGNING] Failed to reconstruct Ethereum transaction for round {}",
+                            "❌ [SIGNING] Failed to reconstruct TICS transaction for round {}",
                             round
                         );
                             
@@ -4614,7 +4978,7 @@ impl SigningNode {
 
         // TICS UserToVault only
         if let Ok(Some(signed_tx_hex)) = self
-            .reconstruct_signed_ethereum_transaction_for_batch_slot(
+            .reconstruct_signed_tics_transaction_for_batch_slot(
                 round,
                 &slot_id,
                 &canonical_signature_bytes,
@@ -4626,7 +4990,7 @@ impl SigningNode {
                 "🎉 [SIGNING] TICS UserToVault batch slot {} (round {}) ready, broadcasting",
                 slot_id, round
             );
-            match Self::broadcast_ethereum_transaction(&signed_tx_hex, chain_id).await {
+            match Self::broadcast_tics_transaction(&signed_tx_hex, chain_id).await {
                 Ok(Some(tx_hash)) => {
                     info!(
                         "✅ [SIGNING] Batch slot {} broadcasted: {}",
@@ -4748,7 +5112,7 @@ impl SigningNode {
         // TICS UserToVault only - BTC UTV uses dedicated handler with multi-input support
         let slot_kind = SlotKind::TicsUserToVault;
 
-        let chain_id = std::env::var("MPC_ETHEREUM_CHAIN_ID")
+        let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok())
             .unwrap_or(9029);
@@ -4936,6 +5300,46 @@ impl SigningNode {
             slot_id,
             round
         );
+
+        // 3b. If this final node failed to verify ALL signatures (e.g. missing DKG
+        //     commitments on an observer), the batch can never complete.  Revert the
+        //     intent status from Batched back to Pending so a future round (with a
+        //     different final node) can re-process it.
+        if verified_count == 0 && !signatures.is_empty() {
+            // Check if this node is the final node for this round
+            let is_final = {
+                let final_nodes = self.signatures.final_nodes_by_round.read().await;
+                final_nodes.get(&round).map_or(false, |f| *f == self.id)
+            };
+            if is_final {
+                warn!(
+                    "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending so it can be re-processed",
+                    self.id, slot_id, round
+                );
+                if let Some(ref uim) = self.user_intent_manager {
+                    if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
+                        if let Err(e) = uim
+                            .update_intent_status(
+                                &user.tics_address,
+                                &slot_id,
+                                crate::types::user_intent::IntentStatus::Pending,
+                            )
+                            .await
+                        {
+                            error!(
+                                "❌ [BTC_UTV] Failed to revert intent {} to Pending: {}",
+                                slot_id, e
+                            );
+                        } else {
+                            info!(
+                                "✅ [BTC_UTV] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
+                                slot_id, user.tics_address
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // 4. Sweep: aggregate each input that hit threshold
         for idx in 0..total_inputs {
@@ -5227,8 +5631,8 @@ impl SigningNode {
         let has_dkg = self.has_dkg_share().await;
         let max_attempts = if has_dkg { 1 } else { 50 };
 
-        // Get tx data, user_eth_address, and extras
-        let (unsigned_tx, user_eth_address, extras) = {
+        // Get tx data, user_tics_address, and extras
+        let (unsigned_tx, user_tics_address, extras) = {
             let mut result = None;
             for attempt in 0..max_attempts {
                 if attempt > 0 {
@@ -5388,11 +5792,11 @@ impl SigningNode {
             }
         }
 
-        // Log user_eth_address for debugging (extracted but not used in current flow)
-        if !user_eth_address.is_empty() {
+        // Log user_tics_address for debugging (extracted but not used in current flow)
+        if !user_tics_address.is_empty() {
             debug!(
                 "🔗 [BTC_UTV] Slot {} was for user {}",
-                slot_id, user_eth_address
+                slot_id, user_tics_address
             );
         }
 
@@ -5441,6 +5845,10 @@ impl SigningNode {
             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
             claim_reward_rounds.contains(&round)
         };
+        let is_claim_platform_fee_round = {
+            let r = self.pending.claim_platform_fee_rounds.read().await;
+            r.contains(&round)
+        };
 
         // Nodes without a DKG share may not have BTC TX data yet — poll up to ~5s
         let has_dkg = self.has_dkg_share().await;
@@ -5454,6 +5862,11 @@ impl SigningNode {
                 }
                 let data = if is_claim_reward_round {
                     let store = self.pending.claim_reward_pending_transactions_btc.read().await;
+                    store.get(&round).map(|(chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt)| {
+                        (chain_tx.clone(), extras_opt.clone())
+                    })
+                } else if is_claim_platform_fee_round {
+                    let store = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
                     store.get(&round).map(|(chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt)| {
                         (chain_tx.clone(), extras_opt.clone())
                     })
@@ -5904,6 +6317,17 @@ impl SigningNode {
                         anyhow!("no claim-reward pending tx for round {}", round)
                     })?;
                 chain_tx.clone()
+            } else if is_claim_platform_fee_round {
+                let claim_pf_pt = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
+                    claim_pf_pt.get(&round).ok_or_else(|| {
+                        error!(
+                            "[handle_btc_signature_for_round] No claim-platform-fee pending tx for round {} (finalize step)",
+                            round
+                        );
+                        anyhow!("no claim-platform-fee pending tx for round {}", round)
+                    })?;
+                chain_tx.clone()
             } else if is_withdraw_round {
                 let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, _extras) =
@@ -5988,32 +6412,32 @@ impl SigningNode {
             aggregated_rounds.insert(round);
         }
 
-        // Get intent hash and user_eth_address for proper error/success handling
-        let (_intent_hash, _user_eth_address) = {
+        // Get intent hash and user_tics_address for proper error/success handling
+        let (_intent_hash, _user_tics_address) = {
             let pt = self.pending.pending_transactions_btc.read().await;
             if let Some((_chain_tx, _raw, intent_hash, _tx_type_opt, _extras)) = pt.get(&round) {
-                // Get user_eth_address from the first signature we have
-                let user_eth_address = {
+                // Get user_tics_address from the first signature we have
+                let user_tics_address = {
                     let btc_sigs = self.btc_state.btc_sigs_by_round.read().await;
                     if let Some(round_sigs) = btc_sigs.get(&round) {
-                        // Get the first available signature to extract user_eth_address
+                        // Get the first available signature to extract user_tics_address
                         round_sigs
                             .values()
                             .flat_map(|input_sigs| input_sigs.values())
                             .next()
-                            .and_then(|sig| sig.user_eth_address.clone())
+                            .and_then(|sig| sig.user_tics_address.clone())
                     } else {
                         None
                     }
                 };
-                (intent_hash.clone(), user_eth_address)
+                (intent_hash.clone(), user_tics_address)
             } else {
                 (None, None)
             }
         };
 
         // NOTE: Bitcoin transactions from the sequencer are not currently supported
-        // as all contract transactions use Ethereum. If BTC sequencer support is needed,
+        // as all contract transactions use TICS. If BTC sequencer support is needed,
         // BtcRoundExtras struct needs to be extended with request_id field.
 
         // Broadcast with proper error handling and transaction ID storage
@@ -6101,7 +6525,7 @@ impl SigningNode {
         transaction_type: Option<String>,
         request_id: Option<String>,
         chain_tx_json: Option<String>,
-        user_eth_address: Option<String>,
+        user_tics_address: Option<String>,
         batch_identifiers: Option<Vec<String>>,
     ) -> Result<()> {
         // Check if this node is the final node for the specific round
@@ -6134,7 +6558,8 @@ impl SigningNode {
             let in_pending_btc = self.pending.pending_transactions_btc.read().await.contains_key(&round);
             let in_withdraw_btc = self.pending.withdraw_pending_transactions_btc.read().await.contains_key(&round);
             let in_claim_btc = self.pending.claim_reward_pending_transactions_btc.read().await.contains_key(&round);
-            in_pending || in_withdraw_tics || in_claim_tics || in_pending_btc || in_withdraw_btc || in_claim_btc
+            let in_claim_pf_btc = self.pending.claim_platform_fee_pending_transactions_btc.read().await.contains_key(&round);
+            in_pending || in_withdraw_tics || in_claim_tics || in_pending_btc || in_withdraw_btc || in_claim_btc || in_claim_pf_btc
         } else {
             // Batch slot: check appropriate batch store
             let tics_batch = self.pending.user_to_vault_tics_batch.read().await;
@@ -6178,7 +6603,7 @@ impl SigningNode {
             intent_hash: intent_hash.clone(),
             transaction_type: transaction_type.clone(),
             request_id: request_id.clone(),
-            user_eth_address: user_eth_address.clone(),
+            user_tics_address: user_tics_address.clone(),
             batch_identifiers: batch_identifiers.clone(),
         };
 
@@ -6249,6 +6674,7 @@ impl SigningNode {
                 "WithdrawLiquidity" => Some(crate::types::TransactionType::WithdrawLiquidity),
                 "IntentStatusUpdate" => Some(crate::types::TransactionType::IntentStatusUpdate),
                 "ClaimReward" => Some(crate::types::TransactionType::ClaimReward),
+                "ClaimPlatformFee" => Some(crate::types::TransactionType::ClaimPlatformFee),
                 "PeerInvalidation" => Some(crate::types::TransactionType::PeerInvalidation),
                 _ => {
                     warn!(
@@ -6260,7 +6686,7 @@ impl SigningNode {
             }
         });
 
-        let user_eth = verified_entry.user_eth_address.clone().unwrap_or_default();
+        let user_eth = verified_entry.user_tics_address.clone().unwrap_or_default();
 
         // Populate intent_hashes_by_round for observer nodes so that
         // store_transaction_id_for_round can detect batch N2T / IntentStatusUpdate rounds
@@ -6282,7 +6708,7 @@ impl SigningNode {
         if !slot_id.is_empty() {
             // Batch slot: determine if TICS or BTC from the ChainTransaction variant
             match &chain_tx {
-                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                crate::chain_abstraction::ChainTransaction::Tics(_) => {
                     let mut store = self.pending.user_to_vault_tics_batch.write().await;
                     let batch_entries = store.entry(round).or_insert_with(Vec::new);
                     if !batch_entries.iter().any(|(h, ..)| h == &slot_id) {
@@ -6326,6 +6752,7 @@ impl SigningNode {
             // Non-batch: route to the correct type-specific store based on chain variant + tx type
             let is_withdraw = matches!(parsed_tx_type, Some(crate::types::TransactionType::WithdrawLiquidity));
             let is_claim_reward = matches!(parsed_tx_type, Some(crate::types::TransactionType::ClaimReward));
+            let is_claim_platform_fee = matches!(parsed_tx_type, Some(crate::types::TransactionType::ClaimPlatformFee));
 
             // Use batch_identifiers from the verified entry if available (for withdraw/claim batches),
             // otherwise fall back to wrapping intent_hash in a Vec.
@@ -6333,7 +6760,7 @@ impl SigningNode {
                 .or_else(|| intent_hash.clone().map(|h| vec![h]));
 
             match &chain_tx {
-                crate::chain_abstraction::ChainTransaction::Ethereum(_) => {
+                crate::chain_abstraction::ChainTransaction::Tics(_) => {
                     // ETH non-batch: route to correct TICS pending store
                     if is_withdraw {
                         let mut store = self.pending.withdraw_pending_transactions_tics.write().await;
@@ -6453,6 +6880,26 @@ impl SigningNode {
                                 round
                             );
                         }
+                    } else if is_claim_platform_fee {
+                        let mut store = self.pending.claim_platform_fee_pending_transactions_btc.write().await;
+                        if !store.contains_key(&round) {
+                            store.insert(
+                                round,
+                                (
+                                    chain_tx,
+                                    tx_bytes,
+                                    btc_identifiers,
+                                    parsed_tx_type,
+                                    extras,
+                                ),
+                            );
+                            let mut claim_pf_rounds = self.pending.claim_platform_fee_rounds.write().await;
+                            claim_pf_rounds.insert(round);
+                            info!(
+                                "💾 [SIGNING] Stored verified BTC claim-platform-fee TX for round {} after threshold verification",
+                                round
+                            );
+                        }
                     } else {
                         // Regular BTC (N2T, UserToVault non-batch, etc.)
                         let mut store = self.pending.pending_transactions_btc.write().await;
@@ -6549,8 +6996,8 @@ impl SigningNode {
         Ok(true)
     }
 
-    /// Get Ethereum address from public key
-    pub fn get_ethereum_address(&self) -> Option<String> {
+    /// Get TICS address from public key
+    pub fn get_tics_address(&self) -> Option<String> {
         if let Some(public_key) = self.key_store.public_key() {
             // Get the uncompressed public key (65 bytes)
             let public_key_bytes = public_key.serialize_uncompressed();
@@ -6559,11 +7006,11 @@ impl SigningNode {
             if public_key_bytes.len() >= 21 {
                 let address_bytes = &public_key_bytes[1..21];
 
-                // Convert to Ethereum address format (0x + hex)
+                // Convert to TICS address format (0x + hex)
                 let address = format!("0x{}", hex::encode(address_bytes));
 
                 info!(
-                    "🏦 [SIGNING] Node {} Ethereum address: {}",
+                    "🏦 [SIGNING] Node {} TICS address: {}",
                     self.id, address
                 );
                 Some(address)
@@ -6607,7 +7054,7 @@ impl SigningNode {
         );
 
         // Get message/digest and transaction type for this round (and slot for TICS batch)
-        let (expected_digest, transaction_type, user_eth_address) =
+        let (expected_digest, transaction_type, user_tics_address) =
             self.get_message_and_type_for_round(round, slot_id).await?;
 
         info!(
@@ -6623,7 +7070,7 @@ impl SigningNode {
                 peer_id,
                 round,
                 &transaction_type,
-                user_eth_address.as_deref(),
+                user_tics_address.as_deref(),
             )
             .await?;
 
@@ -6886,6 +7333,14 @@ impl SigningNode {
                     "network-share"
                 }
             }
+            Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                let tics = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
+                if tics.contains_key(&round) {
+                    "user-share"
+                } else {
+                    "network-share"
+                }
+            }
             Some(crate::types::TransactionType::PeerInvalidation) => "network-share",
             None => "vault-share",
         };
@@ -6895,7 +7350,7 @@ impl SigningNode {
             peer_id,
             round,
             transaction_type,
-            user_eth_address,
+            user_tics_address,
             share_type
         );
         info!(
@@ -6927,8 +7382,8 @@ impl SigningNode {
             peer_id, round, input_index
         );
 
-        // Get transaction type and user_eth_address for this round
-        let (transaction_type, user_eth_address) = {
+        // Get transaction type and user_tics_address for this round
+        let (transaction_type, user_tics_address) = {
             let is_withdraw_round = {
                 let withdraw_rounds = self.pending.withdraw_rounds.read().await;
                 withdraw_rounds.contains(&round)
@@ -6937,6 +7392,10 @@ impl SigningNode {
                 let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
                 claim_reward_rounds.contains(&round)
             };
+            let is_claim_platform_fee_round = {
+                let r = self.pending.claim_platform_fee_rounds.read().await;
+                r.contains(&round)
+            };
 
             if is_claim_reward_round {
                 let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
@@ -6944,6 +7403,13 @@ impl SigningNode {
                     (tx_type.clone(), None)
                 } else {
                     return Err(anyhow!("No claim-reward pending tx for round {}", round));
+                }
+            } else if is_claim_platform_fee_round {
+                let claim_pf_pt = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
+                if let Some((_tx, _raw, _solver_address, tx_type, _extras)) = claim_pf_pt.get(&round) {
+                    (tx_type.clone(), None)
+                } else {
+                    return Err(anyhow!("No claim-platform-fee pending tx for round {}", round));
                 }
             } else if is_withdraw_round {
                 let withdraw_pt = self.pending.withdraw_pending_transactions_btc.read().await;
@@ -6957,7 +7423,7 @@ impl SigningNode {
             } else {
                 let pt = self.pending.pending_transactions_btc.read().await;
                 if let Some((_tx, _raw, intent_hashes, tx_type, _extras)) = pt.get(&round) {
-                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    // For UserToVault transactions, retrieve user_tics_address from intent_hash
                     let user_addr = if matches!(
                         tx_type,
                         Some(crate::types::TransactionType::UserToVault)
@@ -6970,10 +7436,10 @@ impl SigningNode {
                                     match user_storage.get_user_by_intent_hash(first_intent_hash).await {
                                         Ok(Some(user)) => {
                                             info!(
-                                                "🔍 [BTC-SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                                user.ethereum_address, first_intent_hash, round
+                                                "🔍 [BTC-SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.tics_address, first_intent_hash, round
                                             );
-                                            Some(user.ethereum_address)
+                                            Some(user.tics_address)
                                         }
                                         _ => None,
                                     }
@@ -7006,12 +7472,23 @@ impl SigningNode {
                 let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
                 claim_reward_rounds.contains(&round)
             };
+            let is_claim_platform_fee_round = {
+                let r = self.pending.claim_platform_fee_rounds.read().await;
+                r.contains(&round)
+            };
 
             let (chain_tx, _extras_opt) = if is_claim_reward_round {
                 let claim_reward_pt = self.pending.claim_reward_pending_transactions_btc.read().await;
                 let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
                     claim_reward_pt.get(&round).ok_or_else(|| {
                         anyhow!("no claim-reward pending tx for round {}", round)
+                    })?;
+                (chain_tx.clone(), extras_opt.clone())
+            } else if is_claim_platform_fee_round {
+                let claim_pf_pt = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
+                let (chain_tx, _raw, _solver_address, _tx_type_opt, extras_opt) =
+                    claim_pf_pt.get(&round).ok_or_else(|| {
+                        anyhow!("no claim-platform-fee pending tx for round {}", round)
                     })?;
                 (chain_tx.clone(), extras_opt.clone())
             } else if is_withdraw_round {
@@ -7082,7 +7559,7 @@ impl SigningNode {
                 peer_id,
                 round,
                 &transaction_type,
-                user_eth_address.as_deref(),
+                user_tics_address.as_deref(),
             )
             .await?;
 
@@ -7312,6 +7789,14 @@ impl SigningNode {
             Some(crate::types::TransactionType::IntentStatusUpdate) => "network-share", // IntentStatusUpdate uses network share (same as NetworkToTarget)
             Some(crate::types::TransactionType::WithdrawLiquidity) => "network-share",
             Some(crate::types::TransactionType::ClaimReward) => "network-share", // BTC claim-reward (BitcoinSigner path)
+            Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                let tics = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
+                if tics.contains_key(&round) {
+                    "user-share"
+                } else {
+                    "network-share"
+                }
+            }
             Some(crate::types::TransactionType::PeerInvalidation) => "network-share",
             None => "vault-share",
         };
@@ -7322,7 +7807,7 @@ impl SigningNode {
             round,
             input_index,
             transaction_type,
-            user_eth_address,
+            user_tics_address,
             share_type
         );
         info!(
@@ -7389,10 +7874,14 @@ impl SigningNode {
             ));
         }
 
-        // Check if it's a claim-reward, withdraw, or regular round
+        // Check if it's a claim-reward, claim-platform-fee, withdraw, or regular round
         let is_claim_reward_round = {
             let claim_reward_rounds = self.pending.claim_reward_rounds.read().await;
             claim_reward_rounds.contains(&round)
+        };
+        let is_claim_platform_fee_round = {
+            let r = self.pending.claim_platform_fee_rounds.read().await;
+            r.contains(&round)
         };
 
         let is_withdraw_round = {
@@ -7400,12 +7889,12 @@ impl SigningNode {
             withdraw_rounds.contains(&round)
         };
 
-        // Try TICS (Ethereum) transactions first, then BTC
+        // Try TICS transactions first, then BTC
         //
         // NOTE: For partial signature verification we may override the stored transaction_type
         // for certain contract calls (e.g. IntentManager.processBatchIntents) so that verification
         // is performed against the VAULT/main key path.
-        let (tx_bytes, transaction_type, user_eth_address, _chain_tx_opt) = if is_claim_reward_round {
+        let (tx_bytes, transaction_type, user_tics_address, _chain_tx_opt) = if is_claim_reward_round {
             // Claim-reward: try TICS (contract) first, then BTC
             let claim_reward_pt_tics = self.pending.claim_reward_pending_transactions_tics.read().await;
             if let Some((chain_tx, tx_bytes, _identifiers, tx_type, _request_id, _original_request)) =
@@ -7421,6 +7910,27 @@ impl SigningNode {
                 } else {
                     return Err(anyhow!(
                         "No pending transaction found for claim-reward round {}",
+                        round
+                    ));
+                }
+            }
+        } else if is_claim_platform_fee_round {
+            // Claim-platform-fee: try TICS store first (contract call), then BTC store
+            let claim_pf_pt_tics = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
+            if let Some((chain_tx, tx_bytes, _identifiers, tx_type, _request_id, _original_request)) =
+                claim_pf_pt_tics.get(&round)
+            {
+                (tx_bytes.clone(), tx_type.clone(), None, Some(chain_tx.clone()))
+            } else {
+                drop(claim_pf_pt_tics);
+                let claim_pf_pt_btc = self.pending.claim_platform_fee_pending_transactions_btc.read().await;
+                if let Some((_tx, tx_bytes, _solver_address, tx_type, _extras)) =
+                    claim_pf_pt_btc.get(&round)
+                {
+                    (tx_bytes.clone(), tx_type.clone(), None, None)
+                } else {
+                    return Err(anyhow!(
+                        "No pending transaction found for claim-platform-fee round {}",
                         round
                     ));
                 }
@@ -7448,24 +7958,24 @@ impl SigningNode {
             // Regular transaction - try TICS first
             let pending = self.pending.pending_transactions.read().await;
             if let Some((chain_tx, tx_bytes, intent_hash, tx_type, _request_id, _original_request)) = pending.get(&round) {
-                // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                // For UserToVault transactions, retrieve user_tics_address from intent_hash
                 // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                 let user_addr = if matches!(
                     tx_type,
                     Some(crate::types::TransactionType::UserToVault)
                 ) {
                     if let Some(intent_hash) = intent_hash {
-                        // Retrieve user's ethereum address from intent hash using database
+                        // Retrieve user's TICS address from intent hash using database
                         if let Some(database) = &self.database {
                             use crate::database::storage::UserStorage;
                             let user_storage = UserStorage::new(database.as_ref().clone());
                             match user_storage.get_user_by_intent_hash(intent_hash).await {
                                 Ok(Some(user)) => {
                                     info!(
-                                        "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault transaction (round {})",
-                                        user.ethereum_address, intent_hash, round
+                                        "🔍 [SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault transaction (round {})",
+                                        user.tics_address, intent_hash, round
                                     );
-                                    Some(user.ethereum_address)
+                                    Some(user.tics_address)
                                 }
                                 Ok(None) => {
                                     warn!(
@@ -7484,7 +7994,7 @@ impl SigningNode {
                             }
                         } else {
                             warn!(
-                                "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash {} (round {})",
+                                "⚠️ [SIGNING] Database not available to retrieve user_tics_address from intent_hash {} (round {})",
                                 intent_hash, round
                             );
                             None
@@ -7502,7 +8012,7 @@ impl SigningNode {
                 if let Some((_tx, tx_bytes, intent_hashes, tx_type, _extras)) =
                     pending_btc.get(&round)
                 {
-                    // For UserToVault transactions, retrieve user_eth_address from intent_hash
+                    // For UserToVault transactions, retrieve user_tics_address from intent_hash
                     // This ensures the final node retrieves the address on its own, not relying on the unicasting peer
                     let user_addr = if matches!(
                         tx_type,
@@ -7510,17 +8020,17 @@ impl SigningNode {
                     ) {
                         if let Some(intent_hashes_vec) = intent_hashes {
                             if let Some(first_intent_hash) = intent_hashes_vec.first() {
-                                // Retrieve user's ethereum address from intent hash using database
+                                // Retrieve user's TICS address from intent hash using database
                                 if let Some(database) = &self.database {
                                     use crate::database::storage::UserStorage;
                                     let user_storage = UserStorage::new(database.as_ref().clone());
                                     match user_storage.get_user_by_intent_hash(first_intent_hash).await {
                                         Ok(Some(user)) => {
                                             info!(
-                                                "🔍 [SIGNING] Retrieved user_eth_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
-                                                user.ethereum_address, first_intent_hash, round
+                                                "🔍 [SIGNING] Retrieved user_tics_address {} from intent_hash {} for UserToVault BTC transaction (round {})",
+                                                user.tics_address, first_intent_hash, round
                                             );
-                                            Some(user.ethereum_address)
+                                            Some(user.tics_address)
                                         }
                                         Ok(None) => {
                                             warn!(
@@ -7539,7 +8049,7 @@ impl SigningNode {
                                     }
                                 } else {
                                     warn!(
-                                        "⚠️ [SIGNING] Database not available to retrieve user_eth_address from intent_hash (round {})",
+                                        "⚠️ [SIGNING] Database not available to retrieve user_tics_address from intent_hash (round {})",
                                         round
                                     );
                                     None
@@ -7620,7 +8130,7 @@ impl SigningNode {
             );
         }
 
-        Ok((digest, transaction_type, user_eth_address))
+        Ok((digest, transaction_type, user_tics_address))
     }
 
     /// Get appropriate PARTIAL share pubkey for verification based on transaction type
@@ -7635,7 +8145,7 @@ impl SigningNode {
         peer_id: &str,
         round: u64,
         transaction_type: &Option<TransactionType>,
-        user_eth_address: Option<&str>,
+        user_tics_address: Option<&str>,
     ) -> Result<k256::ProjectivePoint> {
         use crate::database::DkgStorage;
 
@@ -7655,7 +8165,7 @@ impl SigningNode {
         match transaction_type {
             Some(crate::types::TransactionType::UserToVault) => {
                 // UserToVault → per-node-user-share pubkey
-                if let Some(user_addr) = user_eth_address {
+                if let Some(user_addr) = user_tics_address {
                     // Try to get the stored user share pubkey first
                     match dkg_storage.get_user_share_pubkey(peer_id, user_addr).await {
                         Ok(Some(pubkey)) => Ok(pubkey),
@@ -7708,7 +8218,7 @@ impl SigningNode {
                     }
                 } else {
                     return Err(anyhow!(
-                        "UserToVault transaction requires user_eth_address for user share pubkey verification (peer: {})",
+                        "UserToVault transaction requires user_tics_address for user share pubkey verification (peer: {})",
                         peer_id
                     ));
                 }
@@ -7787,6 +8297,42 @@ impl SigningNode {
                         .ok_or_else(|| {
                             anyhow!(
                                 "Network share pubkey not found for peer {} (ClaimReward BTC round {})",
+                                peer_id, round
+                            )
+                        })
+                }
+            }
+            Some(crate::types::TransactionType::ClaimPlatformFee) => {
+                let is_tics_round = {
+                    let tics = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
+                    tics.contains_key(&round)
+                };
+                if is_tics_round {
+                    // TICS platform fee: admin-specific user-share pubkey
+                    if let Some(admin_addr) = user_tics_address {
+                        dkg_storage
+                            .get_user_share_pubkey(peer_id, admin_addr)
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "Admin share pubkey not found for peer {} and admin {} (ClaimPlatformFee TICS round {})",
+                                    peer_id, admin_addr, round
+                                )
+                            })
+                    } else {
+                        Err(anyhow!(
+                            "ClaimPlatformFee TICS round {} requires admin tics_address for share pubkey verification (peer: {})",
+                            round, peer_id
+                        ))
+                    }
+                } else {
+                    // BTC platform fee: network share (existing behavior)
+                    dkg_storage
+                        .get_network_share_pubkey(peer_id)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Network share pubkey not found for peer {} (ClaimPlatformFee BTC round {})",
                                 peer_id, round
                             )
                         })

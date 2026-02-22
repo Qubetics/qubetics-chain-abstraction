@@ -51,13 +51,13 @@ impl MpcNetworkLayer {
     /// Broadcast a user registration to all other nodes in the P2P network
     pub async fn broadcast_user_registration(
         &self,
-        ethereum_address: &str,
+        tics_address: &str,
         node_id: &str,
     ) -> Result<()> {
         use crate::types::{ChannelMessage, GossipsubMessage};
 
         let registration_msg = GossipsubMessage::UserRegistration {
-            ethereum_address: ethereum_address.to_string(),
+            tics_address: tics_address.to_string(),
             timestamp: chrono::Utc::now().timestamp(),
             node_id: node_id.to_string(),
         };
@@ -68,7 +68,7 @@ impl MpcNetworkLayer {
         // Send via the message channel to be broadcast by the swarm
         self.message_tx
             .send(ChannelMessage::Broadcast {
-                topic: "user-registrations".to_string(),
+                topic: "user-operations".to_string(),
                 data: msg_bytes,
             })
             .await
@@ -76,7 +76,7 @@ impl MpcNetworkLayer {
 
         info!(
             "📡 Broadcasted user registration for {} from node {} to P2P network",
-            ethereum_address, node_id
+            tics_address, node_id
         );
         Ok(())
     }
@@ -97,9 +97,9 @@ impl MpcNetworkLayer {
     /// Get the appropriate signing key based on the user eth address
     pub(crate) async fn get_signing_key_for_user(
         &self,
-        user_eth_address: Option<&String>,
+        user_tics_address: Option<&String>,
     ) -> Option<k256::Scalar> {
-        if let Some(eth_address) = user_eth_address {
+        if let Some(eth_address) = user_tics_address {
             // Use user-specific tweaked share
             info!(
                 "🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}",
@@ -196,9 +196,9 @@ impl MpcNetworkLayer {
         intent_hash: &str,
         _amount: u128,
         _tx_bytes: Vec<u8>,
-        _eth_tx: crate::chain_abstraction::EthereumTransaction,
+        _eth_tx: crate::chain_abstraction::TicsTransaction,
         _user_tweaked_share: Option<k256::Scalar>,
-        _user_eth_address: Option<String>,
+        _user_tics_address: Option<String>,
     ) -> Result<()> {
         // Sequencer removed - will be replaced with pool approach later
         info!(

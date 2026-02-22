@@ -38,7 +38,7 @@ fn test_scalar(val: u64) -> Scalar {
 fn make_user(addr: &str) -> UserRegistration {
     UserRegistration {
         user_id: format!("user_{}", addr),
-        ethereum_address: addr.to_string(),
+        tics_address: addr.to_string(),
         tweaked_secret_share: None,
         hmac_constant: [0u8; 32],
         user_group_key: None,
@@ -236,7 +236,7 @@ async fn user_storage_store_and_retrieve() {
     let retrieved = storage.get_user(addr).await.unwrap();
     assert!(retrieved.is_some());
     let u = retrieved.unwrap();
-    assert_eq!(u.ethereum_address, addr);
+    assert_eq!(u.tics_address, addr);
     assert_eq!(u.user_id, format!("user_{}", addr));
 }
 
@@ -335,7 +335,7 @@ fn user_registration_bincode_roundtrip() {
     let bytes = bincode::serialize(&user).unwrap();
     let deserialized: UserRegistration = bincode::deserialize(&bytes).unwrap();
 
-    assert_eq!(user.ethereum_address, deserialized.ethereum_address);
+    assert_eq!(user.tics_address, deserialized.tics_address);
     assert_eq!(user.user_id, deserialized.user_id);
     assert_eq!(
         user.tweaked_secret_share.unwrap().0,
@@ -351,7 +351,7 @@ fn user_registration_json_roundtrip() {
     let json = serde_json::to_string(&user).unwrap();
     let deserialized: UserRegistration = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(user.ethereum_address, deserialized.ethereum_address);
+    assert_eq!(user.tics_address, deserialized.tics_address);
 }
 
 // ===================================================================

@@ -413,7 +413,7 @@ async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
   try {
     log(`[User ${userId}] Registering address: ${ethereumAddress} via ${nodeUrl}`, 'blue');
 
-    // Create registration message: "register:{ethereum_address}:{timestamp}"
+    // Create registration message: "register:{tics_address}:{timestamp}"
     const timestamp = Math.floor(Date.now() / 1000);
     const message = `register:${ethereumAddress}:${timestamp}`;
     log(`[User ${userId}] 📝 Registration message: ${message}`, 'cyan');
@@ -425,7 +425,7 @@ async function testRegisterUser(ethereumAddress, userId, wallet, nodeUrl) {
     const response = await axios.post(
       `${nodeUrl}/register_user`,
       {
-        ethereum_address: ethereumAddress,
+        tics_address: ethereumAddress,
         signature: signature,
         message: message
       },
@@ -492,7 +492,7 @@ async function testGetUserInfo(ethereumAddress, userId, nodeUrl = RPC_NODES[0]) 
 
     log(`[User ${userId}] ✅ User info retrieved!`, 'green');
     log(`[User ${userId}]   User ID: ${response.data.user_id}`, 'cyan');
-    log(`[User ${userId}]   Ethereum Address: ${response.data.ethereum_address}`, 'cyan');
+    log(`[User ${userId}]   TICS Address: ${response.data.tics_address}`, 'cyan');
     log(`[User ${userId}]   Has Tweaked Share: ${response.data.has_tweaked_share}`, 'cyan');
     log(`[User ${userId}]   Has User Group Key: ${response.data.has_user_group_key}`, 'cyan');
     log(`[User ${userId}]   Derived ETH Address: ${response.data.derived_eth_address || 'Not available'}`, 'cyan');

@@ -82,7 +82,7 @@ pub async fn register_user(client: &Client, rpc_port: u16, user_eth_address: &st
             std::env::var("RPC_API_KEY").unwrap_or_else(|_| "default_dev_key".to_string()),
         )
         .json(&serde_json::json!({
-            "ethereum_address": user_eth_address
+            "tics_address": user_eth_address
         }))
         .send()
         .await?

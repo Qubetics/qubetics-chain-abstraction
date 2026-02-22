@@ -1,4 +1,4 @@
-use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
+use crate::chain_abstraction::{ChainTransaction, TicsTransaction};
 use crate::types::{
     network as network_cfg, BatchIntentInput, BatchType, BitcoinInput, BitcoinOutput,
     BitcoinTransaction, BitcoinUtxo, BitcoinWitness, BitcoinWitnessUtxo, ContractTransaction,
@@ -43,7 +43,7 @@ fn strip_leading_zeros(bytes: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Convert amount (u128) to proper hex string format for Ethereum transactions
+/// Convert amount (u128) to proper hex string format for TICS transactions
 /// Returns "0x0" for zero amounts, otherwise returns minimal hex representation with 0x prefix
 pub fn amount_to_hex_string(amount: u128) -> String {
     if amount == 0 {
@@ -554,7 +554,7 @@ pub fn extract_utxo_identifiers(utxos: &[BitcoinUtxo]) -> Vec<(String, u32)> {
         .collect()
 }
 
-pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
+pub async fn fetch_tics_nonce(address: &str, chain_id: u64) -> Result<u64> {
     let rpc_url = get_evm_rpc_url(chain_id)?;
 
     let client = reqwest::Client::new();
@@ -598,16 +598,16 @@ pub async fn fetch_ethereum_nonce(address: &str, chain_id: u64) -> Result<u64> {
     }
 }
 
-/// Helper function to create an Ethereum transaction
-/// Takes a target address and amount to create a simple ETH transfer transaction
-pub async fn create_ethereum_transaction(
+/// Helper function to create a TICS transaction
+/// Takes a target address and amount to create a simple TICS transfer transaction
+pub async fn create_tics_transaction(
     from_address: &str,
     to_address: &str,
     amount: u128,
     chain_name: &str,
-) -> Result<EthereumTransaction> {
+) -> Result<TicsTransaction> {
     info!(
-        "🎁 [ETH_TX] Creating Ethereum transaction: {} -> {} (amount: {})",
+        "🎁 [ETH_TX] Creating TICS transaction: {} -> {} (amount: {})",
         from_address, to_address, amount
     );
 
@@ -627,7 +627,7 @@ pub async fn create_ethereum_transaction(
         });
 
     // Fetch nonce for the from address
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
     info!(
         "🎁 [ETH_TX] Constructed Payload: \n\
@@ -644,7 +644,7 @@ pub async fn create_ethereum_transaction(
         chain_id
     );
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: to_address.to_string(),
         value: amount_to_hex_string(amount),
         gas_limit: 300000, // Standard ETH transfer gas limit
@@ -654,8 +654,8 @@ pub async fn create_ethereum_transaction(
         chain_id,
     };
 
-    info!("✅ [ETH_TX] Created Ethereum transaction successfully");
-    Ok(ethereum_tx)
+    info!("✅ [ETH_TX] Created TICS transaction successfully");
+    Ok(tics_tx)
 }
 
 /// Helper function to create a Bitcoin transaction
@@ -1056,6 +1056,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 "ClaimReward is not valid for deposit intent flow"
             ));
         }
+        crate::types::TransactionType::ClaimPlatformFee => {
+            return Err(anyhow::anyhow!(
+                "ClaimPlatformFee is not valid for deposit intent flow"
+            ));
+        }
         crate::types::TransactionType::PeerInvalidation => {
             return Err(anyhow::anyhow!(
                 "PeerInvalidation is not valid for deposit intent flow"
@@ -1081,7 +1086,7 @@ async fn create_chain_transaction_from_deposit_intent_internal(
         // network address. We only unwrap and compute network_address when it's actually needed.
         let (from_address, to_address) = match transaction_type {
             crate::types::TransactionType::UserToVault => {
-                // User deposit: FROM derived ethereum address
+                // User deposit: FROM derived TICS address
                 // - On TICS/qubetics: TO IntentManager contract (from env)
                 // - On other EVM chains: TO liquidity operator address
                 if let Some(derived_addr) = derived_eth_addr {
@@ -1158,6 +1163,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                     "ClaimReward is not valid for deposit intent flow"
                 ));
             }
+            crate::types::TransactionType::ClaimPlatformFee => {
+                return Err(anyhow::anyhow!(
+                    "ClaimPlatformFee is not valid for deposit intent flow"
+                ));
+            }
             crate::types::TransactionType::PeerInvalidation => {
                 return Err(anyhow::anyhow!(
                     "PeerInvalidation is not valid for deposit intent flow"
@@ -1165,10 +1175,10 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             }
         };
 
-        let ethereum_tx =
-            create_ethereum_transaction(&from_address, &to_address, amount, chain_to_use).await?;
+        let tics_tx =
+            create_tics_transaction(&from_address, &to_address, amount, chain_to_use).await?;
 
-        Ok(ChainTransaction::Ethereum(ethereum_tx))
+        Ok(ChainTransaction::Tics(tics_tx))
     } else if chain_to_use == "bitcoin" || chain_to_use == "btc" {
         // Destination for Bitcoin UserToVault: network BTC address (where network BTC is held)
         let btc_to_address = liquidity_operator_btc_address
@@ -1230,6 +1240,11 @@ async fn create_chain_transaction_from_deposit_intent_internal(
             crate::types::TransactionType::ClaimReward => {
                 return Err(anyhow::anyhow!(
                     "ClaimReward is not valid for deposit intent flow"
+                ));
+            }
+            crate::types::TransactionType::ClaimPlatformFee => {
+                return Err(anyhow::anyhow!(
+                    "ClaimPlatformFee is not valid for deposit intent flow"
                 ));
             }
             crate::types::TransactionType::PeerInvalidation => {
@@ -1307,6 +1322,11 @@ pub async fn create_chain_transaction_from_contract_call(
                 "ClaimReward is not valid for deposit intent flow"
             ));
         }
+        crate::types::TransactionType::ClaimPlatformFee => {
+            return Err(anyhow::anyhow!(
+                "ClaimPlatformFee is not valid for deposit intent flow"
+            ));
+        }
         crate::types::TransactionType::PeerInvalidation => {
             return Err(anyhow::anyhow!(
                 "PeerInvalidation is not valid for deposit intent flow"
@@ -1376,7 +1396,7 @@ pub async fn create_chain_transaction_from_contract_call(
         estimated_gas, gas_limit
     );
 
-    let nonce = fetch_ethereum_nonce(&network_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(&network_address, chain_id).await?;
     let gas_price = get_gas_price_for_chain("qubetics", chain_id)
         .await
         .unwrap_or_else(|e| {
@@ -1395,7 +1415,7 @@ pub async fn create_chain_transaction_from_contract_call(
     let calldata_len = calldata.as_ref().map(|c| c.len()).unwrap_or(0);
     info!("  - Calldata length: {} bytes", calldata_len);
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: contract_address_env,
         value: "0x0".to_string(),
         gas_limit,
@@ -1405,7 +1425,7 @@ pub async fn create_chain_transaction_from_contract_call(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }
 
 pub async fn create_solver_rewards_update_transaction(
@@ -1465,9 +1485,9 @@ pub async fn create_solver_rewards_update_transaction(
 
     info!("🔧 [CONTRACT] Gas price: {}", gas_price);
     info!("🔧 [CONTRACT] Gas limit: {}", gas_limit);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -1477,7 +1497,7 @@ pub async fn create_solver_rewards_update_transaction(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }
 
 /// Create a ChainTransaction for a batch claim-rewards call to SolverManager.claimRewardsBatch.
@@ -1528,9 +1548,9 @@ pub async fn create_solver_claim_rewards_batch_transaction(
             get_default_gas_price_for_chain(chain_name)
         });
 
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -1540,16 +1560,16 @@ pub async fn create_solver_claim_rewards_batch_transaction(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }
 
-/// Encode calldata for SolverManager.batchTransfer(recipients, amounts).
 /// Encode calldata for addLiquidityBatch(AddLiquidityBatch[] deposits)
-/// where AddLiquidityBatch is struct { string solverId, uint256 amount, uint8 chainType }
+/// where AddLiquidityBatch is struct { string solverId, uint256 amount, uint8 chainType, string txId }
 pub fn encode_add_liquidity_batch_calldata(
     solver_ids: &[String],
     amounts: &[U256],
     chain_types: &[u8],
+    tx_ids: &[String],
 ) -> Option<Vec<u8>> {
     #[allow(deprecated)]
     let f = Function {
@@ -1561,6 +1581,7 @@ pub fn encode_add_liquidity_batch_calldata(
                     ParamType::String,      // solverId
                     ParamType::Uint(256),   // amount
                     ParamType::Uint(8),     // chainType (enum as uint8)
+                    ParamType::String,      // txId
                 ]))),
                 internal_type: Some("struct SolverManager.AddLiquidityBatch[]".into()),
             },
@@ -1570,20 +1591,22 @@ pub fn encode_add_liquidity_batch_calldata(
         state_mutability: StateMutability::NonPayable,
     };
 
-    if solver_ids.len() != amounts.len() || solver_ids.len() != chain_types.len() {
+    if solver_ids.len() != amounts.len() || solver_ids.len() != chain_types.len() || solver_ids.len() != tx_ids.len() {
         return None;
     }
 
-    // Build array of tuples (solverId, amount, chainType)
+    // Build array of tuples (solverId, amount, chainType, txId)
     let deposit_tuples: Vec<Token> = solver_ids
         .iter()
         .zip(amounts.iter())
         .zip(chain_types.iter())
-        .map(|((solver_id, amount), chain_type)| {
+        .zip(tx_ids.iter())
+        .map(|(((solver_id, amount), chain_type), tx_id)| {
             Token::Tuple(vec![
                 Token::String(solver_id.clone()),
                 Token::Uint(*amount),
                 Token::Uint((*chain_type).into()),
+                Token::String(tx_id.clone()),
             ])
         })
         .collect();
@@ -1603,6 +1626,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
     solver_ids: &[String],
     amounts: &[U256],
     chain_types: &[u8],
+    tx_ids: &[String],
     contract_address: &str,
     chain_id: u64,
 ) -> Result<ChainTransaction> {
@@ -1619,7 +1643,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         normalized_contract_address
     );
 
-    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types);
+    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types, tx_ids);
     let calldata_hex = calldata
         .as_ref()
         .map(|d| format!("0x{}", hex::encode(d)))
@@ -1648,9 +1672,9 @@ pub async fn create_solver_add_liquidity_batch_transaction(
 
     info!("🔧 [CONTRACT] batchTransfer gas price: {}", gas_price);
     info!("🔧 [CONTRACT] batchTransfer gas limit: {}", gas_limit);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -1660,7 +1684,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }
 
 pub async fn create_solver_remove_liquidity_transaction(
@@ -1672,7 +1696,7 @@ pub async fn create_solver_remove_liquidity_transaction(
     contract_address: &str,
     chain_id: u64,
     chain_name: &str,
-) -> Result<EthereumTransaction> {
+) -> Result<TicsTransaction> {
     let normalized_contract_address = if contract_address.starts_with("0x") {
         contract_address.to_string()
     } else {
@@ -1721,13 +1745,13 @@ pub async fn create_solver_remove_liquidity_transaction(
         .await
         .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
     info!("🔧 [CONTRACT][LIQ] Gas price (wei): {}", gas_price);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
     info!(
         "🔧 [CONTRACT][LIQ] Nonce for {} on chain {}: {}",
         from_address, chain_id, nonce
     );
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -1737,7 +1761,7 @@ pub async fn create_solver_remove_liquidity_transaction(
         chain_id,
     };
 
-    Ok(ethereum_tx)
+    Ok(tics_tx)
 }
 
 
@@ -1900,6 +1924,115 @@ pub fn encode_update_solver_rewards_calldata(
     encode_claim_rewards_batch_calldata(&claims, chain_type_u8)
 }
 
+/// Encode calldata for `claimPlatformFee(uint256 amount, uint8 chainType, address recipient)`.
+/// - `amount`: fee amount in smallest units (wei for TICS, satoshis for BTC).
+/// - `chain_type`: 0 = BTC, 1 = TICS (SolverManager.ChainType enum).
+/// - `recipient`: target address that will receive the fee.
+pub fn encode_claim_platform_fee_calldata(
+    amount: U256,
+    chain_type: u8,
+    recipient: &str,
+) -> Option<Vec<u8>> {
+    let recipient_addr: ethers::types::Address = match recipient.parse() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+
+    #[allow(deprecated)]
+    let f = Function {
+        name: "claimPlatformFee".to_owned(),
+        inputs: vec![
+            Param {
+                name: "amount".into(),
+                kind: ParamType::Uint(256),
+                internal_type: None,
+            },
+            Param {
+                name: "chainType".into(),
+                kind: ParamType::Uint(8),
+                internal_type: None,
+            },
+            Param {
+                name: "recipient".into(),
+                kind: ParamType::Address,
+                internal_type: None,
+            },
+        ],
+        outputs: vec![],
+        constant: None,
+        state_mutability: StateMutability::NonPayable,
+    };
+
+    let tokens = vec![
+        Token::Uint(amount),
+        Token::Uint(U256::from(chain_type)),
+        Token::Address(recipient_addr),
+    ];
+
+    f.encode_input(&tokens).ok()
+}
+
+/// Create a `ChainTransaction` for `claimPlatformFee` on the SolverManager contract.
+/// - For TICS (chain_type=1): triggers an on-chain batchTransfer from treasury vault.
+/// - For BTC  (chain_type=0): updates on-chain accounting; MPC nodes send BTC separately.
+pub async fn create_claim_platform_fee_transaction(
+    from_address: &str,
+    amount: U256,
+    chain_type: u8,
+    recipient: &str,
+    contract_address: &str,
+    chain_id: u64,
+    chain_name: &str,
+) -> Result<ChainTransaction> {
+    let normalized_contract_address = if contract_address.starts_with("0x") {
+        contract_address.to_string()
+    } else {
+        format!("0x{contract_address}")
+    };
+
+    let calldata = encode_claim_platform_fee_calldata(amount, chain_type, recipient)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode claimPlatformFee calldata"))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
+
+    info!(
+        "🔧 [CONTRACT] Creating claimPlatformFee: amount={}, chain_type={}, recipient={} on chain {} via {}",
+        amount, chain_type, recipient, chain_id, normalized_contract_address
+    );
+
+    let estimated_gas = estimate_gas_for_deposit_intent(
+        from_address,
+        &normalized_contract_address,
+        &calldata_hex,
+        chain_id,
+    )
+    .await?;
+    let gas_limit = estimated_gas + (estimated_gas / 10);
+
+    let gas_price = get_gas_price_for_chain(chain_name, chain_id)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(
+                "⚠️ Failed to get dynamic gas price for claimPlatformFee: {}, using fallback",
+                e
+            );
+            get_default_gas_price_for_chain(chain_name)
+        });
+
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
+
+    let tics_tx = TicsTransaction {
+        to: normalized_contract_address,
+        value: "0x0".to_string(),
+        gas_limit,
+        gas_price,
+        nonce,
+        data: Some(calldata),
+        chain_id,
+    };
+
+    Ok(ChainTransaction::Tics(tics_tx))
+}
+
 pub fn encode_remove_liquidity_calldata(
     solver_id: &str,
     chain_id: U256,
@@ -2035,7 +2168,7 @@ pub fn encode_remove_liquidity_batch_calldata(
     f.encode_input(&tokens).ok()
 }
 
-/// Build one Ethereum transaction for removeLiquidity batch (multiple solvers / TICS + BTC in one tx).
+/// Build one TICS transaction for removeLiquidity batch (multiple solvers / TICS + BTC in one tx).
 pub async fn create_solver_remove_liquidity_batch_transaction(
     from_address: &str,
     requests: &[RemoveLiquidityBatchRequest],
@@ -2043,7 +2176,7 @@ pub async fn create_solver_remove_liquidity_batch_transaction(
     contract_address: &str,
     chain_id: u64,
     chain_name: &str,
-) -> Result<EthereumTransaction> {
+) -> Result<TicsTransaction> {
     use crate::utils::transaction::encode_remove_liquidity_batch_calldata;
 
     let normalized_contract_address = if contract_address.starts_with("0x") {
@@ -2074,9 +2207,9 @@ pub async fn create_solver_remove_liquidity_batch_transaction(
     let gas_price = get_gas_price_for_chain(chain_name, chain_id)
         .await
         .unwrap_or_else(|_| get_default_gas_price_for_chain(chain_name));
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -2086,7 +2219,7 @@ pub async fn create_solver_remove_liquidity_batch_transaction(
         chain_id,
     };
 
-    Ok(ethereum_tx)
+    Ok(tics_tx)
 }
 
 /// Fetch current gas price from RPC for Qubetics chain
@@ -2265,7 +2398,7 @@ mod tests {
     async fn test_qubetics_unsupported_chain() {
         ensure_testnet_network_type();
         // Test that unsupported chain IDs return an error
-        let result = fetch_qubetics_gas_price(1).await; // Ethereum mainnet (unsupported)
+        let result = fetch_qubetics_gas_price(1).await; // EVM mainnet chain ID 1 (unsupported)
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         println!("🔧 Expected error for unsupported chain: {}", error_msg);
@@ -2377,9 +2510,9 @@ pub(crate) fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
     Ok(script_bytes)
 }
 
-/// Validate that an address is a valid, non-empty 20-byte Ethereum address.
+/// Validate that an address is a valid, non-empty 20-byte TICS address.
 /// This prevents contract creation transactions from being created when a transfer is intended.
-fn validate_ethereum_address(address: &str) -> Result<()> {
+fn validate_tics_address(address: &str) -> Result<()> {
     // Check that address is not empty
     if address.is_empty() {
         return Err(anyhow::anyhow!("Address cannot be empty"));
@@ -2404,7 +2537,7 @@ fn validate_ethereum_address(address: &str) -> Result<()> {
     let bytes = hex::decode(hex_part)
         .map_err(|e| anyhow::anyhow!("Invalid hex characters in address: {}", e))?;
 
-    // Check that address is exactly 20 bytes (standard Ethereum address length)
+    // Check that address is exactly 20 bytes (standard TICS address length)
     if bytes.len() != 20 {
         return Err(anyhow::anyhow!(
             "Address must be exactly 20 bytes (40 hex characters), got {} bytes",
@@ -2415,15 +2548,15 @@ fn validate_ethereum_address(address: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
+pub fn create_transaction_for_signing(tx: &TicsTransaction) -> Vec<u8> {
     // Validate the 'to' address before encoding to prevent contract creation transactions
     // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
-    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
-    validate_ethereum_address(&tx.to)
+    // which TICS interprets as contract creation, potentially locking funds irreversibly.
+    validate_tics_address(&tx.to)
         .map_err(|e| {
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for transfer transaction: {}. \
-                 This function is intended for standard Ethereum transfers, not contract creation.",
+                 This function is intended for standard TICS transfers, not contract creation.",
                 tx.to,
                 e
             )
@@ -2432,7 +2565,7 @@ pub fn create_transaction_for_signing(tx: &EthereumTransaction) -> Vec<u8> {
 
     // Log transaction details before creating raw transaction
     info!(
-        "🔧 [ETH_RAW_TXN] Creating raw Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
+        "🔧 [ETH_RAW_TXN] Creating raw TICS transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}",
         tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id
     );
 
@@ -2644,8 +2777,8 @@ fn test_validate_contract_transaction_hex_fields() {
 }
 
 #[test]
-fn test_common_ethereum_amounts() {
-    // Test common Ethereum amounts in wei
+fn test_common_tics_amounts() {
+    // Test common TICS amounts in wei
     let one_eth_wei = 1000000000000000000u128; // 1 ETH = 10^18 wei
     assert_eq!(amount_to_hex_string(one_eth_wei), "0xde0b6b3a7640000");
 
@@ -2785,56 +2918,56 @@ fn test_utxo_selection_prefers_non_dust_change_when_possible() {
 }
 
 #[test]
-fn test_validate_ethereum_address_valid() {
+fn test_validate_tics_address_valid() {
     // Test valid 20-byte address
     let valid_addr = "0x1234567890123456789012345678901234567890";
-    assert!(validate_ethereum_address(valid_addr).is_ok());
+    assert!(validate_tics_address(valid_addr).is_ok());
 }
 
 #[test]
-fn test_validate_ethereum_address_empty() {
+fn test_validate_tics_address_empty() {
     // Test empty address
-    assert!(validate_ethereum_address("").is_err());
+    assert!(validate_tics_address("").is_err());
 }
 
 #[test]
-fn test_validate_ethereum_address_just_0x() {
+fn test_validate_tics_address_just_0x() {
     // Test "0x" which would create contract creation transaction
-    let result = validate_ethereum_address("0x");
+    let result = validate_tics_address("0x");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cannot be '0x'"));
 }
 
 #[test]
-fn test_validate_ethereum_address_no_prefix() {
+fn test_validate_tics_address_no_prefix() {
     // Test address without 0x prefix
-    assert!(validate_ethereum_address("1234567890123456789012345678901234567890").is_err());
+    assert!(validate_tics_address("1234567890123456789012345678901234567890").is_err());
 }
 
 #[test]
-fn test_validate_ethereum_address_wrong_length() {
+fn test_validate_tics_address_wrong_length() {
     // Test address with wrong length (not 20 bytes)
     // 19 bytes (38 hex chars)
-    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678").is_err());
+    assert!(validate_tics_address("0x12345678901234567890123456789012345678").is_err());
     // 21 bytes (42 hex chars)
-    assert!(validate_ethereum_address("0x12345678901234567890123456789012345678901").is_err());
+    assert!(validate_tics_address("0x12345678901234567890123456789012345678901").is_err());
 }
 
 #[test]
-fn test_validate_ethereum_address_invalid_hex() {
+fn test_validate_tics_address_invalid_hex() {
     // Test address with invalid hex characters
-    assert!(validate_ethereum_address("0x123456789012345678901234567890123456789g").is_err());
+    assert!(validate_tics_address("0x123456789012345678901234567890123456789g").is_err());
 }
 
 pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<u8> {
     // Validate the 'to' address before encoding to prevent contract creation transactions
     // when a contract call is intended. An empty or malformed address would RLP-encode as 0x80,
-    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
-    validate_ethereum_address(&tx.to)
+    // which TICS interprets as contract creation, potentially locking funds irreversibly.
+    validate_tics_address(&tx.to)
         .map_err(|e| {
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for contract transaction: {}. \
-                 Contract address must be a valid 20-byte Ethereum address.",
+                 Contract address must be a valid 20-byte TICS address.",
                 tx.to,
                 e
             )
@@ -2843,7 +2976,7 @@ pub fn create_transaction_for_signing_contract(tx: &ContractTransaction) -> Vec<
 
     // Log contract transaction details before creating raw transaction
     info!(
-        "🔧 [ETH_RAW_CONTRACT_TXN] Creating raw Ethereum contract transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, DataLength: {}",
+        "🔧 [ETH_RAW_CONTRACT_TXN] Creating raw TICS contract transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, DataLength: {}",
         tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id, tx.data.len()
     );
 
@@ -2912,12 +3045,12 @@ pub fn create_signed_transaction(
 ) -> Vec<u8> {
     // Validate the 'to' address before encoding to prevent contract creation transactions
     // when a transfer is intended. An empty or malformed address would RLP-encode as 0x80,
-    // which Ethereum interprets as contract creation, potentially locking funds irreversibly.
-    validate_ethereum_address(&tx.to)
+    // which TICS interprets as contract creation, potentially locking funds irreversibly.
+    validate_tics_address(&tx.to)
         .map_err(|e| {
             anyhow::anyhow!(
                 "Invalid 'to' address '{}' for transfer transaction: {}. \
-                 This function is intended for standard Ethereum transfers, not contract creation.",
+                 This function is intended for standard TICS transfers, not contract creation.",
                 tx.to,
                 e
             )
@@ -2926,7 +3059,7 @@ pub fn create_signed_transaction(
 
     // Log signed transaction details before creating final raw transaction
     info!(
-        "🔧 [ETH_SIGNED_TXN] Creating final signed Ethereum transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, v: {}, HasData: {}",
+        "🔧 [ETH_SIGNED_TXN] Creating final signed TICS transaction - To: {}, Value: {}, Nonce: {}, GasLimit: {}, GasPrice: {}, ChainId: {}, v: {}, HasData: {}",
         tx.to, tx.value, tx.nonce, tx.gas_limit, tx.gas_price, tx.chain_id, v, data.is_some()
     );
 
@@ -3074,9 +3207,9 @@ pub async fn create_invalidate_solver_ids_transaction(
 
     info!("🔧 [CONTRACT] invalidateSolverIds gas price: {}", gas_price);
     info!("🔧 [CONTRACT] invalidateSolverIds gas limit: {}", gas_limit);
-    let nonce = fetch_ethereum_nonce(from_address, chain_id).await?;
+    let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
-    let ethereum_tx = EthereumTransaction {
+    let tics_tx = TicsTransaction {
         to: normalized_contract_address,
         value: "0x0".to_string(),
         gas_limit,
@@ -3086,5 +3219,5 @@ pub async fn create_invalidate_solver_ids_transaction(
         chain_id,
     };
 
-    Ok(ChainTransaction::Ethereum(ethereum_tx))
+    Ok(ChainTransaction::Tics(tics_tx))
 }

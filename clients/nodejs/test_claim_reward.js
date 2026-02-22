@@ -176,7 +176,7 @@ async function testClaimRewardEthOnly() {
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: expectedAddress, // Must match the address derived from the private key
+        tics_address: expectedAddress, // Must match the address derived from the private key
         btc_address: null
     };
 
@@ -232,7 +232,7 @@ async function testClaimRewardBtcOnly() {
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: null,
+        tics_address: null,
         btc_address: TEST_BTC_ADDRESS
     };
 
@@ -288,7 +288,7 @@ async function testClaimRewardBoth() {
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: TEST_ETH_ADDRESS,
+        tics_address: TEST_ETH_ADDRESS,
         btc_address: TEST_BTC_ADDRESS
     };
 
@@ -344,7 +344,7 @@ async function testInvalidSignature() {
     const payload = {
         signature: invalidSignature,
         message: message,
-        ethereum_address: TEST_ETH_ADDRESS,
+        tics_address: TEST_ETH_ADDRESS,
         btc_address: null
     };
 
@@ -386,7 +386,7 @@ async function testNoAddresses() {
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: null,
+        tics_address: null,
         btc_address: null
     };
 

@@ -32,7 +32,7 @@ impl Default for ContractConfig {
     }
 }
 
-/// Contract client for interacting with Ethereum contracts
+/// Contract client for interacting with TICS contracts
 #[derive(Clone)]
 pub struct ContractClient {
     provider: Arc<Provider<Http>>,

@@ -14,7 +14,7 @@ pub struct ConsensusNode {
     consensus_results: HashMap<u64, ConsensusResult>,
     /// Consensus results that arrived before we had selected_nodes for that round
     pending_results: HashMap<u64, ConsensusResult>,
-    /// Operation type for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    /// Operation type for each round (e.g., "global_clock", "bitcoin", "tics")
     operation_types_by_round: HashMap<u64, String>,
 }
 

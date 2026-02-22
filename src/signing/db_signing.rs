@@ -46,8 +46,8 @@ impl DatabaseSigningNode {
             Self::derive_peer_id_from_string(&id)
         });
 
-        // Create default Ethereum chain handler (can be changed later)
-        let chain_handler = ChainHandlerFactory::create_ethereum_handler(1043);
+        // Create default TICS chain handler (can be changed later)
+        let chain_handler = ChainHandlerFactory::create_tics_handler(1043);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
         let signing_storage = SigningStorage::new(database.clone());

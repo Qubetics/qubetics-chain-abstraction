@@ -21,7 +21,7 @@ pub struct VrfNodeSelector {
     submissions: HashMap<u64, HashMap<PeerId, VrfOutput>>,
     results: HashMap<u64, NodeSelectionResult>,
     received_selections: HashMap<u64, HashMap<SerializablePeerId, VrfSelectedNodesBroadcast>>,
-    /// Operation type for each round (e.g., "global_clock", "bitcoin", "ethereum")
+    /// Operation type for each round (e.g., "global_clock", "bitcoin", "tics")
     operation_types_by_round: HashMap<u64, String>,
 }
 

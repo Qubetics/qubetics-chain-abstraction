@@ -61,7 +61,7 @@ impl IntentTransactionIds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRegistration {
     pub user_id: String,
-    pub ethereum_address: String,
+    pub tics_address: String,
     pub hmac_constant: [u8; 32],
     pub tweaked_secret_share: Option<SerializableScalar>,
     pub user_group_key: Option<SerializablePoint>,
@@ -70,6 +70,21 @@ pub struct UserRegistration {
     pub created_at: DateTime<Utc>,
     pub registered_by_node: String, // Track which node registered this user
     pub intent_hashes: HashMap<String, IntentStatus>, // intent_hash -> IntentStatus mapping
+}
+
+/// Admin registration data structure — stored separately from users under "admin:" prefix.
+/// Used for platform fee recipient addresses derived via MPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRegistration {
+    pub admin_id: String,
+    pub tics_address: String,
+    pub hmac_constant: [u8; 32],
+    pub tweaked_secret_share: Option<SerializableScalar>,
+    pub user_group_key: Option<SerializablePoint>,
+    pub derived_eth_address: Option<String>,
+    pub derived_btc_address: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub registered_by_node: String,
 }
 
 /// Global intent registry

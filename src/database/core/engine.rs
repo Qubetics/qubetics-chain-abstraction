@@ -251,12 +251,46 @@ impl Database {
     }
 
     /// Asynchronous wrapper for [`Database::get_keys_with_prefix`] to avoid blocking async runtimes.
+    /// Enforces a 5-second timeout to prevent unbounded scans from stalling the event loop.
     pub async fn get_keys_with_prefix_async(&self, prefix: &str) -> Result<Vec<String>> {
         let db = self.clone();
         let prefix = prefix.to_owned();
-        task::spawn_blocking(move || db.get_keys_with_prefix(&prefix))
-            .await
-            .map_err(|e| anyhow!("Join error during get_keys_with_prefix_async: {}", e))?
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            task::spawn_blocking(move || db.get_keys_with_prefix(&prefix)),
+        )
+        .await;
+
+        match result {
+            Ok(join_result) => join_result
+                .map_err(|e| anyhow!("Join error during get_keys_with_prefix_async: {}", e))?,
+            Err(_) => Err(anyhow!(
+                "get_keys_with_prefix_async timed out after 5s for prefix: (truncated)"
+            )),
+        }
+    }
+
+    /// Asynchronous wrapper for [`Database::get_values_with_prefix`] to avoid blocking async runtimes.
+    /// Enforces a 5-second timeout to prevent unbounded scans from stalling the event loop.
+    pub async fn get_values_with_prefix_async<V>(&self, prefix: &str) -> Result<Vec<(String, V)>>
+    where
+        V: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let db = self.clone();
+        let prefix = prefix.to_owned();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            task::spawn_blocking(move || db.get_values_with_prefix::<V>(&prefix)),
+        )
+        .await;
+
+        match result {
+            Ok(join_result) => join_result
+                .map_err(|e| anyhow!("Join error during get_values_with_prefix_async: {}", e))?,
+            Err(_) => Err(anyhow!(
+                "get_values_with_prefix_async timed out after 5s for prefix: (truncated)"
+            )),
+        }
     }
 
     /// Get all values with a specific key prefix
@@ -318,8 +352,8 @@ impl Database {
             .write(batch)
             .map_err(|e| anyhow!("Failed to execute batch write: {}", e))?;
 
-        info!(
-            "🔧 [DATABASE] Executed batch write with {} operations",
+        debug!(
+            "[DATABASE] Batch write: {} operations",
             op_count
         );
         Ok(())
@@ -344,8 +378,8 @@ impl Database {
             entries.push((key.to_vec(), value.to_vec()));
         }
 
-        info!(
-            "📦 [DATABASE] Exported {} entries for synchronization",
+        debug!(
+            "[DATABASE] Exported {} entries for sync",
             entries.len()
         );
         Ok(entries)
@@ -366,8 +400,8 @@ impl Database {
             }
 
             if i >= start_index + batch_size {
-                info!(
-                    "📦 [DATABASE] Exported batch of {} entries (index {}-{})",
+                debug!(
+                    "[DATABASE] Exported batch of {} entries (index {}-{})",
                     entries.len(),
                     start_index,
                     start_index + batch_size - 1
@@ -380,8 +414,8 @@ impl Database {
             entries.push((key.to_vec(), value.to_vec()));
         }
 
-        info!(
-            "📦 [DATABASE] Exported final batch of {} entries (starting at index {})",
+        debug!(
+            "[DATABASE] Exported final batch of {} entries (starting at index {})",
             entries.len(),
             start_index
         );
@@ -425,8 +459,8 @@ impl Database {
             }
 
             if entries.len() >= batch_size {
-                info!(
-                    "📦 [DATABASE] Exported filtered batch of {} user entries (index {}-{})",
+                debug!(
+                    "[DATABASE] Exported filtered batch of {} entries (index {}-{})",
                     entries.len(),
                     start_index,
                     start_index + batch_size.saturating_sub(1)
@@ -438,8 +472,8 @@ impl Database {
             matched_index += 1;
         }
 
-        info!(
-            "📦 [DATABASE] Exported final filtered batch of {} user entries (starting at index {})",
+        debug!(
+            "[DATABASE] Exported final filtered batch of {} entries (starting at index {})",
             entries.len(),
             start_index
         );
@@ -470,7 +504,7 @@ impl Database {
             .write(batch)
             .map_err(|e| anyhow!("Failed to import batch: {}", e))?;
 
-        info!("📥 [DATABASE] Imported batch of {} entries", batch_size);
+        debug!("[DATABASE] Imported batch of {} entries", batch_size);
         Ok(())
     }
 
@@ -488,7 +522,7 @@ impl Database {
             .write(batch)
             .map_err(|e| anyhow!("Failed to clear database: {}", e))?;
 
-        info!("🗑️ [DATABASE] Cleared all entries");
+        debug!("[DATABASE] Cleared all entries");
         Ok(())
     }
 
@@ -523,15 +557,27 @@ impl Database {
     }
 
     /// Asynchronous wrapper for [`Database::count_entries_with_prefix`] safe for async contexts.
+    /// Enforces a 5-second timeout.
     pub async fn count_entries_with_prefix_async(&self, prefix: &str) -> Result<usize> {
         let db = self.clone();
         let prefix = prefix.to_owned();
-        task::spawn_blocking(move || db.count_entries_with_prefix(&prefix))
-            .await
-            .map_err(|e| anyhow!("Join error during count_entries_with_prefix_async: {}", e))?
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            task::spawn_blocking(move || db.count_entries_with_prefix(&prefix)),
+        )
+        .await;
+
+        match result {
+            Ok(join_result) => join_result
+                .map_err(|e| anyhow!("Join error during count_entries_with_prefix_async: {}", e))?,
+            Err(_) => Err(anyhow!(
+                "count_entries_with_prefix_async timed out after 5s"
+            )),
+        }
     }
 
     /// Asynchronous wrapper for [`Database::export_batch_with_prefix`].
+    /// Enforces a 5-second timeout.
     pub async fn export_batch_with_prefix_async(
         &self,
         prefix: &str,
@@ -540,9 +586,21 @@ impl Database {
     ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, bool)> {
         let db = self.clone();
         let prefix = prefix.to_owned();
-        task::spawn_blocking(move || db.export_batch_with_prefix(&prefix, start_index, batch_size))
-            .await
-            .map_err(|e| anyhow!("Join error during export_batch_with_prefix_async: {}", e))?
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            task::spawn_blocking(move || {
+                db.export_batch_with_prefix(&prefix, start_index, batch_size)
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(join_result) => join_result
+                .map_err(|e| anyhow!("Join error during export_batch_with_prefix_async: {}", e))?,
+            Err(_) => Err(anyhow!(
+                "export_batch_with_prefix_async timed out after 5s"
+            )),
+        }
     }
 
     /// Asynchronous wrapper for [`Database::batch_write`] to reduce lock contention in async handlers.
@@ -565,19 +623,30 @@ impl Database {
     }
 
     /// Delete all keys matching a prefix and return the number deleted.
+    /// Enforces a 5-second timeout.
     pub async fn delete_keys_with_prefix_async(&self, prefix: &str) -> Result<usize> {
         let db = self.clone();
         let prefix = prefix.to_owned();
-        task::spawn_blocking(move || {
-            let keys = db.get_keys_with_prefix(&prefix)?;
-            let count = keys.len();
-            for key in &keys {
-                db.delete_string(key)?;
-            }
-            Ok(count)
-        })
-        .await
-        .map_err(|e| anyhow!("Join error during delete_keys_with_prefix_async: {}", e))?
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            task::spawn_blocking(move || {
+                let keys = db.get_keys_with_prefix(&prefix)?;
+                let count = keys.len();
+                for key in &keys {
+                    db.delete_string(key)?;
+                }
+                Ok(count)
+            }),
+        )
+        .await;
+
+        match result {
+            Ok(join_result) => join_result
+                .map_err(|e| anyhow!("Join error during delete_keys_with_prefix_async: {}", e))?,
+            Err(_) => Err(anyhow!(
+                "delete_keys_with_prefix_async timed out after 5s"
+            )),
+        }
     }
 }
 
