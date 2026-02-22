@@ -125,9 +125,9 @@ impl MpcNetworkLayer {
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
 
-                    // Reject user-to-vault intents stuck in Pending/Batched for > 3 hours
+                    // Reject user-to-vault intents stuck in Pending/Batched for > 30 minutes
                     if let Some(ref uim) = self.user_intent_manager {
-                        const STALE_INTENT_MAX_AGE_SECS: u64 = 3 * 3600; // 3 hours
+                        const STALE_INTENT_MAX_AGE_SECS: u64 = 30 * 60; // 30 minutes
                         uim.reject_stale_intents(STALE_INTENT_MAX_AGE_SECS).await;
                     }
                 }
