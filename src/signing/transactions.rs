@@ -3,7 +3,7 @@ use crate::{
     chain_abstraction::ChainTransaction,
     types::{TransactionNetwork, TransactionType},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 impl SigningNode {
     pub(crate) async fn store_withdraw_transaction_tics(
@@ -483,43 +483,6 @@ impl SigningNode {
                             intent_hash, round, error_message
                         );
                     }
-
-                    // Revert intent from Batched back to Pending locally so it
-                    // can be re-batched in the next cycle.
-                    // NEVER revert from Solved — that is a terminal state.
-                    if !intent_hash.starts_with("addliq:") && !intent_hash.starts_with("peerinv:") {
-                        if let Some(user) = user_intent_manager
-                            .get_user_by_intent_hash(intent_hash)
-                            .await
-                        {
-                            let current_status = user_intent_manager
-                                .get_intent_status(&user.tics_address, intent_hash)
-                                .await;
-                            if matches!(current_status, Some(crate::types::user_intent::IntentStatus::Solved)) {
-                                debug!(
-                                    "⏭️ [SIGNING] Skipping revert for intent {} — already Solved",
-                                    intent_hash
-                                );
-                            } else if let Err(e) = user_intent_manager
-                                .update_intent_status(
-                                    &user.tics_address,
-                                    intent_hash,
-                                    crate::types::user_intent::IntentStatus::Pending,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    "⚠️ [SIGNING] Failed to revert intent {} to Pending: {}",
-                                    intent_hash, e
-                                );
-                            } else {
-                                info!(
-                                    "🔄 [SIGNING] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
-                                    intent_hash, user.tics_address
-                                );
-                            }
-                        }
-                    }
                 }
 
                 self.broadcast_transaction_error(
@@ -746,19 +709,26 @@ impl SigningNode {
                         warn!("[store_transaction_id_for_round] [BTC][Withdraw] No entry in withdraw_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
-                } else if is_claim_platform_fee_round {
-                    let claim_pf_pending_btc = self
+                } else if is_claim_reward_round {
+                    let claim_reward_pending_btc = self
                         .pending
-                        .claim_platform_fee_pending_transactions_btc
+                        .claim_reward_pending_transactions_btc
                         .read()
                         .await;
-                    if let Some((_tx, _tx_bytes, _identifiers, transaction_type, _extras)) =
-                        claim_pf_pending_btc.get(&round)
+                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
+                        claim_reward_pending_btc.get(&round)
                     {
-                        info!("[store_transaction_id_for_round] [BTC][ClaimPlatformFee] Found claim_platform_fee_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
-                        (None, transaction_type.clone(), None)
+                        let solver_address = identifiers.as_ref().and_then(|v| {
+                            v.iter().find_map(|encoded| {
+                                encoded
+                                    .split_once('|')
+                                    .map(|(_, solver)| solver.to_string())
+                            })
+                        });
+                        info!("[store_transaction_id_for_round] [BTC][ClaimReward] Found claim_reward_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
+                        (None, transaction_type.clone(), solver_address)
                     } else {
-                        warn!("[store_transaction_id_for_round] [BTC][ClaimPlatformFee] No entry in claim_platform_fee_pending_transactions_btc for round {}", round);
+                        warn!("[store_transaction_id_for_round] [BTC][ClaimReward] No entry in claim_reward_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
                 } else {

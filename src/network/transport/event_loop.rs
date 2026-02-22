@@ -124,9 +124,9 @@ impl MpcNetworkLayer {
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
 
-                    // Reject user-to-vault intents stuck in Pending/Batched for > 30 minutes
+                    // Reject user-to-vault intents stuck in Pending/Batched for > 3 hours
                     if let Some(ref uim) = self.user_intent_manager {
-                        const STALE_INTENT_MAX_AGE_SECS: u64 = 30 * 60; // 30 minutes
+                        const STALE_INTENT_MAX_AGE_SECS: u64 = 3 * 3600; // 3 hours
                         uim.reject_stale_intents(STALE_INTENT_MAX_AGE_SECS).await;
                     }
                 }
@@ -481,7 +481,7 @@ impl MpcNetworkLayer {
             }
             signing_node.replicate_vrf_round_to_consensus(round);
 
-            let selection_ok = if let Some(vrf_service) = signing_node.vrf_service() {
+            if let Some(vrf_service) = signing_node.vrf_service() {
                 debug!(
                     "[CLOCK] Performing selection for round {} with {} nodes",
                     round,
@@ -505,41 +505,11 @@ impl MpcNetworkLayer {
                             selection_result.selected_nodes.len(),
                             selection_result.total_nodes,
                         );
-                        true
+                        return Ok(());
                     }
                     Err(e) => {
                         error!("❌ [CLOCK] Selection failed for round {}: {}", round, e);
                         return Err(e);
-                    }
-                }
-            } else {
-                false
-            };
-
-            // Immediately trigger consensus without waiting for other nodes' VRF
-            // selection broadcasts. HRW is deterministic — all nodes with the same
-            // DKG candidate list compute the same final node independently, so
-            // voting is unnecessary for clock operations.
-            if selection_ok {
-                info!(
-                    "⏰ [CLOCK] Triggering consensus directly for round {} (no vote wait)",
-                    round
-                );
-                match signing_node.start_consensus_for_round(round).await {
-                    Ok(Some(result)) => {
-                        info!(
-                            "✅ [CLOCK] Consensus completed for round {}: final node = {}",
-                            round, result.final_node.0
-                        );
-                    }
-                    Ok(None) => {
-                        debug!("[CLOCK] Consensus returned None for round {}", round);
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ [CLOCK] Direct consensus failed for round {}: {}",
-                            round, e
-                        );
                     }
                 }
             }
