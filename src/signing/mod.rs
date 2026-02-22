@@ -5305,6 +5305,8 @@ impl SigningNode {
         //     commitments on an observer), the batch can never complete.  Revert the
         //     intent status from Batched back to Pending so a future round (with a
         //     different final node) can re-process it.
+        //     Capped at 3 reverts per intent to prevent infinite loops.
+        const MAX_REVERT_COUNT: u8 = 3;
         if verified_count == 0 && !signatures.is_empty() {
             // Check if this node is the final node for this round
             let is_final = {
@@ -5312,29 +5314,45 @@ impl SigningNode {
                 final_nodes.get(&round).map_or(false, |f| *f == self.id)
             };
             if is_final {
-                warn!(
-                    "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending so it can be re-processed",
-                    self.id, slot_id, round
-                );
-                if let Some(ref uim) = self.user_intent_manager {
-                    if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
-                        if let Err(e) = uim
-                            .update_intent_status(
-                                &user.tics_address,
-                                &slot_id,
-                                crate::types::user_intent::IntentStatus::Pending,
-                            )
-                            .await
-                        {
-                            error!(
-                                "❌ [BTC_UTV] Failed to revert intent {} to Pending: {}",
-                                slot_id, e
-                            );
-                        } else {
-                            info!(
-                                "✅ [BTC_UTV] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
-                                slot_id, user.tics_address
-                            );
+                // Check and increment revert counter
+                let revert_count = {
+                    let mut counts = self.btc_utv_state.revert_counts.write().await;
+                    let count = counts.entry(slot_id.clone()).or_insert(0);
+                    *count = count.saturating_add(1);
+                    *count
+                };
+                if revert_count > MAX_REVERT_COUNT {
+                    error!(
+                        "🚨 [BTC_UTV] Intent {} has been reverted {} times (max {}). \
+                         NOT reverting again — manual investigation required. \
+                         Check DKG commitments and node health.",
+                        slot_id, revert_count, MAX_REVERT_COUNT
+                    );
+                } else {
+                    warn!(
+                        "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending (attempt {}/{})",
+                        self.id, slot_id, round, revert_count, MAX_REVERT_COUNT
+                    );
+                    if let Some(ref uim) = self.user_intent_manager {
+                        if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
+                            if let Err(e) = uim
+                                .update_intent_status(
+                                    &user.tics_address,
+                                    &slot_id,
+                                    crate::types::user_intent::IntentStatus::Pending,
+                                )
+                                .await
+                            {
+                                error!(
+                                    "❌ [BTC_UTV] Failed to revert intent {} to Pending: {}",
+                                    slot_id, e
+                                );
+                            } else {
+                                info!(
+                                    "✅ [BTC_UTV] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
+                                    slot_id, user.tics_address
+                                );
+                            }
                         }
                     }
                 }
@@ -6638,11 +6656,16 @@ impl SigningNode {
         }
 
         // Threshold reached! Use the first matching entry's data (all tx_bytes are identical)
-        let verified_entry = entries
-            .iter()
-            .find(|e| e.tx_bytes == tx_bytes)
-            .unwrap()
-            .clone();
+        let verified_entry = match entries.iter().find(|e| e.tx_bytes == tx_bytes) {
+            Some(entry) => entry.clone(),
+            None => {
+                error!(
+                    "❌ [SIGNING] Race condition: threshold count matched but entry not found for round {} slot {:?}",
+                    round, intent_hash
+                );
+                return Ok(());
+            }
+        };
 
         info!(
             "✅ [SIGNING] Threshold reached for round {} slot {:?} - {} matching copies from DKG nodes",

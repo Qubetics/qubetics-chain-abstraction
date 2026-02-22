@@ -3749,26 +3749,40 @@ pub(crate) async fn handle_claim_platform_fee(
     }
 
     // --- 2. Validate amount ---
-    if req.amount.trim().is_empty() || req.amount.trim() == "0" {
-        warn!("❌ [PLATFORM_FEE] Invalid amount: {}", req.amount);
-        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
-            status: "error".to_string(),
-            request_id: None,
-            amount: req.amount.clone(),
-            tics_target_address: req.tics_target_address.clone(),
-            btc_target_address: req.btc_target_address.clone(),
-            message: "Amount must be greater than zero".to_string(),
-            error_message: Some("amount must be a non-zero decimal string".to_string()),
-        }));
-    }
+    let parsed_amount_u128: u128 = match req.amount.trim().parse::<u128>() {
+        Ok(a) if a > 0 => a,
+        Ok(_) => {
+            warn!("❌ [PLATFORM_FEE] Zero amount: {}", req.amount);
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Amount must be greater than zero".to_string(),
+                error_message: Some("amount must be a non-zero decimal string".to_string()),
+            }));
+        }
+        Err(_) => {
+            warn!("❌ [PLATFORM_FEE] Invalid amount format: {}", req.amount);
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "Invalid amount format".to_string(),
+                error_message: Some("amount must be a valid non-zero decimal string".to_string()),
+            }));
+        }
+    };
 
     // --- 2b. BTC dust check: reject BTC claims below Bitcoin dust limit ---
     if req.btc_target_address.is_some() {
-        let amount_u128 = req.amount.trim().parse::<u128>().unwrap_or(0);
-        if amount_u128 < (DUST_LIMIT_SATS as u128) {
+        if parsed_amount_u128 < (DUST_LIMIT_SATS as u128) {
             warn!(
                 "❌ [PLATFORM_FEE] BTC claim amount {} sats below dust limit {}",
-                amount_u128, DUST_LIMIT_SATS
+                parsed_amount_u128, DUST_LIMIT_SATS
             );
             return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                 status: "error".to_string(),
@@ -3779,7 +3793,7 @@ pub(crate) async fn handle_claim_platform_fee(
                 message: "BTC amount below dust threshold".to_string(),
                 error_message: Some(format!(
                     "BTC amount {} satoshis is below Bitcoin dust limit (minimum {} satoshis required)",
-                    amount_u128, DUST_LIMIT_SATS
+                    parsed_amount_u128, DUST_LIMIT_SATS
                 )),
             }));
         }
@@ -3862,12 +3876,21 @@ pub(crate) async fn handle_claim_platform_fee(
     }
 
     // --- 3b. Verify admin is registered in MPC system ---
-    let admin_address_cs = ethers::utils::to_checksum(
-        &admin_public_address
-            .parse::<Address>()
-            .expect("ADMIN_PUBLIC_ADDRESS already validated"),
-        None,
-    );
+    let admin_address_cs = match admin_public_address.parse::<Address>() {
+        Ok(addr) => ethers::utils::to_checksum(&addr, None),
+        Err(e) => {
+            error!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS '{}' is not a valid address: {}", admin_public_address, e);
+            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                status: "error".to_string(),
+                request_id: None,
+                amount: req.amount.clone(),
+                tics_target_address: req.tics_target_address.clone(),
+                btc_target_address: req.btc_target_address.clone(),
+                message: "ADMIN_PUBLIC_ADDRESS configuration is invalid".to_string(),
+                error_message: Some("ADMIN_PUBLIC_ADDRESS env var is not a valid Ethereum address".to_string()),
+            }));
+        }
+    };
     match user_intent_manager
         .get_admin_by_address(&admin_address_cs)
         .await
@@ -4065,7 +4088,7 @@ pub(crate) async fn handle_claim_platform_fee(
     // TICS claims: check treasury vault balance
     // BTC claims: check DKG-derived BTC address balance
     {
-        let requested_u128 = req.amount.trim().parse::<u128>().unwrap_or(0);
+        let requested_u128 = parsed_amount_u128;
         let (network_address, blockchain, liquidity_source) = if asset == "TICS" {
             let vault_address = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
                 .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());

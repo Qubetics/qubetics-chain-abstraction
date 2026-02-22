@@ -945,7 +945,7 @@ impl MpcNetworkLayer {
                     (src_tics && dst_tics) || (src_btc && dst_btc)
                 };
                 let target_amount = if is_same_chain {
-                    intent.amount.parse::<u128>().unwrap()
+                    parsed_amount
                 } else {
                     let prices = match fetch_crypto_prices(Some(intent.timestamp)).await {
                         Ok(p) => p,
@@ -4663,6 +4663,39 @@ impl MpcNetworkLayer {
                     request.request_id, request.asset, request.amount
                 );
 
+                // --- Input validation ---
+                if request.request_id.trim().is_empty() {
+                    warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim: empty request_id");
+                    return Ok(());
+                }
+                if request.asset != "TICS" && request.asset != "BTC" {
+                    warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid asset '{}'", request.request_id, request.asset);
+                    return Ok(());
+                }
+                let claimed_amount = match request.amount.trim().parse::<u128>() {
+                    Ok(a) if a > 0 => a,
+                    _ => {
+                        warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid or zero amount '{}'", request.request_id, request.amount);
+                        return Ok(());
+                    }
+                };
+                // Validate exactly one target address is set and matches asset
+                match request.asset.as_str() {
+                    "TICS" => {
+                        if request.tics_target_address.as_ref().map_or(true, |a| a.trim().is_empty()) {
+                            warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: TICS claim missing tics_target_address", request.request_id);
+                            return Ok(());
+                        }
+                    }
+                    "BTC" => {
+                        if request.btc_target_address.as_ref().map_or(true, |a| a.trim().is_empty()) {
+                            warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: BTC claim missing btc_target_address", request.request_id);
+                            return Ok(());
+                        }
+                    }
+                    _ => {} // already rejected above
+                }
+
                 let key = format!(
                     "pending_claim_platform_fee:{}",
                     request.request_id
@@ -4709,11 +4742,10 @@ impl MpcNetworkLayer {
 
                 // --- BTC dust check ---
                 if request.asset == "BTC" {
-                    let amount_u128 = request.amount.trim().parse::<u128>().unwrap_or(0);
-                    if amount_u128 < (DUST_LIMIT_SATS as u128) {
+                    if claimed_amount < (DUST_LIMIT_SATS as u128) {
                         warn!(
                             "🚫 [PLATFORM_FEE] Gossip claim {} rejected: BTC amount {} sats below dust limit {}",
-                            request.request_id, amount_u128, DUST_LIMIT_SATS
+                            request.request_id, claimed_amount, DUST_LIMIT_SATS
                         );
                         return Ok(());
                     }
@@ -4778,9 +4810,10 @@ impl MpcNetworkLayer {
                                     }
                                     Err(e) => {
                                         warn!(
-                                            "⚠️ [PLATFORM_FEE] getPlatformUnclaimedFee failed during gossip validation: {} — storing anyway",
+                                            "🚫 [PLATFORM_FEE] getPlatformUnclaimedFee failed during gossip validation: {} — rejecting claim",
                                             e
                                         );
+                                        return Ok(());
                                     }
                                 }
                             }
