@@ -3389,15 +3389,15 @@ pub(crate) async fn handle_add_liquidity(
         }));
     }
 
-    // Verify solver is onboarded/active on-chain
-    match crate::contract::validate_solver_active(&payload.solver_id, "ADD_LIQUIDITY").await {
-        Ok(true) => {} // solver is active
+    // Verify solver is onboarded (registered) on-chain
+    match crate::contract::validate_solver_onboarded(&payload.solver_id, "ADD_LIQUIDITY").await {
+        Ok(true) => {} // solver is onboarded
         Ok(false) => {
-            warn!("❌ [ADD_LIQUIDITY] Solver '{}' is not active on-chain", payload.solver_id);
+            warn!("❌ [ADD_LIQUIDITY] Solver '{}' is not onboarded on-chain", payload.solver_id);
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
-                message: "Solver is not active".to_string(),
-                error_message: Some(format!("Solver '{}' is not active on the solver contract", payload.solver_id)),
+                message: "Solver is not onboarded".to_string(),
+                error_message: Some(format!("Solver '{}' is not onboarded on the solver contract", payload.solver_id)),
             }));
         }
         Err(e) => {

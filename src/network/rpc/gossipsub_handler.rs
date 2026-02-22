@@ -1383,11 +1383,11 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Verify solver is active on-chain
-                match crate::contract::validate_solver_active(&solver_id, "ADD_LIQUIDITY_GOSSIP").await {
-                    Ok(true) => {} // solver is active
+                // Verify solver is onboarded (registered) on-chain
+                match crate::contract::validate_solver_onboarded(&solver_id, "ADD_LIQUIDITY_GOSSIP").await {
+                    Ok(true) => {} // solver is onboarded
                     Ok(false) => {
-                        warn!("🚫 [ADD_LIQUIDITY] Solver '{}' is not active on-chain for request_id={}, dropping", solver_id, request_id);
+                        warn!("🚫 [ADD_LIQUIDITY] Solver '{}' is not onboarded on-chain for request_id={}, dropping", solver_id, request_id);
                         return Ok(());
                     }
                     Err(e) => {

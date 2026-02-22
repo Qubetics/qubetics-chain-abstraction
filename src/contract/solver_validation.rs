@@ -98,3 +98,47 @@ pub async fn validate_solver_active_strict(solver_id: &str, log_prefix: &str) ->
         Err(e) => Err(e),
     }
 }
+
+/// Validate if a solver is onboarded on-chain by solver ID.
+/// Uses the contract's isSolverOnboarded(solverId).
+/// Returns Ok(true) if onboarded, Ok(false) if not onboarded or not configured.
+/// Returns Err if the contract call fails.
+pub async fn validate_solver_onboarded(solver_id: &str, log_prefix: &str) -> Result<bool> {
+    let config = match get_solver_contract_config()? {
+        Some(cfg) => cfg,
+        None => {
+            debug!(
+                "⚠️ [{}] Solver contract not configured, skipping onboarded check for solver {}",
+                log_prefix, solver_id
+            );
+            return Ok(true); // Allow if not configured (development mode)
+        }
+    };
+
+    let contract =
+        create_solver_contract(&config).map_err(|e| anyhow!("[{}] {}", log_prefix, e))?;
+
+    match contract.is_solver_onboarded(solver_id).await {
+        Ok(validated) => {
+            if validated {
+                info!(
+                    "✅ [{}] Accepted solver: {} (onboarded)",
+                    log_prefix, solver_id
+                );
+            } else {
+                warn!(
+                    "🚫 [{}] Rejecting solver: {} (not onboarded)",
+                    log_prefix, solver_id
+                );
+            }
+            Ok(validated)
+        }
+        Err(e) => {
+            warn!(
+                "🚫 [{}] Contract call failed for solver {}, rejecting: {}",
+                log_prefix, solver_id, e
+            );
+            Err(anyhow!("Contract validation failed: {}", e))
+        }
+    }
+}

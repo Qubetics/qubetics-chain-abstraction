@@ -11,7 +11,7 @@ pub mod solver_validation;
 pub use solver_manager::SolverManagerContract;
 pub use solver_validation::{
     create_solver_contract, get_solver_contract_config, validate_solver_active,
-    validate_solver_active_strict,
+    validate_solver_active_strict, validate_solver_onboarded,
 };
 
 /// Configuration for contract interactions

@@ -21,6 +21,7 @@ abigen!(
         function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
         function isSolverActive(string solverId) view returns (bool)
         function isSolverIdValidated(string solverId) view returns (bool)
+        function isSolverOnboarded(string solverId) view returns (bool)
         function invalidateSolverIds(string[] solverIds)
         function getPlatformUnclaimedFee(uint256 chainId) view returns (uint256)
     ]"#
@@ -229,6 +230,17 @@ impl SolverManagerContract {
             .await
             .map_err(|e| anyhow!("isSolverIdValidated call failed: {}", e))?;
         Ok(validated)
+    }
+
+    /// Check if a solver is onboarded by solver ID (contract: isSolverOnboarded).
+    pub async fn is_solver_onboarded(&self, solver_id: &str) -> Result<bool> {
+        let onboarded = self
+            .inner
+            .is_solver_onboarded(solver_id.to_string())
+            .call()
+            .await
+            .map_err(|e| anyhow!("isSolverOnboarded call failed: {}", e))?;
+        Ok(onboarded)
     }
 
     /// Invalidate multiple solver IDs (marks them as inactive)

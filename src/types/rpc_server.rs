@@ -335,7 +335,7 @@ pub struct AddLiquidityRequest {
     /// Opaque payload string that was signed. Expected to be a JSON string containing:
     /// { "solverId": string, "solverAddress": string, "amount": string, "chainId": number }.
     pub message: String,
-    /// Optional transaction ID (e.g. on-chain deposit tx hash) associated with this liquidity add.
+    /// Optional transaction ID (e.g. on-chain deposit tx hash). When provided, it is stored and passed to the addLiquidityBatch contract call.
     #[serde(default)]
     pub tx_id: Option<String>,
 }

@@ -431,34 +431,34 @@ async function main() {
     await checkStatus(config.solverId);
 
     // Step 1: Onboard (validator signs EIP-712, solver sends tx)
-    console.log(`\n  [Onboard]`);
-    try {
-      await onboard(solverWallet, config);
-    } catch (e) {
-      console.error(`    ERROR: ${e.message}`);
-      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-      continue;
-    }
+    // console.log(`\n  [Onboard]`);
+    // try {
+    //   await onboard(solverWallet, config);
+    // } catch (e) {
+    //   console.error(`    ERROR: ${e.message}`);
+    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+    //   continue;
+    // }
 
     // Step 2: Validate (validator signs EIP-712, solver sends tx)
-    console.log(`\n  [Validate]`);
-    try {
-      await validate(solverWallet, config.solverId);
-    } catch (e) {
-      console.error(`    ERROR: ${e.message}`);
-      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-      continue;
-    }
+    // console.log(`\n  [Validate]`);
+    // try {
+    //   await validate(solverWallet, config.solverId);
+    // } catch (e) {
+    //   console.error(`    ERROR: ${e.message}`);
+    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+    //   continue;
+    // }
 
     // Step 3: Add liquidity (solver sends tx, no special auth needed)
-    console.log(`\n  [Add Liquidity]`);
-    try {
-      await addLiquidity(solverWallet, config);
-    } catch (e) {
-      console.error(`    ERROR: ${e.message}`);
-      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-      continue;
-    }
+    // console.log(`\n  [Add Liquidity]`);
+    // try {
+    //   await addLiquidity(solverWallet, config);
+    // } catch (e) {
+    //   console.error(`    ERROR: ${e.message}`);
+    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+    //   continue;
+    // }
 
     // Final status
     console.log(`\n  [Final Status]`);
