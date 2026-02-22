@@ -435,9 +435,6 @@ pub struct BtcUtvAggregationState {
     pub btc_utv_done_inputs_by_round_slot: Arc<RwLock<HashMap<RoundSlotKey, HashSet<usize>>>>,
     /// Track fully completed slots (all inputs done + broadcast)
     pub btc_utv_completed_slots: Arc<RwLock<HashSet<RoundSlotKey>>>,
-    /// How many times an intent (slot_id) has been reverted from Batched→Pending.
-    /// Capped at MAX_REVERT_COUNT to prevent infinite loops.
-    pub revert_counts: Arc<RwLock<HashMap<String, u8>>>,
 }
 
 impl Default for BtcUtvAggregationState {
@@ -453,7 +450,6 @@ impl BtcUtvAggregationState {
             btc_utv_agg_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_done_inputs_by_round_slot: Arc::new(RwLock::new(HashMap::new())),
             btc_utv_completed_slots: Arc::new(RwLock::new(HashSet::new())),
-            revert_counts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
