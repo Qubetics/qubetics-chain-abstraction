@@ -3,7 +3,7 @@ use crate::{
     chain_abstraction::ChainTransaction,
     types::{TransactionNetwork, TransactionType},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 impl SigningNode {
     pub(crate) async fn store_withdraw_transaction_tics(
@@ -482,6 +482,43 @@ impl SigningNode {
                             "💥 [SIGNING] Stored transaction error for intent {} (round {}): {}",
                             intent_hash, round, error_message
                         );
+                    }
+
+                    // Revert intent from Batched back to Pending locally so it
+                    // can be re-batched in the next cycle.
+                    // NEVER revert from Solved — that is a terminal state.
+                    if !intent_hash.starts_with("addliq:") && !intent_hash.starts_with("peerinv:") {
+                        if let Some(user) = user_intent_manager
+                            .get_user_by_intent_hash(intent_hash)
+                            .await
+                        {
+                            let current_status = user_intent_manager
+                                .get_intent_status(&user.tics_address, intent_hash)
+                                .await;
+                            if matches!(current_status, Some(crate::types::user_intent::IntentStatus::Solved)) {
+                                debug!(
+                                    "⏭️ [SIGNING] Skipping revert for intent {} — already Solved",
+                                    intent_hash
+                                );
+                            } else if let Err(e) = user_intent_manager
+                                .update_intent_status(
+                                    &user.tics_address,
+                                    intent_hash,
+                                    crate::types::user_intent::IntentStatus::Pending,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    "⚠️ [SIGNING] Failed to revert intent {} to Pending: {}",
+                                    intent_hash, e
+                                );
+                            } else {
+                                info!(
+                                    "🔄 [SIGNING] Reverted intent {} to Pending for user {} (will be re-batched next cycle)",
+                                    intent_hash, user.tics_address
+                                );
+                            }
+                        }
                     }
                 }
 

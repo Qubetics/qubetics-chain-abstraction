@@ -2279,6 +2279,19 @@ impl SigningNode {
                     }
                 }
             }
+        // Store the final node so signing functions can find it (even if this node
+        // didn't locally trigger consensus due to min_required mismatch).
+        let final_node_str = result.final_node.0.to_string();
+        {
+            let mut final_nodes = self.signatures.final_nodes_by_round.write().await;
+            if !final_nodes.contains_key(&round) {
+                final_nodes.insert(round, final_node_str.clone());
+                info!(
+                    "💾 [CONSENSUS] Stored final node {} for round {} (from received consensus result)",
+                    final_node_str, round
+                );
+            }
+        }
         if let Some(consensus_node) = self.coordination.consensus_node_mut() {
             consensus_node.handle_message(msg).await?;
         }
@@ -5435,7 +5448,16 @@ impl SigningNode {
                 );
                 if let Some(ref uim) = self.user_intent_manager {
                     if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
-                        if let Err(e) = uim
+                        // NEVER revert from Solved — that is a terminal state.
+                        let current_status = uim
+                            .get_intent_status(&user.tics_address, &slot_id)
+                            .await;
+                        if matches!(current_status, Some(crate::types::user_intent::IntentStatus::Solved)) {
+                            debug!(
+                                "⏭️ [BTC_UTV] Skipping revert for intent {} — already Solved",
+                                slot_id
+                            );
+                        } else if let Err(e) = uim
                             .update_intent_status(
                                 &user.tics_address,
                                 &slot_id,
@@ -5455,6 +5477,23 @@ impl SigningNode {
                         }
                     }
                 }
+
+                // Broadcast error to all nodes so they also revert
+                // intent status from Batched to Pending.
+                self.broadcast_transaction_error(
+                    Some(vec![slot_id.clone()]),
+                    &format!(
+                        "BTC UTV final node failed to verify ALL signatures for slot {} round {}",
+                        slot_id, round
+                    ),
+                    "user_to_network",
+                    None,
+                )
+                .await;
+                info!(
+                    "📡 [BTC_UTV] Broadcasted verification failure for slot {} round {} to sync intent status across nodes",
+                    slot_id, round
+                );
             }
         }
 

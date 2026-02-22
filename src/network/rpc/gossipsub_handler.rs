@@ -667,17 +667,17 @@ impl MpcNetworkLayer {
             GossipsubMessage::TransactionErrorBroadcast {
                 intent_hashes,
                 error_message,
-                transaction_type: _transaction_type,
+                transaction_type,
                 solver_address,
                 node_id,
             } => {
                 info!(
-                    "📡 [NETWORK] Received transaction error broadcast from node {}",
-                    node_id
+                    "📡 [NETWORK] Received transaction error broadcast from node {} (type: {})",
+                    node_id, transaction_type
                 );
                 if !intent_hashes.is_empty() {
                     info!(
-                        "🔗 [NETWORK] Intent hashes: {} intent(s)",
+                        "🔗 [NETWORK] Identifiers: {} item(s)",
                         intent_hashes.len()
                     );
                 } else if let Some(solver) = &solver_address {
@@ -691,7 +691,6 @@ impl MpcNetworkLayer {
                 // They will automatically retry in the next TICS cycle
                 if !intent_hashes.is_empty() {
                     for h in &intent_hashes {
-                        // Check if this is an add_liquidity request_id (starts with "addliq:")
                         if h.starts_with("addliq:") {
                             warn!(
                                 "⚠️ [ADD_LIQUIDITY] Request {} failed (error: {}), will retry in next cycle (status remains 'Pending')",
@@ -701,12 +700,147 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Store the error in our local user registry (one store per intent)
+                // --- Revert string-status pending requests (withdraw, claim_reward, claim_platform_fee) ---
+                // Identifiers are encoded as "request_id|solver_address" in the intent_hashes field.
+                let tx_type = transaction_type.as_str();
+                if tx_type == "withdraw_liquidity"
+                    || tx_type == "claim_reward"
+                    || tx_type == "claim_platform_fee"
+                {
+                    use crate::types::rpc_server::{
+                        PendingClaimPlatformFeeRequest, PendingClaimRewardRequest,
+                        PendingWithdrawRequest,
+                    };
+                    let db_prefix = match tx_type {
+                        "withdraw_liquidity" => "pending_withdraw_liquidity:",
+                        "claim_reward" => "pending_claim_reward:",
+                        "claim_platform_fee" => "pending_claim_platform_fee:",
+                        _ => unreachable!(),
+                    };
+
+                    // If we have specific identifiers, revert only those. Otherwise
+                    // revert all Batched (no tx_id) records for the solver.
+                    if !intent_hashes.is_empty() {
+                        for ident in &intent_hashes {
+                            if ident.starts_with("addliq:") || ident.starts_with("peerinv:") {
+                                continue;
+                            }
+                            // Try to extract request_id from "request_id|solver" format
+                            let req_id = if let Some((id, _)) = ident.split_once('|') {
+                                id
+                            } else {
+                                ident.as_str()
+                            };
+
+                            // Scan DB for matching request and revert if Batched (never Completed/Failed)
+                            match tx_type {
+                                "withdraw_liquidity" => {
+                                    let entries: Vec<(String, PendingWithdrawRequest)> =
+                                        self.db.get_values_with_prefix(db_prefix).unwrap_or_default();
+                                    for (key, req) in entries {
+                                        if req.request_id == req_id
+                                            && req.status == "Batched"
+                                            && req.tx_id.is_none()
+                                        {
+                                            let mut reverted = req.clone();
+                                            reverted.status = "Pending".to_string();
+                                            if let Err(e) = self.db.put_string(&key, &reverted) {
+                                                warn!("⚠️ [NETWORK] Failed to revert withdraw {} to Pending: {}", req_id, e);
+                                            } else {
+                                                info!("🔄 [NETWORK] Reverted withdraw {} to Pending (synced from node {})", req_id, node_id);
+                                            }
+                                        }
+                                    }
+                                }
+                                "claim_reward" => {
+                                    let entries: Vec<(String, PendingClaimRewardRequest)> =
+                                        self.db.get_values_with_prefix(db_prefix).unwrap_or_default();
+                                    for (key, req) in entries {
+                                        if req.request_id == req_id
+                                            && req.status == "Batched"
+                                            && req.tx_id.is_none()
+                                        {
+                                            let mut reverted = req.clone();
+                                            reverted.status = "Pending".to_string();
+                                            if let Err(e) = self.db.put_string(&key, &reverted) {
+                                                warn!("⚠️ [NETWORK] Failed to revert claim_reward {} to Pending: {}", req_id, e);
+                                            } else {
+                                                info!("🔄 [NETWORK] Reverted claim_reward {} to Pending (synced from node {})", req_id, node_id);
+                                            }
+                                        }
+                                    }
+                                }
+                                "claim_platform_fee" => {
+                                    let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
+                                        self.db.get_values_with_prefix(db_prefix).unwrap_or_default();
+                                    for (key, req) in entries {
+                                        if req.request_id == req_id
+                                            && req.status == "Batched"
+                                            && req.tx_id.is_none()
+                                        {
+                                            let mut reverted = req.clone();
+                                            reverted.status = "Pending".to_string();
+                                            if let Err(e) = self.db.put_string(&key, &reverted) {
+                                                warn!("⚠️ [NETWORK] Failed to revert claim_platform_fee {} to Pending: {}", req_id, e);
+                                            } else {
+                                                info!("🔄 [NETWORK] Reverted claim_platform_fee {} to Pending (synced from node {})", req_id, node_id);
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else if let Some(solver) = &solver_address {
+                        // No specific identifiers — revert ALL Batched records for this solver
+                        match tx_type {
+                            "withdraw_liquidity" => {
+                                let entries: Vec<(String, PendingWithdrawRequest)> =
+                                    self.db.get_values_with_prefix(db_prefix).unwrap_or_default();
+                                for (key, req) in entries {
+                                    if req.solver_address.to_lowercase() == solver.to_lowercase()
+                                        && req.status == "Batched"
+                                        && req.tx_id.is_none()
+                                    {
+                                        let mut reverted = req.clone();
+                                        reverted.status = "Pending".to_string();
+                                        if let Err(e) = self.db.put_string(&key, &reverted) {
+                                            warn!("⚠️ [NETWORK] Failed to revert withdraw {} to Pending: {}", req.request_id, e);
+                                        } else {
+                                            info!("🔄 [NETWORK] Reverted withdraw {} to Pending for solver {} (synced from node {})", req.request_id, solver, node_id);
+                                        }
+                                    }
+                                }
+                            }
+                            "claim_reward" => {
+                                let entries: Vec<(String, PendingClaimRewardRequest)> =
+                                    self.db.get_values_with_prefix(db_prefix).unwrap_or_default();
+                                for (key, req) in entries {
+                                    if req.solver_address.to_lowercase() == solver.to_lowercase()
+                                        && req.status == "Batched"
+                                        && req.tx_id.is_none()
+                                    {
+                                        let mut reverted = req.clone();
+                                        reverted.status = "Pending".to_string();
+                                        if let Err(e) = self.db.put_string(&key, &reverted) {
+                                            warn!("⚠️ [NETWORK] Failed to revert claim_reward {} to Pending: {}", req.request_id, e);
+                                        } else {
+                                            info!("🔄 [NETWORK] Reverted claim_reward {} to Pending for solver {} (synced from node {})", req.request_id, solver, node_id);
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // --- Revert IntentStatus-based intents (user_to_vault, network_to_target, etc.) ---
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     if !intent_hashes.is_empty() {
                         for h in &intent_hashes {
-                            // Skip add_liquidity request_ids (already handled above)
-                            if h.starts_with("addliq:") {
+                            // Skip non-intent identifiers
+                            if h.starts_with("addliq:") || h.starts_with("peerinv:") || h.contains('|') {
                                 continue;
                             }
 
@@ -719,10 +853,45 @@ impl MpcNetworkLayer {
                                     h, e
                                 );
                             }
+
+                            // Revert intent from Batched back to Pending so all nodes
+                            // stay in sync and the intent can be re-batched next cycle.
+                            // NEVER revert from Solved — that is a terminal state.
+                            if let Some(user) = user_intent_manager
+                                .get_user_by_intent_hash(h)
+                                .await
+                            {
+                                let current_status = user_intent_manager
+                                    .get_intent_status(&user.tics_address, h)
+                                    .await;
+                                if matches!(current_status, Some(IntentStatus::Solved)) {
+                                    debug!(
+                                        "⏭️ [NETWORK] Skipping revert for intent {} — already Solved",
+                                        h
+                                    );
+                                    continue;
+                                }
+                                if let Err(e) = user_intent_manager
+                                    .update_intent_status(
+                                        &user.tics_address,
+                                        h,
+                                        IntentStatus::Pending,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        "⚠️ [NETWORK] Failed to revert intent {} to Pending: {}",
+                                        h, e
+                                    );
+                                } else {
+                                    info!(
+                                        "🔄 [NETWORK] Reverted intent {} to Pending for user {} (synced from node {})",
+                                        h, user.tics_address, node_id
+                                    );
+                                }
+                            }
                         }
-                    } else if solver_address.is_some() {
-                        // Reward/withdraw transaction error - just log for now
-                    } else {
+                    } else if solver_address.is_none() {
                         warn!("⚠️ [NETWORK] Transaction error broadcast missing both intent hashes and solver address");
                     }
                 } else {
@@ -1905,22 +2074,52 @@ impl MpcNetworkLayer {
 
                             use crate::signing::chains::BitcoinSigner;
                             let mut btc_signer = BitcoinSigner::new(&mut signing_node);
-                            btc_signer
+                            if let Err(e) = btc_signer
                                 .sign_transaction(
                                     tx_bytes,
                                     &chain_handler,
                                     Some(our_btc_tx),
-                                    None, // No user eth address for network transaction
-                                    intent_hashes_in_batch,
+                                    None,
+                                    intent_hashes_in_batch.clone(),
                                     Some(crate::types::TransactionType::NetworkToTarget),
                                     signing_key,
-                                    None, // No solver
+                                    None,
                                     signing_key,
-                                    nonce_tuple_id.clone(), // coordinated nonce
+                                    nonce_tuple_id.clone(),
                                 )
-                                .await?;
+                                .await
+                            {
+                                warn!("❌ [BTC_BATCH] BTC NetworkToTarget batch signing failed for round {}: {}", round, e);
 
-                            debug!("✅ [BATCH] Bitcoin batch transaction signed successfully");
+                                // Revert intents locally (never revert Solved)
+                                if let Some(uim) = &self.user_intent_manager {
+                                    for h in &intent_hashes_in_batch {
+                                        if let Some(user) = uim.get_user_by_intent_hash(h).await {
+                                            let current = uim.get_intent_status(&user.tics_address, h).await;
+                                            if matches!(current, Some(IntentStatus::Solved)) { continue; }
+                                            let _ = uim.update_intent_status(&user.tics_address, h, IntentStatus::Pending).await;
+                                            info!("🔄 [BTC_BATCH] Reverted intent {} to Pending", h);
+                                        }
+                                    }
+                                }
+
+                                // Broadcast error so other nodes also revert
+                                let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                                    intent_hashes: intent_hashes_in_batch,
+                                    error_message: format!("BTC NetworkToTarget batch signing failed for round {}: {}", round, e),
+                                    transaction_type: "network_to_target".to_string(),
+                                    solver_address: None,
+                                    node_id: self.local_peer_id.to_string(),
+                                };
+                                if let Ok(data) = serde_json::to_vec(&error_msg) {
+                                    let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                        topic: "transaction-sync".to_string(),
+                                        data,
+                                    }).await;
+                                }
+                            } else {
+                                debug!("✅ [BATCH] Bitcoin batch transaction signed successfully");
+                            }
                         } else {
                             error!("❌ [BATCH] Signing node not available");
                         }
@@ -2139,7 +2338,7 @@ impl MpcNetworkLayer {
                                 let contract_chain_handler =
                                     signing_node.get_contract_chain_handler().clone();
                                 let mut eth_signer = TicsSigner::new(&mut signing_node);
-                                eth_signer
+                                if let Err(e) = eth_signer
                                     .sign_contract_message(
                                         contract_tx_bytes,
                                         &contract_chain_handler,
@@ -2156,17 +2355,47 @@ impl MpcNetworkLayer {
                                         None, // tics_claim_platform_fee_identifiers (not applicable)
                                         nonce_tuple_id.clone(), // COORDINATED nonce from coordinator
                                     )
-                                    .await?;
+                                    .await
+                                {
+                                    warn!("❌ [TICS_BATCH] TICS NetworkToTarget batch signing failed for round {}: {}", round, e);
 
-                                info!(
-                                    "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, nonce: {:?})",
-                                    intent_hashes.len(),
-                                    nonce_tuple_id
-                                );
-                                info!(
-                                    "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
-                                    node_id
-                                );
+                                    // Revert intents locally (never revert Solved)
+                                    if let Some(uim) = &self.user_intent_manager {
+                                        for h in &intent_hashes {
+                                            if let Some(user) = uim.get_user_by_intent_hash(h).await {
+                                                let current = uim.get_intent_status(&user.tics_address, h).await;
+                                                if matches!(current, Some(IntentStatus::Solved)) { continue; }
+                                                let _ = uim.update_intent_status(&user.tics_address, h, IntentStatus::Pending).await;
+                                                info!("🔄 [TICS_BATCH] Reverted intent {} to Pending", h);
+                                            }
+                                        }
+                                    }
+
+                                    // Broadcast error so other nodes also revert
+                                    let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                                        intent_hashes: intent_hashes.clone(),
+                                        error_message: format!("TICS NetworkToTarget batch signing failed for round {}: {}", round, e),
+                                        transaction_type: "network_to_target".to_string(),
+                                        solver_address: None,
+                                        node_id: self.local_peer_id.to_string(),
+                                    };
+                                    if let Ok(data) = serde_json::to_vec(&error_msg) {
+                                        let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                            topic: "transaction-sync".to_string(),
+                                            data,
+                                        }).await;
+                                    }
+                                } else {
+                                    info!(
+                                        "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, nonce: {:?})",
+                                        intent_hashes.len(),
+                                        nonce_tuple_id
+                                    );
+                                    info!(
+                                        "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
+                                        node_id
+                                    );
+                                }
                             } else {
                                 warn!(
                                     "❌ [TICS_BATCH] Signing node not available; cannot start MPC signing for batch contract call"
@@ -2451,7 +2680,18 @@ impl MpcNetworkLayer {
                             );
                             // Revert intent status back to Pending so they can be
                             // re-picked in the next epoch cycle.
+                            // NEVER revert from Solved — that is a terminal state.
+                            let failed_hashes: Vec<String> = batch_intents
+                                .iter()
+                                .map(|(h, _, _)| h.clone())
+                                .collect();
                             for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                let current = user_intent_manager
+                                    .get_intent_status(user_eth_addr, intent_hash)
+                                    .await;
+                                if matches!(current, Some(IntentStatus::Solved)) {
+                                    continue;
+                                }
                                 if let Err(revert_err) = user_intent_manager
                                     .update_intent_status(
                                         user_eth_addr,
@@ -2465,6 +2705,23 @@ impl MpcNetworkLayer {
                                         intent_hash, revert_err
                                     );
                                 }
+                            }
+
+                            // Broadcast error to all nodes so they also revert
+                            // intent status from Batched to Pending.
+                            let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                                intent_hashes: failed_hashes,
+                                error_message: format!("TICS UTV batch signing failed for round {}: {}", round, e),
+                                transaction_type: "user_to_network".to_string(),
+                                solver_address: None,
+                                node_id: self.local_peer_id.to_string(),
+                            };
+                            if let Ok(data) = serde_json::to_vec(&error_msg) {
+                                let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                    topic: "transaction-sync".to_string(),
+                                    data,
+                                }).await;
+                                info!("📡 [TICS_UTV_BATCH] Broadcasted batch failure for round {} to sync intent status across nodes", round);
                             }
                         } else {
                             info!(
@@ -2797,7 +3054,18 @@ impl MpcNetworkLayer {
                             );
                             // Revert intent status back to Pending so they can be
                             // re-picked in the next epoch cycle.
+                            // NEVER revert from Solved — that is a terminal state.
+                            let failed_hashes: Vec<String> = batch_intents
+                                .iter()
+                                .map(|(h, _, _)| h.clone())
+                                .collect();
                             for (intent_hash, _intent, user_eth_addr) in &batch_intents {
+                                let current = user_intent_manager
+                                    .get_intent_status(user_eth_addr, intent_hash)
+                                    .await;
+                                if matches!(current, Some(IntentStatus::Solved)) {
+                                    continue;
+                                }
                                 if let Err(revert_err) = user_intent_manager
                                     .update_intent_status(
                                         user_eth_addr,
@@ -2811,6 +3079,23 @@ impl MpcNetworkLayer {
                                         intent_hash, revert_err
                                     );
                                 }
+                            }
+
+                            // Broadcast error to all nodes so they also revert
+                            // intent status from Batched to Pending.
+                            let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                                intent_hashes: failed_hashes,
+                                error_message: format!("BTC UTV batch signing failed for round {}: {}", round, e),
+                                transaction_type: "user_to_network".to_string(),
+                                solver_address: None,
+                                node_id: self.local_peer_id.to_string(),
+                            };
+                            if let Ok(data) = serde_json::to_vec(&error_msg) {
+                                let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                    topic: "transaction-sync".to_string(),
+                                    data,
+                                }).await;
+                                info!("📡 [BTC_UTV_BATCH] Broadcasted batch failure for round {} to sync intent status across nodes", round);
                             }
                         } else {
                             info!(
@@ -3172,22 +3457,58 @@ impl MpcNetworkLayer {
 
                     use crate::signing::chains::BitcoinSigner;
                     let mut btc_signer = BitcoinSigner::new(&mut signing_node);
-                    btc_signer
+                    if let Err(e) = btc_signer
                         .sign_transaction(
                             tx_bytes,
                             &chain_handler,
                             Some(our_btc_tx),
                             None, // No user eth address
-                            withdraw_identifiers,
+                            withdraw_identifiers.clone(),
                             Some(crate::types::TransactionType::WithdrawLiquidity),
                             signing_key,
                             None, // No per-withdraw solver address; encoded in identifiers
                             signing_key,
-                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
+                            nonce_tuple_id.clone(),
                         )
-                        .await?;
+                        .await
+                    {
+                        warn!("❌ [BTC_WITHDRAW] Batch signing failed for round {}: {}", round, e);
 
-                    debug!("✅ [BTC_WITHDRAW] Bitcoin withdraw batch transaction signing initiated");
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingWithdrawRequest;
+                            let entries: Vec<(String, PendingWithdrawRequest)> =
+                                self.db.get_values_with_prefix("pending_withdraw_liquidity:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.status == "Batched" && req.tx_id.is_none()
+                                    && used_requests.iter().any(|(rid, _)| *rid == req.request_id)
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [BTC_WITHDRAW] Reverted withdraw {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: withdraw_identifiers,
+                            error_message: format!("BTC withdraw batch signing failed for round {}: {}", round, e),
+                            transaction_type: "withdraw_liquidity".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [BTC_WITHDRAW] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
+                    } else {
+                        debug!("✅ [BTC_WITHDRAW] Bitcoin withdraw batch transaction signing initiated");
+                    }
                 } else {
                     error!("❌ [BTC_WITHDRAW] Signing node not available");
                 }
@@ -3507,21 +3828,58 @@ impl MpcNetworkLayer {
                         .collect();
                     use crate::signing::chains::BitcoinSigner;
                     let mut btc_signer = BitcoinSigner::new(&mut signing_node);
-                    btc_signer
+                    if let Err(e) = btc_signer
                         .sign_transaction(
                             tx_bytes,
                             &chain_handler,
                             Some(our_btc_tx),
                             None,
-                            claim_reward_identifiers,
+                            claim_reward_identifiers.clone(),
                             Some(crate::types::TransactionType::ClaimReward),
                             signing_key,
                             None,
                             signing_key,
-                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
+                            nonce_tuple_id.clone(),
                         )
-                        .await?;
-                    debug!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
+                        .await
+                    {
+                        warn!("❌ [BTC_CLAIM_REWARD] Batch signing failed for round {}: {}", round, e);
+
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingClaimRewardRequest;
+                            let entries: Vec<(String, PendingClaimRewardRequest)> =
+                                self.db.get_values_with_prefix("pending_claim_reward:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.status == "Batched" && req.tx_id.is_none()
+                                    && used_requests.iter().any(|(rid, _)| *rid == req.request_id)
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [BTC_CLAIM_REWARD] Reverted claim_reward {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: claim_reward_identifiers,
+                            error_message: format!("BTC claim-reward batch signing failed for round {}: {}", round, e),
+                            transaction_type: "claim_reward".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [BTC_CLAIM_REWARD] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
+                    } else {
+                        debug!("✅ [BTC_CLAIM_REWARD] Bitcoin claim-reward batch signing initiated");
+                    }
                 } else {
                     error!("❌ [BTC_CLAIM_REWARD] Signing node not available");
                 }
@@ -3822,7 +4180,7 @@ impl MpcNetworkLayer {
                         signing_node.get_contract_chain_handler().clone();
                     let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
 
-                    eth_signer
+                    if let Err(e) = eth_signer
                         .sign_contract_message(
                             contract_tx_bytes,
                             &contract_chain_handler,
@@ -3833,17 +4191,55 @@ impl MpcNetworkLayer {
                             vault_tweaked_share,
                             None,
                             None,
-                            Some(used_identifiers.clone()), // for tx-id broadcast to update each request
-                            None, // tics_claim_reward_identifiers (not applicable)
-                            None, // tics_claim_platform_fee_identifiers (not applicable)
-                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
+                            Some(used_identifiers.clone()),
+                            None,
+                            None,
+                            nonce_tuple_id.clone(),
                         )
-                        .await?;
+                        .await
+                    {
+                        warn!("❌ [TICS_WITHDRAW] Batch signing failed for round {}: {}", round, e);
 
-                    info!(
-                        "✅ [TICS_WITHDRAW] Submitted single removeLiquidity batch transaction ({} entries) into MPC signing flow",
-                        batch_requests.len()
-                    );
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingWithdrawRequest;
+                            let entries: Vec<(String, PendingWithdrawRequest)> =
+                                self.db.get_values_with_prefix("pending_withdraw_liquidity:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.status == "Batched" && req.tx_id.is_none()
+                                    && used_identifiers.iter().any(|id| {
+                                        id.split_once('|').map_or(false, |(rid, _)| rid == req.request_id)
+                                    })
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [TICS_WITHDRAW] Reverted withdraw {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: used_identifiers,
+                            error_message: format!("TICS withdraw batch signing failed for round {}: {}", round, e),
+                            transaction_type: "withdraw_liquidity".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [TICS_WITHDRAW] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
+                    } else {
+                        info!(
+                            "✅ [TICS_WITHDRAW] Submitted single removeLiquidity batch transaction ({} entries) into MPC signing flow",
+                            batch_requests.len()
+                        );
+                    }
                 } else {
                     warn!("❌ [TICS_WITHDRAW] Signing node unavailable for TICS withdraw batch");
                 }
@@ -4154,14 +4550,49 @@ impl MpcNetworkLayer {
                             vault_tweaked_share,
                             None,
                             None,
-                            None, // tics_withdraw_identifiers (not applicable)
-                            Some(used_identifiers.clone()), // for tx-id broadcast: store tx_id on TICS, mark done for all
-                            None, // tics_claim_platform_fee_identifiers (not applicable)
-                            nonce_tuple_id.clone(), // coordinated nonce for threshold signing
+                            None,
+                            Some(used_identifiers.clone()),
+                            None,
+                            nonce_tuple_id.clone(),
                         )
                         .await
                     {
-                        warn!("⚠️ [TICS_CLAIM_REWARD] sign_contract_message failed: {}", e);
+                        warn!("❌ [TICS_CLAIM_REWARD] Batch signing failed for round {}: {}", round, e);
+
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingClaimRewardRequest;
+                            let entries: Vec<(String, PendingClaimRewardRequest)> =
+                                self.db.get_values_with_prefix("pending_claim_reward:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.status == "Batched" && req.tx_id.is_none()
+                                    && used_identifiers.iter().any(|id| {
+                                        id.split_once('|').map_or(false, |(rid, _)| rid == req.request_id)
+                                    })
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [TICS_CLAIM_REWARD] Reverted claim_reward {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: used_identifiers,
+                            error_message: format!("TICS claim-reward batch signing failed for round {}: {}", round, e),
+                            transaction_type: "claim_reward".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [TICS_CLAIM_REWARD] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
                     } else {
                         info!(
                             "✅ [TICS_CLAIM_REWARD] Submitted claimRewardsBatch (TICS) into MPC signing flow ({} claims)",
@@ -4341,6 +4772,7 @@ impl MpcNetworkLayer {
                 // Process the batch - create contract call
                 // handle_btc_intent_manager_update_batch is a method on MpcNetworkLayer (in channel_handler.rs)
                 // Since both are impl MpcNetworkLayer, we can call it directly
+                let intent_hashes_clone = intent_hashes.clone();
                 if let Err(e) = self
                     .handle_btc_intent_manager_update_batch(
                         intent_hashes,
@@ -4357,6 +4789,33 @@ impl MpcNetworkLayer {
                         "❌ [BTC_INTENT_MANAGER] Failed to handle contract update batch: {}",
                         e
                     );
+
+                    // Revert intents locally (never revert Solved)
+                    if let Some(uim) = &self.user_intent_manager {
+                        for h in &intent_hashes_clone {
+                            if let Some(user) = uim.get_user_by_intent_hash(h).await {
+                                let current = uim.get_intent_status(&user.tics_address, h).await;
+                                if matches!(current, Some(IntentStatus::Solved)) { continue; }
+                                let _ = uim.update_intent_status(&user.tics_address, h, IntentStatus::Pending).await;
+                                info!("🔄 [BTC_INTENT_MANAGER] Reverted intent {} to Pending", h);
+                            }
+                        }
+                    }
+
+                    // Broadcast error so other nodes also revert
+                    let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                        intent_hashes: intent_hashes_clone,
+                        error_message: format!("BTC IntentManager contract update batch failed for round {}: {}", update_round, e),
+                        transaction_type: "network_to_target".to_string(),
+                        solver_address: None,
+                        node_id: self.local_peer_id.to_string(),
+                    };
+                    if let Ok(data) = serde_json::to_vec(&error_msg) {
+                        let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                            topic: "transaction-sync".to_string(),
+                            data,
+                        }).await;
+                    }
                 }
             }
             GossipsubMessage::PeerDisconnection {
@@ -5661,22 +6120,58 @@ impl MpcNetworkLayer {
 
                     use crate::signing::chains::BitcoinSigner;
                     let mut btc_signer = BitcoinSigner::new(&mut signing_node);
-                    btc_signer
+                    if let Err(e) = btc_signer
                         .sign_transaction(
                             tx_bytes,
                             &chain_handler,
                             Some(our_btc_tx),
-                            None, // No user eth address
-                            claim_identifiers,
+                            None,
+                            claim_identifiers.clone(),
                             Some(crate::types::TransactionType::ClaimPlatformFee),
                             signing_key,
-                            None, // No solver address
+                            None,
                             signing_key,
                             nonce_tuple_id.clone(),
                         )
-                        .await?;
+                        .await
+                    {
+                        warn!("❌ [BTC_CLAIM_PLATFORM_FEE] Batch signing failed for round {}: {}", round, e);
 
-                    debug!("✅ [BTC_CLAIM_PLATFORM_FEE] Bitcoin claim-platform-fee transaction signing initiated");
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+                            let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
+                                self.db.get_values_with_prefix("pending_claim_platform_fee:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.status == "Batched" && req.tx_id.is_none()
+                                    && used_requests.iter().any(|(rid, _)| *rid == req.request_id)
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [BTC_CLAIM_PLATFORM_FEE] Reverted claim_platform_fee {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: claim_identifiers,
+                            error_message: format!("BTC claim-platform-fee batch signing failed for round {}: {}", round, e),
+                            transaction_type: "claim_platform_fee".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [BTC_CLAIM_PLATFORM_FEE] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
+                    } else {
+                        debug!("✅ [BTC_CLAIM_PLATFORM_FEE] Bitcoin claim-platform-fee transaction signing initiated");
+                    }
                 } else {
                     error!("❌ [BTC_CLAIM_PLATFORM_FEE] Signing node not available");
                 }
@@ -5920,10 +6415,41 @@ impl MpcNetworkLayer {
                         )
                         .await
                     {
-                        warn!(
-                            "⚠️ [TICS_CLAIM_PLATFORM_FEE] Failed to sign contract message: {}",
-                            e
-                        );
+                        warn!("❌ [TICS_CLAIM_PLATFORM_FEE] Batch signing failed for round {}: {}", round, e);
+
+                        // Revert local Batched requests to Pending (never Completed)
+                        {
+                            use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
+                            let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
+                                self.db.get_values_with_prefix("pending_claim_platform_fee:").unwrap_or_default();
+                            for (key, req) in entries {
+                                if req.request_id == entry.request_id
+                                    && req.status == "Batched"
+                                    && req.tx_id.is_none()
+                                {
+                                    let mut reverted = req.clone();
+                                    reverted.status = "Pending".to_string();
+                                    let _ = self.db.put_string(&key, &reverted);
+                                    info!("🔄 [TICS_CLAIM_PLATFORM_FEE] Reverted claim_platform_fee {} to Pending", req.request_id);
+                                }
+                            }
+                        }
+
+                        // Broadcast error so other nodes also revert
+                        let error_msg = GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: used_identifiers,
+                            error_message: format!("TICS claim-platform-fee batch signing failed for round {}: {}", round, e),
+                            transaction_type: "claim_platform_fee".to_string(),
+                            solver_address: None,
+                            node_id: self.local_peer_id.to_string(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.message_tx.send(ChannelMessage::Broadcast {
+                                topic: "transaction-sync".to_string(),
+                                data,
+                            }).await;
+                            info!("📡 [TICS_CLAIM_PLATFORM_FEE] Broadcasted batch failure for round {} to sync status across nodes", round);
+                        }
                         return Ok(());
                     }
                 }
