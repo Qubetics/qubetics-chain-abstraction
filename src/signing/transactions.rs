@@ -709,26 +709,19 @@ impl SigningNode {
                         warn!("[store_transaction_id_for_round] [BTC][Withdraw] No entry in withdraw_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
-                } else if is_claim_reward_round {
-                    let claim_reward_pending_btc = self
+                } else if is_claim_platform_fee_round {
+                    let claim_pf_pending_btc = self
                         .pending
-                        .claim_reward_pending_transactions_btc
+                        .claim_platform_fee_pending_transactions_btc
                         .read()
                         .await;
-                    if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
-                        claim_reward_pending_btc.get(&round)
+                    if let Some((_tx, _tx_bytes, _identifiers, transaction_type, _extras)) =
+                        claim_pf_pending_btc.get(&round)
                     {
-                        let solver_address = identifiers.as_ref().and_then(|v| {
-                            v.iter().find_map(|encoded| {
-                                encoded
-                                    .split_once('|')
-                                    .map(|(_, solver)| solver.to_string())
-                            })
-                        });
-                        info!("[store_transaction_id_for_round] [BTC][ClaimReward] Found claim_reward_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
-                        (None, transaction_type.clone(), solver_address)
+                        info!("[store_transaction_id_for_round] [BTC][ClaimPlatformFee] Found claim_platform_fee_pending_transactions_btc entry for round {}: transaction_type={:?}", round, transaction_type);
+                        (None, transaction_type.clone(), None)
                     } else {
-                        warn!("[store_transaction_id_for_round] [BTC][ClaimReward] No entry in claim_reward_pending_transactions_btc for round {}", round);
+                        warn!("[store_transaction_id_for_round] [BTC][ClaimPlatformFee] No entry in claim_platform_fee_pending_transactions_btc for round {}", round);
                         (None, None, None)
                     }
                 } else {

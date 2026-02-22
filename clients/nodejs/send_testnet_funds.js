@@ -16,11 +16,11 @@ const api = axios.create({
 // Configuration – Mempool.space API for Testnet3 (UTXO + broadcast)
 const CONFIG = {
     network: bitcoin.networks.testnet,
-    targetAddress: 'mo6aEriaMNcocCfyjDBmeHCWm8qtTaD55x',
+    targetAddress: 'n3fyLg6ZF1hbnWMjzjDj4Yc1vejsPJL4qX',
     privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
     rpcEndpoint: 'https://mempool.space/testnet/api',
-    amountPerTx: 10000, // satoshis
-    numberOfTx: 3,
+    amountPerTx: 1000, // satoshis
+    numberOfTx: 2,
     delayBetweenTx: 2000 // 2 seconds delay between transactions
 };
 

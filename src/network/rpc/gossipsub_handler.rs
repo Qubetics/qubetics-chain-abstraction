@@ -2898,9 +2898,9 @@ impl MpcNetworkLayer {
                 for (request_id, solver_address) in &requests {
                     let key = (request_id.clone(), solver_address.to_lowercase());
                     if let Some(req) = withdraw_map.get(&key) {
-                        // Only process BTC withdraws that are in strict Pending state and have no tx_id
+                        // Only process BTC withdraws that are in Pending or Batched state and have no tx_id
                         if req.asset.to_uppercase() != "BTC"
-                            || req.status != "Pending"
+                            || (req.status != "Pending" && req.status != "Batched")
                             || req.tx_id.is_some()
                         {
                             continue;
@@ -3274,7 +3274,7 @@ impl MpcNetworkLayer {
                             continue;
                         }
                     };
-                    if req.status != "Pending" || req.tx_id.is_some() {
+                    if (req.status != "Pending" && req.status != "Batched") || req.tx_id.is_some() {
                         continue;
                     }
                     let btc_addr = match &req.btc_address {

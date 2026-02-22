@@ -2,9 +2,9 @@
   {
     "userId": 1,
     "walletAddress": "0x60BD26ecc2b882DA9afdd4ea6d0e45A08a990966",
-    "derivedEthAddress": "0xf6bb99c9eadf912db93db4764c15c0478bc2ae3a",
-    "derivedBtcAddress": "moc8FEPd8W87sSzZvCwRZ4YLg1Gbov3VwL",
+    "derivedEthAddress": "0xd34a7d44b7dda7ef2a8c0c7475c49e6592c3665a",
+    "derivedBtcAddress": "mrQXwn6w4AQgisyrx4t37kGkyKcRpwsV6n",
     "hasUserGroupKey": true,
-    "registeredAt": "2026-02-22T08:55:30.959Z"
+    "registeredAt": "2026-02-22T11:58:49.376Z"
   }
 ]
