@@ -526,8 +526,10 @@ mod tests {
             .start_consensus(round)
             .expect("consensus should succeed");
 
-        // Tamper with the final node to simulate spoofed data
-        result.final_node = nodes[1].clone();
+        // Tamper with the final node to a peer NOT in the selected nodes list.
+        // This guarantees the tampering is always detected regardless of random key generation.
+        let fake_node = SerializablePeerId(libp2p::PeerId::from(Keypair::generate_ed25519().public()));
+        result.final_node = fake_node;
 
         let mut receiver = ConsensusNode::new();
         receiver.add_selected_nodes(round, nodes.clone());
@@ -537,7 +539,7 @@ mod tests {
             .await
             .expect_err("tampered consensus result should be rejected");
 
-        assert!(err.to_string().contains("Invalid consensus result"));
+        assert!(err.to_string().contains("Invalid consensus result") || err.to_string().contains("not in selected_nodes"));
         assert!(receiver.get_consensus_result(round).is_none());
     }
 }

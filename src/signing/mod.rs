@@ -2279,6 +2279,19 @@ impl SigningNode {
                     }
                 }
             }
+        // Store the final node so signing functions can find it (even if this node
+        // didn't locally trigger consensus due to min_required mismatch).
+        let final_node_str = result.final_node.0.to_string();
+        {
+            let mut final_nodes = self.signatures.final_nodes_by_round.write().await;
+            if !final_nodes.contains_key(&round) {
+                final_nodes.insert(round, final_node_str.clone());
+                info!(
+                    "💾 [CONSENSUS] Stored final node {} for round {} (from received consensus result)",
+                    final_node_str, round
+                );
+            }
+        }
         if let Some(consensus_node) = self.coordination.consensus_node_mut() {
             consensus_node.handle_message(msg).await?;
         }
@@ -2502,12 +2515,26 @@ impl SigningNode {
                     }
                 };
 
-            // Filter to BTC asset, still pending, and without tx_id
+            // Revert stale "Batched" BTC withdraw requests (no tx_id) back to "Pending" so they can be retried.
+            // This handles the case where a previous BTC signing round failed.
+            for (key, req) in &all_withdraws {
+                if req.asset.to_uppercase() == "BTC" && req.status == "Batched" && req.tx_id.is_none() {
+                    let mut reverted = req.clone();
+                    reverted.status = "Pending".to_string();
+                    if let Err(e) = db.put_string(key, &reverted) {
+                        warn!("⚠️ [CLOCK][BTC_WITHDRAW] Failed to revert stale Batched withdraw {} to Pending: {}", req.request_id, e);
+                    } else {
+                        info!("🔄 [CLOCK][BTC_WITHDRAW] Reverted stale Batched withdraw {} (no tx_id) back to Pending for retry", req.request_id);
+                    }
+                }
+            }
+
+            // Filter to BTC asset, still pending (or just-reverted), and without tx_id
             let mut btc_pending: Vec<(String, PendingWithdrawRequest)> = all_withdraws
                 .into_iter()
                 .filter(|(_, req)| {
                     req.asset.to_uppercase() == "BTC"
-                        && req.status == "Pending"
+                        && (req.status == "Pending" || req.status == "Batched")
                         && req.tx_id.is_none()
                 })
                 .collect();
@@ -2527,6 +2554,17 @@ impl SigningNode {
                     btc_to_process.len(),
                     max_btc_withdraw_per_cycle
                 );
+
+                // Mark selected BTC withdraws as "Batched" to prevent re-picking
+                for (key, req) in &btc_to_process {
+                    let mut updated = req.clone();
+                    updated.status = "Batched".to_string();
+                    if let Err(e) = db.put_string(key, &updated) {
+                        warn!("⚠️ [CLOCK][BTC_WITHDRAW] Failed to mark withdraw {} as Batched: {}", req.request_id, e);
+                    } else {
+                        info!("📝 [CLOCK][BTC_WITHDRAW] Marked withdraw {} as Batched", req.request_id);
+                    }
+                }
 
                 // Build (request_id, solver_address) pairs for the batch message
                 let requests: Vec<(String, String)> = btc_to_process
@@ -2838,10 +2876,25 @@ impl SigningNode {
             db.get_values_with_prefix("pending_claim_reward:")
                 .map_err(|e| anyhow!("Failed to load pending claim reward requests: {}", e))?;
 
+        // Revert stale "Batched" BTC claim reward requests (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous BTC signing round failed.
+        for (key, req) in &all_claims {
+            let has_btc = req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            if has_btc && req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [BTC_CLAIM_REWARD] Failed to revert stale Batched claim {} to Pending: {}", req.request_id, e);
+                } else {
+                    info!("🔄 [BTC_CLAIM_REWARD] Reverted stale Batched claim {} (no tx_id) back to Pending for retry", req.request_id);
+                }
+            }
+        }
+
         let mut btc_claim_pending: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> = all_claims
             .into_iter()
             .filter(|(_, req)| {
-                req.status == "Pending"
+                (req.status == "Pending" || req.status == "Batched")
                     && req.tx_id.is_none()
                     && req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty())
             })
@@ -2856,6 +2909,17 @@ impl SigningNode {
             .into_iter()
             .take(max_btc_claim_reward_per_cycle)
             .collect();
+
+        // Mark selected BTC claim rewards as "Batched" to prevent re-picking
+        for (key, req) in &btc_claim_to_process {
+            let mut updated = req.clone();
+            updated.status = "Batched".to_string();
+            if let Err(e) = db.put_string(key, &updated) {
+                warn!("⚠️ [BTC_CLAIM_REWARD] Failed to mark claim {} as Batched: {}", req.request_id, e);
+            } else {
+                info!("📝 [BTC_CLAIM_REWARD] Marked claim {} as Batched", req.request_id);
+            }
+        }
 
         let claim_requests: Vec<(String, String)> = btc_claim_to_process
             .iter()
@@ -2930,11 +2994,25 @@ impl SigningNode {
             db.get_values_with_prefix(crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE)
                 .map_err(|e| anyhow!("Failed to load pending claim platform fee requests: {}", e))?;
 
+        // Revert stale "Batched" BTC claims (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous BTC signing round failed silently.
+        for (key, req) in &all_claims {
+            if req.asset == "BTC" && req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [BTC_CLAIM_PLATFORM_FEE] Failed to revert stale Batched claim {} to Pending: {}", req.request_id, e);
+                } else {
+                    info!("🔄 [BTC_CLAIM_PLATFORM_FEE] Reverted stale Batched claim {} (no tx_id) back to Pending for retry", req.request_id);
+                }
+            }
+        }
+
         let btc_claim_pending: Vec<_> = all_claims
             .into_iter()
             .filter(|(_, req)| {
                 req.asset == "BTC"
-                    && req.status == "Pending"
+                    && (req.status == "Pending" || req.status == "Batched")
                     && req.tx_id.is_none()
                     && req.btc_target_address.as_ref().map_or(false, |a| !a.trim().is_empty())
             })
@@ -2945,11 +3023,20 @@ impl SigningNode {
         }
 
         // Platform fee: only one request at a time per chain, so take the first one
-        let (_, ref req) = btc_claim_pending[0];
+        let (ref db_key, ref req) = btc_claim_pending[0];
         let claim_requests: Vec<(String, String)> = vec![(
             req.request_id.clone(),
             req.btc_target_address.clone().unwrap_or_default(),
         )];
+
+        // Mark as Batched to prevent re-picking in subsequent epoch_4 rounds
+        let mut updated_req = req.clone();
+        updated_req.status = "Batched".to_string();
+        if let Err(e) = db.put_string(db_key, &updated_req) {
+            warn!("⚠️ [BTC_CLAIM_PLATFORM_FEE] Failed to mark claim {} as Batched: {}", req.request_id, e);
+        } else {
+            info!("📝 [BTC_CLAIM_PLATFORM_FEE] Marked claim {} as Batched", req.request_id);
+        }
 
         let claim_batch_timestamp = chrono::Utc::now().to_rfc3339();
         let claim_batch_id = format!(
@@ -3404,6 +3491,20 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Revert stale "Batched" withdraw requests (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous signing round failed.
+        for (key, req) in &all_withdraws {
+            if req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to revert stale Batched {} withdraw {} to Pending: {}", req.asset, req.request_id, e);
+                } else {
+                    info!("🔄 [CLOCK][WITHDRAW_SETTLE] Reverted stale Batched {} withdraw {} (no tx_id) back to Pending for retry", req.asset, req.request_id);
+                }
+            }
+        }
+
         let mut tics_batched = 0usize;
         let mut btc_updated = 0usize;
 
@@ -3567,6 +3668,20 @@ impl SigningNode {
                 "ℹ️  [CLOCK][TICS_CLAIM] No claim reward requests found for settlement epoch"
             );
             return Ok(());
+        }
+
+        // Revert stale "Batched" claim reward requests (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous signing round failed.
+        for (key, req) in &all_claims {
+            if req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [CLOCK][TICS_CLAIM] Failed to revert stale Batched claim {} to Pending: {}", req.request_id, e);
+                } else {
+                    info!("🔄 [CLOCK][TICS_CLAIM] Reverted stale Batched claim {} (no tx_id) back to Pending for retry", req.request_id);
+                }
+            }
         }
 
         let tics_chain_id = crate::env_defaults::solver_contract_chain_id()
@@ -3745,6 +3860,20 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Revert stale "Batched" TICS claims (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous TICS signing round failed.
+        for (key, req) in &all_claims {
+            if req.asset == "TICS" && req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [CLOCK][TICS_PF] Failed to revert stale Batched TICS claim {} to Pending: {}", req.request_id, e);
+                } else {
+                    info!("🔄 [CLOCK][TICS_PF] Reverted stale Batched TICS claim {} (no tx_id) back to Pending for retry", req.request_id);
+                }
+            }
+        }
+
         // Pick first eligible claim: TICS first, then BTC-with-txid
         let mut selected: Option<(String, PendingClaimPlatformFeeRequest)> = None;
 
@@ -3757,9 +3886,10 @@ impl SigningNode {
         }
 
         // Priority 2: BTC claims with tx_id (need on-chain registration)
+        // Accept both "Pending" (legacy) and "Batched" (after BTC transfer epoch marked it Batched)
         if selected.is_none() {
             for (key, req) in &all_claims {
-                if req.status == "Pending"
+                if (req.status == "Pending" || req.status == "Batched")
                     && req.asset == "BTC"
                     && req.tx_id.as_ref().map_or(false, |t| !t.is_empty())
                 {
@@ -5311,12 +5441,21 @@ impl SigningNode {
             };
             if is_final {
                 warn!(
-                    "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending so it can be re-processed",
+                    "🔄 [BTC_UTV] Final node {} failed to verify ALL signatures for slot {} round {} — reverting intent to Pending",
                     self.id, slot_id, round
                 );
                 if let Some(ref uim) = self.user_intent_manager {
                     if let Some(user) = uim.get_user_by_intent_hash(&slot_id).await {
-                        if let Err(e) = uim
+                        // NEVER revert from Solved — that is a terminal state.
+                        let current_status = uim
+                            .get_intent_status(&user.tics_address, &slot_id)
+                            .await;
+                        if matches!(current_status, Some(crate::types::user_intent::IntentStatus::Solved)) {
+                            debug!(
+                                "⏭️ [BTC_UTV] Skipping revert for intent {} — already Solved",
+                                slot_id
+                            );
+                        } else if let Err(e) = uim
                             .update_intent_status(
                                 &user.tics_address,
                                 &slot_id,
@@ -5336,6 +5475,23 @@ impl SigningNode {
                         }
                     }
                 }
+
+                // Broadcast error to all nodes so they also revert
+                // intent status from Batched to Pending.
+                self.broadcast_transaction_error(
+                    Some(vec![slot_id.clone()]),
+                    &format!(
+                        "BTC UTV final node failed to verify ALL signatures for slot {} round {}",
+                        slot_id, round
+                    ),
+                    "user_to_network",
+                    None,
+                )
+                .await;
+                info!(
+                    "📡 [BTC_UTV] Broadcasted verification failure for slot {} round {} to sync intent status across nodes",
+                    slot_id, round
+                );
             }
         }
 
@@ -6636,11 +6792,16 @@ impl SigningNode {
         }
 
         // Threshold reached! Use the first matching entry's data (all tx_bytes are identical)
-        let verified_entry = entries
-            .iter()
-            .find(|e| e.tx_bytes == tx_bytes)
-            .unwrap()
-            .clone();
+        let verified_entry = match entries.iter().find(|e| e.tx_bytes == tx_bytes) {
+            Some(entry) => entry.clone(),
+            None => {
+                error!(
+                    "❌ [SIGNING] Race condition: threshold count matched but entry not found for round {} slot {:?}",
+                    round, intent_hash
+                );
+                return Ok(());
+            }
+        };
 
         info!(
             "✅ [SIGNING] Threshold reached for round {} slot {:?} - {} matching copies from DKG nodes",

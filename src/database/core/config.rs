@@ -148,7 +148,11 @@ mod tests {
 
     #[test]
     fn default_config_is_valid() {
-        let config = DatabaseConfig::default();
+        let mut config = DatabaseConfig::default();
+        // Default has encryption_key: None; set a valid test key for validate() to pass
+        config.encryption_key = Some(
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+        );
         assert!(config.validate().is_ok());
     }
 

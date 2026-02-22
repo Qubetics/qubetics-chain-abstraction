@@ -213,6 +213,7 @@ if (KEYS_FILE && fs.existsSync(KEYS_FILE)) {
 
   // "028d3f6d56405cb733c322f9841490b0cf02e404f7a1ec45a069aa9beff9eb34",
 
+
   "6a45ba4143b63e4f752f33d35d583db0ce3157fa529ea2a65f5595850ba972d8",
 
 
@@ -551,7 +552,7 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
     log(`[User ${userId}]   Intent Timestamp: ${intentTimestamp} (${new Date(intentTimestamp).toISOString()})`, 'cyan');
 
     const depositIntent = {
-      // source_address: userInfo.data.derived_eth_address,  // BTC address
+      // source_address: userInfo.data.derived_eth_address,  // ETH address
       source_address: userInfo.data.derived_btc_address,  // BTC address
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
@@ -881,8 +882,8 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    // const amount = "3000000000000000000000";  // 12 TICS
-    const amount = "2000";  // btc
+    // const amount = "5000000000000000000";  // 12 TICS
+    const amount = "40000";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });
