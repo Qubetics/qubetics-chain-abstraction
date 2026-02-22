@@ -661,25 +661,23 @@ pub(crate) async fn handle_register_admin(
         }
     };
 
-    // --- 2. Load ADMIN_PUBLIC_ADDRESS from env ---
-    let admin_public_address = match std::env::var("ADMIN_PUBLIC_ADDRESS") {
-        Ok(addr) if !addr.trim().is_empty() => addr.trim().to_string(),
-        _ => {
-            error!("❌ ADMIN_PUBLIC_ADDRESS env var is not configured");
-            return Ok(warp::reply::json(&AdminRegistrationResponse {
-                status: "error".to_string(),
-                message: "ADMIN_PUBLIC_ADDRESS not configured on this node".to_string(),
-                derived_eth_address: None,
-                derived_btc_address: None,
-                error: Some(
-                    RpcError::InvalidRequest(
-                        "ADMIN_PUBLIC_ADDRESS env var is not configured".to_string(),
-                    )
-                    .to_error_response(),
-                ),
-            }));
-        }
-    };
+    // --- 2. Load ADMIN_PUBLIC_ADDRESS from env (or default) ---
+    let admin_public_address = crate::env_defaults::admin_public_address().trim().to_string();
+    if admin_public_address.is_empty() {
+        error!("❌ ADMIN_PUBLIC_ADDRESS env var is not configured");
+        return Ok(warp::reply::json(&AdminRegistrationResponse {
+            status: "error".to_string(),
+            message: "ADMIN_PUBLIC_ADDRESS not configured on this node".to_string(),
+            derived_eth_address: None,
+            derived_btc_address: None,
+            error: Some(
+                RpcError::InvalidRequest(
+                    "ADMIN_PUBLIC_ADDRESS env var is not configured".to_string(),
+                )
+                .to_error_response(),
+            ),
+        }));
+    }
 
     // --- 3. Normalize and verify signature ---
     let (compact, v) = match normalize_eth_signature(&request.signature) {
@@ -1458,8 +1456,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                 // - *->TICS: Treasury vault balance >= target_amount (TICS payouts come from vault)
                 // - *->BTC: DKG address balance on target chain >= target_amount
                 let network_address = if dst_is_tics {
-                    std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                        .unwrap_or_else(|_| "0x2d2dB8853A650A82bED6bb87787d37B22A5d8524".to_string())
+                    crate::env_defaults::treasury_vault_contract_address()
                 } else {
                     // Use DKG group key to derive the network address on the target chain
                     match dkg_storage.get_final_public().await {
@@ -2051,12 +2048,9 @@ pub(crate) async fn handle_get_dkg_status(
 async fn fetch_solver_liquidity_from_contract(
     normalized_address: &str,
 ) -> Result<(Option<String>, Option<String>), String> {
-    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-    let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
-    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "9029".to_string())
+    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+    let contract_address = crate::env_defaults::solver_contract_address();
+    let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
         .unwrap_or(9029);
 
@@ -2127,12 +2121,9 @@ async fn fetch_solver_liquidity_from_contract(
 async fn fetch_solver_unclaimed_rewards_from_contract(
     normalized_address: &str,
 ) -> Result<(String, String), String> {
-    let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-    let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-        .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
-    let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-        .unwrap_or_else(|_| "9029".to_string())
+    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+    let contract_address = crate::env_defaults::solver_contract_address();
+    let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
         .unwrap_or(9029);
 
@@ -2522,12 +2513,9 @@ pub(crate) async fn handle_claim_reward(
 
     // Reject if solver has no unclaimed rewards on the contract (RPC-only check; no contract revert).
     {
-        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        let contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
+        let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+        let contract_address = crate::env_defaults::solver_contract_address();
+        let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
             .unwrap_or(9029);
         let contract_addr = match contract_address.parse::<Address>() {
@@ -2886,12 +2874,9 @@ pub(crate) async fn handle_withdraw_liquidity(
     let wants_btc = req.amount_btc.is_some();
 
     let (minimum_liquidity_tics, minimum_liquidity_btc) = if wants_tics || wants_btc {
-        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
-        let solver_contract_rpc = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        let solver_contract_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
+        let solver_contract_address = crate::env_defaults::solver_contract_address();
+        let solver_contract_rpc = crate::env_defaults::solver_contract_rpc_url();
+        let solver_contract_chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
             .unwrap_or(9029);
 
@@ -3264,7 +3249,7 @@ pub(crate) async fn handle_add_liquidity(
 
     // 1) Load VERIFICATION_ADDRESS from env (must NOT be hardcoded).
     let verification_address_raw =
-        std::env::var("VERIFICATION_ADDRESS").unwrap_or_else(|_| "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9".to_string());
+        crate::env_defaults::verification_address();
     if verification_address_raw.trim().is_empty() {
         warn!("❌ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured");
         return Ok(warp::reply::json(&AddLiquidityResponse {
@@ -3785,22 +3770,20 @@ pub(crate) async fn handle_claim_platform_fee(
         }
     }
 
-    // --- 3. Load ADMIN_PUBLIC_ADDRESS and verify admin signature ---
-    let admin_public_address = match std::env::var("ADMIN_PUBLIC_ADDRESS") {
-        Ok(addr) if !addr.trim().is_empty() => addr.trim().to_string(),
-        _ => {
-            warn!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS not configured");
-            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
-                status: "error".to_string(),
-                request_id: None,
-                amount: req.amount.clone(),
-                tics_target_address: req.tics_target_address.clone(),
-                btc_target_address: req.btc_target_address.clone(),
-                message: "ADMIN_PUBLIC_ADDRESS not configured".to_string(),
-                error_message: Some("ADMIN_PUBLIC_ADDRESS env var is missing".to_string()),
-            }));
-        }
-    };
+    // --- 3. Load ADMIN_PUBLIC_ADDRESS from env (or default) and verify admin signature ---
+    let admin_public_address = crate::env_defaults::admin_public_address().trim().to_string();
+    if admin_public_address.is_empty() {
+        warn!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS not configured");
+        return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+            status: "error".to_string(),
+            request_id: None,
+            amount: req.amount.clone(),
+            tics_target_address: req.tics_target_address.clone(),
+            btc_target_address: req.btc_target_address.clone(),
+            message: "ADMIN_PUBLIC_ADDRESS not configured".to_string(),
+            error_message: Some("ADMIN_PUBLIC_ADDRESS env var is missing".to_string()),
+        }));
+    }
 
     let (compact, v) = match normalize_eth_signature(&req.signature) {
         Ok(t) => t,
@@ -3942,12 +3925,9 @@ pub(crate) async fn handle_claim_platform_fee(
     };
 
     {
-        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        let contract_address_str = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0x390bBeE9A268f273f3F5AF09BB5aE59516dd8327".to_string());
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
+        let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+        let contract_address_str = crate::env_defaults::solver_contract_address();
+        let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
             .unwrap_or(9029);
 
@@ -4067,8 +4047,7 @@ pub(crate) async fn handle_claim_platform_fee(
     {
         let requested_u128 = req.amount.trim().parse::<u128>().unwrap_or(0);
         let (network_address, blockchain, liquidity_source) = if asset == "TICS" {
-            let vault_address = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
-                .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
+            let vault_address = crate::env_defaults::treasury_vault_contract_address();
             (vault_address, "eth", "treasury vault")
         } else {
             // BTC: derive network address from DKG group key

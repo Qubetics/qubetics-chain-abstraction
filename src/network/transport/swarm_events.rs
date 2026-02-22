@@ -170,19 +170,19 @@ impl MpcNetworkLayer {
         // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
 
         // 1. Solver contract validation (disabled for testing)
-        // match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
-        // {
-        //     Ok(_) => {}
-        //     Err(e) => {
-        //         warn!(
-        //             "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-        //             peer_id, remote_addr, e
-        //         );
-        //         self.rejected_peers.insert(peer_id, std::time::Instant::now());
-        //         swarm.disconnect_peer_id(peer_id).ok();
-        //         return Ok(());
-        //     }
-        // }
+        match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
+                    peer_id, remote_addr, e
+                );
+                self.rejected_peers.insert(peer_id, std::time::Instant::now());
+                swarm.disconnect_peer_id(peer_id).ok();
+                return Ok(());
+            }
+        }
 
         // 2. Staging cleanup — if this peer is in the disconnection staging map it means it
         //    disconnected earlier but is now rejoining before epoch-2 promoted it to the

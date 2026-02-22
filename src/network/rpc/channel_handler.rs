@@ -3,12 +3,9 @@ use libp2p::Multiaddr;
 impl MpcNetworkLayer {
    
     pub(crate) async fn fetch_solver_id_for_address(&self, solver_address: &str) -> Result<String> {
-        let rpc_url = std::env::var("SOLVER_CONTRACT_RPC_URL")
-            .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
-        let contract_address_env = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
-        let chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
+        let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+        let contract_address_env = crate::env_defaults::solver_contract_address();
+        let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
             .unwrap_or(9029);
 
@@ -3245,10 +3242,7 @@ impl MpcNetworkLayer {
             };
 
             // Contract address for IntentManager (processBatchIntents)
-            let contract_address_env =
-                std::env::var("INTENT_MANAGER_CONTRACT_ADDRESS").unwrap_or_else(|_| {
-                    "0xEE0D8EbBC04613d939eeD51A6c451fbe038C3b68".to_string()
-                });
+            let contract_address_env = crate::env_defaults::intent_manager_contract_address();
             if contract_address_env == "0x0000000000000000000000000000000000000000" {
                 warn!("❌ [BTC_INTENT_MANAGER] INTENT_MANAGER_CONTRACT_ADDRESS not configured");
                 return Ok(());
@@ -3478,8 +3472,7 @@ impl MpcNetworkLayer {
         }
 
         // Get solver contract address from ENV
-        let solver_contract_address = std::env::var("SOLVER_CONTRACT_ADDRESS")
-            .unwrap_or_else(|_| "0xA3fbA4ab67e8cBD4ebD3bDE0EF0D52A229bd0CBE".to_string());
+        let solver_contract_address = crate::env_defaults::solver_contract_address();
         if solver_contract_address.is_empty() {
             error!("❌ [ADD_LIQUIDITY_BATCH] SOLVER_CONTRACT_ADDRESS not configured");
             return Err(anyhow!("SOLVER_CONTRACT_ADDRESS not configured"));

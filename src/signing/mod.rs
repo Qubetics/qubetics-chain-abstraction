@@ -1974,10 +1974,10 @@ impl SigningNode {
         // - other operation types are stored as-is.
         if let Some(op_type) = operation_type {
             let internal_op_type = if op_type == "global_clock" {
-                let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
+                let clock_interval_secs = crate::env_defaults::global_clock_interval_seconds()
+                    .parse::<u64>()
                     .ok()
-                    .and_then(|val| val.parse::<u64>().ok())
-                    .unwrap_or(35);
+                    .unwrap_or(60);
 
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2336,10 +2336,10 @@ impl SigningNode {
         );
         
         // Read max intents per cycle from environment (configurable)
-        let max_intents_per_cycle = std::env::var("MAX_INTENTS_PER_CYCLE")
+        let max_intents_per_cycle = crate::env_defaults::max_intents_per_cycle()
+            .parse::<usize>()
             .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(13);
+            .unwrap_or(10);
         
         // Get user intent manager
         let user_intent_manager = self.user_intent_manager
@@ -2482,9 +2482,9 @@ impl SigningNode {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
             // Limit number of BTC withdraw requests per cycle from env
-            let max_btc_withdraw_per_cycle = std::env::var("MAX_BTC_WITHDRAW_PER_CYCLE")
+            let max_btc_withdraw_per_cycle = crate::env_defaults::max_btc_withdraw_per_cycle()
+                .parse::<usize>()
                 .ok()
-                .and_then(|val| val.parse::<usize>().ok())
                 .unwrap_or(15);
 
             let db = user_intent_manager.get_database();
@@ -3425,8 +3425,7 @@ impl SigningNode {
                     asset: req.asset.clone(),
                     amount: req.amount.clone(),
                     // TICS withdraws are executed on the main TICS EVM chain (e.g. 9029).
-                    chain_id: std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-                        .unwrap_or_else(|_| "9029".to_string())
+                    chain_id: crate::env_defaults::solver_contract_chain_id()
                         .parse::<u64>()
                         .unwrap_or(9029),
                     tx_id: req.tx_id.clone(),
@@ -3570,8 +3569,7 @@ impl SigningNode {
             return Ok(());
         }
 
-        let tics_chain_id = std::env::var("SOLVER_CONTRACT_CHAIN_ID")
-            .unwrap_or_else(|_| "9029".to_string())
+        let tics_chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
             .unwrap_or(9029);
 
@@ -3727,8 +3725,8 @@ impl SigningNode {
         }
 
         // Look up admin registration to get admin_tics_address for the batch request
-        let admin_public_address = std::env::var("ADMIN_PUBLIC_ADDRESS").unwrap_or_default();
-        if admin_public_address.is_empty() {
+        let admin_public_address = crate::env_defaults::admin_public_address();
+        if admin_public_address.trim().is_empty() {
             warn!("⚠️ [CLOCK][TICS_PF] ADMIN_PUBLIC_ADDRESS not configured; skipping platform fee settlement");
             return Ok(());
         }

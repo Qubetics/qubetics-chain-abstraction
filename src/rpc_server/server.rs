@@ -531,7 +531,7 @@ fn with_auth() -> impl Filter<Extract = (), Error = warp::Rejection> + Clone {
     warp::header::optional::<String>("X-API-KEY")
         .and_then(|api_key: Option<String>| async move {
             let expected_key =
-                std::env::var("RPC_API_KEY").unwrap_or_else(|_| "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45".to_string());
+                crate::env_defaults::rpc_api_key();
             info!(
                 "🔐 Auth Check: Received '{:?}', Expected '{}'",
                 api_key, expected_key

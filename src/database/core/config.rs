@@ -80,8 +80,7 @@ impl DatabaseConfig {
                     })?;
         }
 
-        let key = env::var("QUBETICS_DB_ENCRYPTION_KEY")
-            .unwrap_or_else(|_| "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+        let key = crate::env_defaults::qubetics_db_encryption_key();
             
         if key.trim().is_empty() {
              return Err(ConfigError::ParseEnv { 

@@ -41,12 +41,11 @@ impl MpcNetworkLayer {
         let mut ban_sweep_timer = tokio::time::interval(Duration::from_secs(60)); // sweep expired bans every 60s
 
         // Global clock timer - reads interval from environment variable
-        let clock_interval_secs = std::env::var("GLOBAL_CLOCK_INTERVAL_SECONDS")
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or_else(|| {
-                info!("GLOBAL_CLOCK_INTERVAL_SECONDS not set, defaulting to 35 seconds");
-                35
+        let clock_interval_secs = crate::env_defaults::global_clock_interval_seconds()
+            .parse::<u64>()
+            .unwrap_or_else(|_| {
+                info!("GLOBAL_CLOCK_INTERVAL_SECONDS invalid, defaulting to 60 seconds");
+                60
             });
 
         // Calculate next epoch-aligned trigger time for synchronized global clock
