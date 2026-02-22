@@ -2930,11 +2930,25 @@ impl SigningNode {
             db.get_values_with_prefix(crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE)
                 .map_err(|e| anyhow!("Failed to load pending claim platform fee requests: {}", e))?;
 
+        // Revert stale "Batched" BTC claims (no tx_id) back to "Pending" so they can be retried.
+        // This handles the case where a previous BTC signing round failed silently.
+        for (key, req) in &all_claims {
+            if req.asset == "BTC" && req.status == "Batched" && req.tx_id.is_none() {
+                let mut reverted = req.clone();
+                reverted.status = "Pending".to_string();
+                if let Err(e) = db.put_string(key, &reverted) {
+                    warn!("⚠️ [BTC_CLAIM_PLATFORM_FEE] Failed to revert stale Batched claim {} to Pending: {}", req.request_id, e);
+                } else {
+                    info!("🔄 [BTC_CLAIM_PLATFORM_FEE] Reverted stale Batched claim {} (no tx_id) back to Pending for retry", req.request_id);
+                }
+            }
+        }
+
         let btc_claim_pending: Vec<_> = all_claims
             .into_iter()
             .filter(|(_, req)| {
                 req.asset == "BTC"
-                    && req.status == "Pending"
+                    && (req.status == "Pending" || req.status == "Batched")
                     && req.tx_id.is_none()
                     && req.btc_target_address.as_ref().map_or(false, |a| !a.trim().is_empty())
             })
@@ -2945,11 +2959,20 @@ impl SigningNode {
         }
 
         // Platform fee: only one request at a time per chain, so take the first one
-        let (_, ref req) = btc_claim_pending[0];
+        let (ref db_key, ref req) = btc_claim_pending[0];
         let claim_requests: Vec<(String, String)> = vec![(
             req.request_id.clone(),
             req.btc_target_address.clone().unwrap_or_default(),
         )];
+
+        // Mark as Batched to prevent re-picking in subsequent epoch_4 rounds
+        let mut updated_req = req.clone();
+        updated_req.status = "Batched".to_string();
+        if let Err(e) = db.put_string(db_key, &updated_req) {
+            warn!("⚠️ [BTC_CLAIM_PLATFORM_FEE] Failed to mark claim {} as Batched: {}", req.request_id, e);
+        } else {
+            info!("📝 [BTC_CLAIM_PLATFORM_FEE] Marked claim {} as Batched", req.request_id);
+        }
 
         let claim_batch_timestamp = chrono::Utc::now().to_rfc3339();
         let claim_batch_id = format!(
@@ -3759,9 +3782,10 @@ impl SigningNode {
         }
 
         // Priority 2: BTC claims with tx_id (need on-chain registration)
+        // Accept both "Pending" (legacy) and "Batched" (after BTC transfer epoch marked it Batched)
         if selected.is_none() {
             for (key, req) in &all_claims {
-                if req.status == "Pending"
+                if (req.status == "Pending" || req.status == "Batched")
                     && req.asset == "BTC"
                     && req.tx_id.as_ref().map_or(false, |t| !t.is_empty())
                 {

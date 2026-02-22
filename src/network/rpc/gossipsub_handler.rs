@@ -5413,7 +5413,7 @@ impl MpcNetworkLayer {
                 for (request_id, btc_target_address) in &requests {
                     if let Some(req) = claim_map.get(request_id) {
                         if req.asset != "BTC"
-                            || req.status != "Pending"
+                            || (req.status != "Pending" && req.status != "Batched")
                             || req.tx_id.is_some()
                         {
                             continue;
