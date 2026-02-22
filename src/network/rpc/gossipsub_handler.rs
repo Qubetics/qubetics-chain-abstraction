@@ -854,8 +854,12 @@ impl MpcNetworkLayer {
                     intent_hash, intent.amount
                 );
 
-                let source_amount = match intent.amount.parse::<u128>() {
-                    Ok(amt) => amt,
+                let source_amount = match intent.amount.trim().parse::<u128>() {
+                    Ok(a) if a > 0 => a,
+                    Ok(_) => {
+                        warn!("⚠️ [GOSSIPSUB] Rejecting DepositIntent {} - amount is zero", intent_hash);
+                        return Ok(());
+                    }
                     Err(e) => {
                         warn!(
                             "❌ [GOSSIPSUB] Invalid amount format in intent {}: {}",
@@ -918,6 +922,39 @@ impl MpcNetworkLayer {
                         intent_hash, source_amount, DUST_LIMIT_SATS
                     );
                     return Ok(());
+                }
+
+                // BTC source: verify user has enough *confirmed* UTXOs (total balance may include unconfirmed)
+                if src_is_btc {
+                    let is_testnet = crate::types::network::network_type().is_testnet();
+                    match crate::utils::transaction::fetch_bitcoin_utxos(
+                        &intent.source_address,
+                        is_testnet,
+                    )
+                    .await
+                    {
+                        Ok(utxos) => {
+                            let confirmed_balance: u128 = utxos
+                                .iter()
+                                .filter(|u| u.status.confirmed)
+                                .map(|u| u.value as u128)
+                                .sum();
+                            if confirmed_balance < required_balance {
+                                warn!(
+                                    "⚠️ [GOSSIPSUB] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {}",
+                                    intent_hash, confirmed_balance, required_balance
+                                );
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "⚠️ [GOSSIPSUB] Failed to fetch UTXOs for BTC source address {}: {}",
+                                intent.source_address, e
+                            );
+                            return Ok(());
+                        }
+                    }
                 }
 
                 // Each node: fetch prices, compute target amount; store only when network has sufficient funds
@@ -1153,12 +1190,43 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                if amount.trim().is_empty() || amount == "0" {
-                    warn!(
-                        "⚠️ [ADD_LIQUIDITY] Zero or empty amount for request_id={}, dropping",
-                        request_id
-                    );
+                match amount.trim().parse::<u128>() {
+                    Ok(a) if a > 0 => {} // valid
+                    Ok(_) => {
+                        warn!("⚠️ [ADD_LIQUIDITY] Zero amount for request_id={}, dropping", request_id);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [ADD_LIQUIDITY] Invalid amount '{}' for request_id={}: {}, dropping", amount, request_id, e);
+                        return Ok(());
+                    }
+                }
+
+                // Validate solver_id is non-empty
+                if solver_id.trim().is_empty() {
+                    warn!("⚠️ [ADD_LIQUIDITY] Empty solver_id for request_id={}, dropping", request_id);
                     return Ok(());
+                }
+
+                // Validate solver_address is a valid Ethereum address format (0x + 40 hex chars)
+                if !solver_address.starts_with("0x") || solver_address.len() != 42
+                    || !solver_address[2..].chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    warn!("⚠️ [ADD_LIQUIDITY] Invalid solver_address '{}' for request_id={}, dropping", solver_address, request_id);
+                    return Ok(());
+                }
+
+                // Verify solver is active on-chain
+                match crate::contract::validate_solver_active(&solver_id, "ADD_LIQUIDITY_GOSSIP").await {
+                    Ok(true) => {} // solver is active
+                    Ok(false) => {
+                        warn!("🚫 [ADD_LIQUIDITY] Solver '{}' is not active on-chain for request_id={}, dropping", solver_id, request_id);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("🚫 [ADD_LIQUIDITY] Failed to verify solver '{}' on-chain for request_id={}: {}, dropping", solver_id, request_id, e);
+                        return Ok(());
+                    }
                 }
 
                 // Fully re-verify signature: recovered signer must match VERIFICATION_ADDRESS.
@@ -1448,14 +1516,17 @@ impl MpcNetworkLayer {
                                 continue;
                             }
                             // 2. Amount > 0
-                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
-                            if parsed_amount == 0 {
-                                warn!(
-                                    "⚠️ [BATCH] Intent {} has zero amount, skipping",
-                                    intent_hash
-                                );
-                                continue;
-                            }
+                            let _parsed_amount: u128 = match intent.amount.trim().parse() {
+                                Ok(a) if a > 0 => a,
+                                Ok(_) => {
+                                    warn!("⚠️ [BATCH] Intent {} has zero amount, skipping", intent_hash);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [BATCH] Intent {} has invalid amount '{}': {}, skipping", intent_hash, intent.amount, e);
+                                    continue;
+                                }
+                            };
                             // 3. Intent status must not be Solved or Rejected
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
@@ -2206,14 +2277,17 @@ impl MpcNetworkLayer {
                                 continue;
                             }
                             // 4. Amount must be > 0
-                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
-                            if parsed_amount == 0 {
-                                warn!(
-                                    "⚠️ [TICS_UTV_BATCH] Intent {} has zero amount, skipping",
-                                    intent_hash
-                                );
-                                continue;
-                            }
+                            let _parsed_amount: u128 = match intent.amount.trim().parse() {
+                                Ok(a) if a > 0 => a,
+                                Ok(_) => {
+                                    warn!("⚠️ [TICS_UTV_BATCH] Intent {} has zero amount, skipping", intent_hash);
+                                    continue;
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [TICS_UTV_BATCH] Intent {} has invalid amount '{}': {}, skipping", intent_hash, intent.amount, e);
+                                    continue;
+                                }
+                            };
                             // 5. Intent status must be Pending or Batched
                             if let Some(user) = user_intent_manager
                                 .get_user_by_intent_hash(intent_hash)
@@ -2281,7 +2355,13 @@ impl MpcNetworkLayer {
                         // intent.amount is always in source-chain smallest units.
                         // Do NOT use get_intent_target_amount — that is in target-chain units
                         // (e.g. satoshis for TICS->BTC), which is wrong for a source-chain tx.
-                        let source_amount: u128 = intent.amount.parse().unwrap_or(0);
+                        let source_amount: u128 = match intent.amount.trim().parse() {
+                            Ok(a) if a > 0 => a,
+                            _ => {
+                                warn!("⚠️ [TICS_UTV_BATCH] Intent {} has invalid/zero amount '{}', skipping", intent_hash, intent.amount);
+                                continue;
+                            }
+                        };
                         let amount = source_amount + (source_amount / 20);
 
                         let user =
@@ -2494,26 +2574,29 @@ impl MpcNetworkLayer {
                                 continue;
                             }
                             // 4. Amount must be > 0 and above dust for BTC source
-                            let parsed_amount: u128 = intent.amount.parse().unwrap_or(0);
-                            if parsed_amount == 0 {
-                                warn!(
-                                    "⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, marking as Rejected",
-                                    intent_hash
-                                );
-                                if let Some(user) = user_intent_manager
-                                    .get_user_by_intent_hash(intent_hash)
-                                    .await
-                                {
-                                    let _ = user_intent_manager
-                                        .update_intent_status(
-                                            &user.tics_address,
-                                            intent_hash,
-                                            IntentStatus::Rejected,
-                                        )
-                                        .await;
+                            let parsed_amount: u128 = match intent.amount.trim().parse() {
+                                Ok(a) if a > 0 => a,
+                                other => {
+                                    if let Err(e) = other {
+                                        warn!("⚠️ [BTC_UTV_BATCH] Intent {} has invalid amount '{}': {}, marking as Rejected", intent_hash, intent.amount, e);
+                                    } else {
+                                        warn!("⚠️ [BTC_UTV_BATCH] Intent {} has zero amount, marking as Rejected", intent_hash);
+                                    }
+                                    if let Some(user) = user_intent_manager
+                                        .get_user_by_intent_hash(intent_hash)
+                                        .await
+                                    {
+                                        let _ = user_intent_manager
+                                            .update_intent_status(
+                                                &user.tics_address,
+                                                intent_hash,
+                                                IntentStatus::Rejected,
+                                            )
+                                            .await;
+                                    }
+                                    continue;
                                 }
-                                continue;
-                            }
+                            };
                             if (parsed_amount as u64) < DUST_LIMIT_SATS {
                                 warn!(
                                     "⚠️ [BTC_UTV_BATCH] Intent {} amount {} sats below dust limit {}, marking as Rejected",
@@ -2609,7 +2692,13 @@ impl MpcNetworkLayer {
                         // For Bitcoin UserToVault, amount must be in satoshis (source chain).
                         // intent.amount is in source-chain smallest units = satoshis for Bitcoin.
                         // Do NOT use get_intent_target_amount — that is in target-chain units (e.g. wei for BTC->TICS).
-                        let amount_sats: u128 = intent.amount.parse().unwrap_or(0);
+                        let amount_sats: u128 = match intent.amount.trim().parse() {
+                            Ok(a) if a > 0 => a,
+                            _ => {
+                                warn!("⚠️ [BTC_UTV_BATCH] Intent {} has invalid/zero amount '{}', skipping", intent_hash, intent.amount);
+                                continue;
+                            }
+                        };
                         let amount = amount_sats + (amount_sats / 20); // 5% buffer for fees
 
                         let user =
@@ -4611,6 +4700,71 @@ impl MpcNetworkLayer {
                     request.request_id, request.solver_address, request.asset
                 );
 
+                // --- Input validation ---
+                if request.request_id.trim().is_empty() {
+                    warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw: empty request_id");
+                    return Ok(());
+                }
+
+                // Validate asset
+                if request.asset != "TICS" && request.asset != "BTC" {
+                    warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid asset '{}'", request.request_id, request.asset);
+                    return Ok(());
+                }
+
+                // Validate amount
+                match request.amount.trim().parse::<u128>() {
+                    Ok(a) if a > 0 => {}
+                    _ => {
+                        warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid or zero amount '{}'", request.request_id, request.amount);
+                        return Ok(());
+                    }
+                }
+
+                // Validate solver_address is a valid Ethereum address
+                let solver_addr = request.solver_address.trim();
+                if !solver_addr.starts_with("0x") || solver_addr.len() != 42
+                    || !solver_addr[2..].chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid solver_address '{}'", request.request_id, request.solver_address);
+                    return Ok(());
+                }
+
+                // Validate target address matches asset
+                match request.asset.as_str() {
+                    "TICS" => {
+                        match &request.tics_address {
+                            Some(addr) if !addr.trim().is_empty() => {
+                                let a = addr.trim();
+                                if !a.starts_with("0x") || a.len() != 42 || !a[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+                                    warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid tics_address format '{}'", request.request_id, addr);
+                                    return Ok(());
+                                }
+                            }
+                            _ => {
+                                warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: TICS withdrawal missing tics_address", request.request_id);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    "BTC" => {
+                        match &request.btc_address {
+                            Some(addr) if !addr.trim().is_empty() => {
+                                let a = addr.trim();
+                                if a.starts_with("0x") || !(25..=90).contains(&a.len()) {
+                                    warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid btc_address format '{}'", request.request_id, addr);
+                                    return Ok(());
+                                }
+                            }
+                            _ => {
+                                warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: BTC withdrawal missing btc_address", request.request_id);
+                                return Ok(());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
                 // Persist only if this solver has no existing Pending/Batched request for the same asset (one in-flight per solver per asset).
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
@@ -4679,18 +4833,36 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 };
-                // Validate exactly one target address is set and matches asset
+                // Validate exactly one target address is set, matches asset, and has valid format
                 match request.asset.as_str() {
                     "TICS" => {
-                        if request.tics_target_address.as_ref().map_or(true, |a| a.trim().is_empty()) {
-                            warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: TICS claim missing tics_target_address", request.request_id);
-                            return Ok(());
+                        match &request.tics_target_address {
+                            Some(addr) if !addr.trim().is_empty() => {
+                                let a = addr.trim();
+                                if !a.starts_with("0x") || a.len() != 42 || !a[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+                                    warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid tics_target_address format '{}'", request.request_id, addr);
+                                    return Ok(());
+                                }
+                            }
+                            _ => {
+                                warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: TICS claim missing tics_target_address", request.request_id);
+                                return Ok(());
+                            }
                         }
                     }
                     "BTC" => {
-                        if request.btc_target_address.as_ref().map_or(true, |a| a.trim().is_empty()) {
-                            warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: BTC claim missing btc_target_address", request.request_id);
-                            return Ok(());
+                        match &request.btc_target_address {
+                            Some(addr) if !addr.trim().is_empty() => {
+                                let a = addr.trim();
+                                if a.starts_with("0x") || !(25..=90).contains(&a.len()) {
+                                    warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid btc_target_address format '{}'", request.request_id, addr);
+                                    return Ok(());
+                                }
+                            }
+                            _ => {
+                                warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: BTC claim missing btc_target_address", request.request_id);
+                                return Ok(());
+                            }
                         }
                     }
                     _ => {} // already rejected above
@@ -4825,7 +4997,7 @@ impl MpcNetworkLayer {
                 // TICS claims: check treasury vault balance
                 // BTC claims: check DKG-derived BTC address balance
                 {
-                    let requested_u128 = request.amount.trim().parse::<u128>().unwrap_or(0);
+                    let requested_u128 = claimed_amount;
                     let (network_address, blockchain, liquidity_source) = if request.asset == "TICS" {
                         let vault = std::env::var("TREASURY_VAULT_CONTRACT_ADDRESS")
                             .unwrap_or_else(|_| "0x433779CcB237405C5Cf7955c5664Ca92763fdBA2".to_string());
@@ -4898,6 +5070,47 @@ impl MpcNetworkLayer {
                     "🎁 [CLAIM_REWARD] Received pending claim reward request from gossip: request_id={}, solver={}",
                     request.request_id, request.solver_address
                 );
+
+                // --- Input validation ---
+                if request.request_id.trim().is_empty() {
+                    warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim: empty request_id");
+                    return Ok(());
+                }
+
+                // Validate solver_address is a valid Ethereum address
+                let solver_addr = request.solver_address.trim();
+                if !solver_addr.starts_with("0x") || solver_addr.len() != 42
+                    || !solver_addr[2..].chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid solver_address '{}'", request.request_id, request.solver_address);
+                    return Ok(());
+                }
+
+                // Validate at least one target address is provided
+                let has_tics = request.tics_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                let has_btc = request.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+                if !has_tics && !has_btc {
+                    warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: no target address provided", request.request_id);
+                    return Ok(());
+                }
+
+                // Validate TICS address format if provided
+                if let Some(ref addr) = request.tics_address {
+                    let a = addr.trim();
+                    if !a.is_empty() && (!a.starts_with("0x") || a.len() != 42 || !a[2..].chars().all(|c| c.is_ascii_hexdigit())) {
+                        warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid tics_address format '{}'", request.request_id, addr);
+                        return Ok(());
+                    }
+                }
+
+                // Validate BTC address format if provided
+                if let Some(ref addr) = request.btc_address {
+                    let a = addr.trim();
+                    if !a.is_empty() && (a.starts_with("0x") || !(25..=90).contains(&a.len())) {
+                        warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid btc_address format '{}'", request.request_id, addr);
+                        return Ok(());
+                    }
+                }
 
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_claim_reward:{}:", solver_lower);
