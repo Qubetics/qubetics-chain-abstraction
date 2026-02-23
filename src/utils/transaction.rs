@@ -116,8 +116,8 @@ pub fn validate_contract_transaction_hex_fields(tx: &ContractTransaction) -> Res
 /// Only supports Qubetics as an EVM chain
 pub fn get_chain_id_from_name(chain_name: &str) -> Option<u64> {
     match chain_name.to_lowercase().as_str() {
-        // Qubetics EVM chain
-        "qubetics" => Some(9029),
+        // Qubetics EVM chain — ID resolved from MPC_TICS_CHAIN_ID env var
+        "qubetics" => Some(crate::env_defaults::mpc_tics_chain_id()),
         // Bitcoin uses a structural chain id of 0 (non-EVM, used for routing/metadata)
         "btc" | "bitcoin" => Some(0),
         _ => None,
@@ -136,16 +136,18 @@ pub fn is_evm_chain(chain_name: &str) -> bool {
 }
 
 /// Get RPC URL for an EVM chain by chain ID
-/// Only supports Qubetics (chain ID 9029) as an EVM chain
+/// Only supports Qubetics (chain ID from MPC_TICS_CHAIN_ID env var) as an EVM chain
 /// Uses the MPC_ETHEREUM_RPC_URL environment variable
 pub fn get_evm_rpc_url(chain_id: u64) -> Result<String> {
-    match chain_id {
-        // Qubetics - use environment variable
-        9029 => network_cfg::qubetics_rpc_url_from_env(),
-        _ => Err(anyhow::anyhow!(
-            "Unsupported EVM chain ID: {}. Only Qubetics (9029) is supported as an EVM chain",
-            chain_id
-        )),
+    let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+    if chain_id == tics_chain_id {
+        network_cfg::qubetics_rpc_url_from_env()
+    } else {
+        Err(anyhow::anyhow!(
+            "Unsupported EVM chain ID: {}. Only Qubetics ({}) is supported as an EVM chain",
+            chain_id,
+            tics_chain_id
+        ))
     }
 }
 
@@ -1652,7 +1654,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         from_address,
         &normalized_contract_address,
         &calldata_hex,
-        9029u64,
+        crate::env_defaults::mpc_tics_chain_id(),
     )
     .await?; // Abort if gas estimation fails - indicates transaction would revert
     let gas_limit = estimated_gas + (estimated_gas / 10);
@@ -2063,7 +2065,7 @@ pub fn encode_remove_liquidity_calldata(
     let chain_type_u8 = if chain_id.is_zero() {
         1u8
     } else {
-        // Heuristic: treat large chain IDs (e.g. 9029) as TICS (1), smaller as BTC (0)
+        // Heuristic: treat large chain IDs (e.g. TICS chain ID) as TICS (1), smaller as BTC (0)
         let chain_id_u128: u128 = chain_id.low_u128();
         if chain_id_u128 > 255 {
             1u8
@@ -2220,7 +2222,7 @@ pub async fn create_solver_remove_liquidity_batch_transaction(
 }
 
 /// Fetch current gas price from RPC for Qubetics chain
-/// Only supports Qubetics (chain ID 9029)
+/// Only supports Qubetics (chain ID from MPC_TICS_CHAIN_ID env var)
 pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
     let rpc_url = get_evm_rpc_url(chain_id)?;
 
@@ -2349,9 +2351,9 @@ mod tests {
         // Test that Qubetics falls back to static price when RPC fails
         // This test uses an invalid RPC URL to trigger the fallback
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
-        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc.qubetics.work");
 
-        let result = get_gas_price_for_chain("qubetics", 9029).await;
+        let result = get_gas_price_for_chain("qubetics", crate::env_defaults::mpc_tics_chain_id()).await;
         assert!(result.is_ok());
 
         let gas_price = result.unwrap();
@@ -2442,9 +2444,9 @@ mod tests {
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
 
         // Try with the default Qubetics RPC URL
-        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc.qubetics.work");
 
-        let result = get_gas_price_for_chain("qubetics", 9029).await;
+        let result = get_gas_price_for_chain("qubetics", crate::env_defaults::mpc_tics_chain_id()).await;
 
         match result {
             Ok(gas_price) => {

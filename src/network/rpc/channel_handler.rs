@@ -7,7 +7,7 @@ impl MpcNetworkLayer {
         let contract_address_env = crate::env_defaults::solver_contract_address();
         let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or(9029);
+            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
         if contract_address_env == "0x0000000000000000000000000000000000000000" {
             return Err(anyhow!(
@@ -2950,11 +2950,12 @@ impl MpcNetworkLayer {
                     request_id, solver_id, solver_address, amount, chain_id, tx_id
                 );
 
-                // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
-                if chain_id != 0 && chain_id != 9029 {
+                // Validate chainId before persisting (must match RPC rules: 0 = BTC, TICS chain ID = EVM).
+                let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+                if chain_id != 0 && chain_id != tics_chain_id {
                     warn!(
-                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, 9029=EVM)",
-                        chain_id, request_id
+                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, {}=EVM)",
+                        chain_id, request_id, tics_chain_id
                     );
                     return Ok(());
                 }
@@ -3252,7 +3253,7 @@ impl MpcNetworkLayer {
             let from_address =
                 crate::utils::get_eth_address_from_group_key(group_public_key);
             let chain_id =
-                crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or(9029);
+                crate::utils::transaction::get_chain_id_from_name("qubetics").unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
 
             // Estimate gas; abort if it would revert
             let calldata_hex = format!("0x{}", hex::encode(&calldata));
@@ -3421,17 +3422,18 @@ impl MpcNetworkLayer {
                 
                 // Map chain_id to ChainType enum:
                 // 0 (BTC) -> ChainType::BTC (0)
-                // 9029 (EVM/Qubetics) -> ChainType::EVM (1)
-                let chain_type = match record.chain_id {
-                    0 => 0u8,     // BTC
-                    9029 => 1u8,  // EVM
-                    _ => {
-                        warn!(
-                            "⚠️ [ADD_LIQUIDITY_BATCH] Unsupported chain_id {} for request {}, defaulting to EVM",
-                            record.chain_id, request_id
-                        );
-                        1u8 // Default to EVM
-                    }
+                // TICS chain ID (EVM/Qubetics) -> ChainType::EVM (1)
+                let tics_cid = crate::env_defaults::mpc_tics_chain_id();
+                let chain_type = if record.chain_id == 0 {
+                    0u8 // BTC
+                } else if record.chain_id == tics_cid {
+                    1u8 // EVM
+                } else {
+                    warn!(
+                        "⚠️ [ADD_LIQUIDITY_BATCH] Unsupported chain_id {} for request {}, defaulting to EVM",
+                        record.chain_id, request_id
+                    );
+                    1u8 // Default to EVM
                 };
                 chain_types.push(chain_type);
                 tx_ids.push(record.tx_id.clone().unwrap_or_default());
@@ -3455,9 +3457,9 @@ impl MpcNetworkLayer {
             return Err(anyhow!("No chain_ids found in batch"));
         }
 
-        // The addLiquidityBatch smart contract lives on Qubetics (chain 9029).
+        // The addLiquidityBatch smart contract lives on Qubetics (TICS chain ID from MPC_TICS_CHAIN_ID env var).
         // chain_ids[] holds the *asset* chain (e.g. 0 for BTC), not the target chain.
-        let chain_id: u64 = 9029;
+        let chain_id: u64 = crate::env_defaults::mpc_tics_chain_id();
         info!("💧 [ADD_LIQUIDITY_BATCH] Contract chain_id: {}, first asset chain_id: {}, chain_type: {}", chain_id, chain_ids[0], chain_types[0]);
 
         // Parse amounts to U256

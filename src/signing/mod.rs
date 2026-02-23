@@ -3525,10 +3525,10 @@ impl SigningNode {
                     solver_address: req.solver_address.clone(),
                     asset: req.asset.clone(),
                     amount: req.amount.clone(),
-                    // TICS withdraws are executed on the main TICS EVM chain (e.g. 9029).
+                    // TICS withdraws are executed on the main TICS EVM chain (chain ID from SOLVER_CONTRACT_CHAIN_ID env var).
                     chain_id: crate::env_defaults::solver_contract_chain_id()
                         .parse::<u64>()
-                        .unwrap_or(9029),
+                        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id()),
                     tx_id: req.tx_id.clone(),
                 });
 
@@ -3686,7 +3686,7 @@ impl SigningNode {
 
         let tics_chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or(9029);
+            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
         let mut tics_batched = 0usize;
         let mut btc_updated = 0usize;
@@ -4666,7 +4666,7 @@ impl SigningNode {
                 let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
                     .ok()
                     .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or(9029); // Default: Qubetics chain ID
+                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id()); // Default: Qubetics chain ID from MPC_TICS_CHAIN_ID env var
 
                 // Perform aggregation
                 match self
@@ -4840,11 +4840,12 @@ impl SigningNode {
                             let chain_id = match maybe_chain_id {
                                 Some(id) => id,
                                 None => {
+                                    let default_chain_id = crate::env_defaults::mpc_tics_chain_id();
                                     warn!(
-                                        "⚠️ [SIGNING] Unable to determine chain_id for round {}, defaulting to 9029",
-                                        round
+                                        "⚠️ [SIGNING] Unable to determine chain_id for round {}, defaulting to {}",
+                                        round, default_chain_id
                                     );
-                                    9029
+                                    default_chain_id
                                 }
                             };
 
@@ -5243,7 +5244,7 @@ impl SigningNode {
         let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok())
-            .unwrap_or(9029);
+            .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
 
         let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));

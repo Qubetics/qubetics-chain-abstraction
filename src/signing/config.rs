@@ -45,7 +45,7 @@ impl Default for BroadcastConfig {
             ChainBroadcastConfig {
                 enabled: true,
                 rpc_url: String::new(),
-                chain_id: 9029,
+                chain_id: crate::env_defaults::mpc_tics_chain_id(),
                 testnet: is_testnet,
                 custom_headers: HashMap::new(),
                 timeout_seconds: 30,
@@ -119,7 +119,7 @@ impl BroadcastConfig {
 
         if let Ok(chain_id) = std::env::var("MPC_TICS_CHAIN_ID") {
             if let Some(eth_config) = config.chain_configs.get_mut("tics") {
-                eth_config.chain_id = chain_id.parse().unwrap_or(9029);
+                eth_config.chain_id = chain_id.parse().unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
             }
         }
 

@@ -272,7 +272,7 @@ impl SolverManagerContract {
     }
 
     /// Query the unclaimed platform fee for a given chain.
-    /// `chain_id`: 0 for BTC, 9029 for TICS (matches contract constants).
+    /// `chain_id`: 0 for BTC, TICS chain ID for TICS (matches contract constants; read from MPC_TICS_CHAIN_ID env var).
     pub async fn get_platform_unclaimed_fee(
         &self,
         chain_id: ethers::types::U256,

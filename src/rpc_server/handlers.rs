@@ -2052,7 +2052,7 @@ async fn fetch_solver_liquidity_from_contract(
     let contract_address = crate::env_defaults::solver_contract_address();
     let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
-        .unwrap_or(9029);
+        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
     if contract_address == "0x0000000000000000000000000000000000000000" {
         return Err("Solver contract address not configured".to_string());
@@ -2125,7 +2125,7 @@ async fn fetch_solver_unclaimed_rewards_from_contract(
     let contract_address = crate::env_defaults::solver_contract_address();
     let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
-        .unwrap_or(9029);
+        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
     if contract_address == "0x0000000000000000000000000000000000000000" {
         return Err("Solver contract address not configured".to_string());
@@ -2517,7 +2517,7 @@ pub(crate) async fn handle_claim_reward(
         let contract_address = crate::env_defaults::solver_contract_address();
         let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or(9029);
+            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
         let contract_addr = match contract_address.parse::<Address>() {
             Ok(a) => a,
             Err(e) => {
@@ -2878,7 +2878,7 @@ pub(crate) async fn handle_withdraw_liquidity(
         let solver_contract_rpc = crate::env_defaults::solver_contract_rpc_url();
         let solver_contract_chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or(9029);
+            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
         if solver_contract_address.trim().is_empty() || solver_contract_rpc.trim().is_empty() {
             let msg = "Solver contract configuration missing".to_string();
@@ -3356,16 +3356,17 @@ pub(crate) async fn handle_add_liquidity(
         }
     }
 
-    // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
-    if payload.chain_id != 0 && payload.chain_id != 9029 {
+    // Validate chainId before persisting (must match RPC rules: 0 = BTC, TICS chain ID = EVM).
+    let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+    if payload.chain_id != 0 && payload.chain_id != tics_chain_id {
         warn!(
-            "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for add_liquidity request, rejecting (allowed: 0=BTC, 9029=EVM)",
-            payload.chain_id
+            "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for add_liquidity request, rejecting (allowed: 0=BTC, {}=EVM)",
+            payload.chain_id, tics_chain_id
         );
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             message: "Unsupported chainId".to_string(),
-            error_message: Some("chainId must be 0 (BTC) or 9029 (EVM)".to_string()),
+            error_message: Some(format!("chainId must be 0 (BTC) or {} (EVM)", tics_chain_id)),
         }));
     }
 
@@ -4007,8 +4008,8 @@ pub(crate) async fn handle_claim_platform_fee(
         "BTC"
     };
 
-    // chainId: 0 for BTC, 9029 for TICS (matches contract REQUIRED_CHAIN_BTC / REQUIRED_CHAIN_TICS)
-    let on_chain_id: u64 = if asset == "BTC" { 0 } else { 9029 };
+    // chainId: 0 for BTC, TICS chain ID for TICS (matches contract REQUIRED_CHAIN_BTC / REQUIRED_CHAIN_TICS)
+    let on_chain_id: u64 = if asset == "BTC" { 0 } else { crate::env_defaults::mpc_tics_chain_id() };
 
     let requested_amount = match req.amount.trim().parse::<u128>() {
         Ok(a) => ethers::types::U256::from(a),
@@ -4034,7 +4035,7 @@ pub(crate) async fn handle_claim_platform_fee(
         let contract_address_str = crate::env_defaults::solver_contract_address();
         let chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or(9029);
+            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
         let contract_addr: Address = match contract_address_str.parse() {
             Ok(a) => a,

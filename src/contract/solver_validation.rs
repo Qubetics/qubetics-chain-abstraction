@@ -20,7 +20,7 @@ pub fn get_solver_contract_config() -> Result<Option<ContractConfig>> {
 
     let chain_id = crate::env_defaults::solver_contract_chain_id()
         .parse::<u64>()
-        .unwrap_or(9029);
+        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
     let contract_address = contract_address_env
         .parse::<Address>()

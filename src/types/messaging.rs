@@ -35,7 +35,7 @@ pub struct TicsWithdrawBatchRequest {
     pub asset: String,
     /// Amount as decimal string in smallest units for the asset chain
     pub amount: String,
-    /// Asset chain identifier (e.g. 9029 for TICS, 0 for BTC placeholder)
+    /// Asset chain identifier (TICS chain ID from MPC_TICS_CHAIN_ID env var for TICS, 0 for BTC placeholder)
     pub chain_id: u64,
     /// Optional on-chain transaction ID already associated with this request
     pub tx_id: Option<String>,
@@ -52,7 +52,7 @@ pub struct TicsClaimRewardBatchRequest {
     pub asset: String,
     /// Amount as decimal string (for aggregation / contract)
     pub amount: String,
-    /// 9029 for TICS, 0 for BTC
+    /// TICS chain ID (from MPC_TICS_CHAIN_ID env var) for TICS, 0 for BTC
     pub chain_id: u64,
     /// For BTC entries: already-set tx_id to register on contract
     pub tx_id: Option<String>,
@@ -112,7 +112,7 @@ pub enum ChannelMessage {
         solver_address: String,
         /// Amount as decimal string in smallest units for the target chain.
         amount: String,
-        /// Target chain ID (0 = BTC, 9029 = EVM / Qubetics).
+        /// Target chain ID (0 = BTC, TICS chain ID from MPC_TICS_CHAIN_ID env var = EVM / Qubetics).
         chain_id: u64,
         /// Signature created by VERIFICATION_ADDRESS over `signed_payload`.
         signature: String,

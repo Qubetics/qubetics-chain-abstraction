@@ -1321,11 +1321,12 @@ impl MpcNetworkLayer {
                     request_id, solver_id, solver_address, amount, chain_id
                 );
 
-                // Validate chainId before persisting (must match RPC rules: 0 = BTC, 9029 = EVM).
-                if chain_id != 0 && chain_id != 9029 {
+                // Validate chainId before persisting (must match RPC rules: 0 = BTC, TICS chain ID = EVM).
+                let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+                if chain_id != 0 && chain_id != tics_chain_id {
                     warn!(
-                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, 9029=EVM)",
-                        chain_id, request_id
+                        "⚠️ [ADD_LIQUIDITY] Unsupported chain_id {} for request_id={}, dropping (allowed: 0=BTC, {}=EVM)",
+                        chain_id, request_id, tics_chain_id
                     );
                     return Ok(());
                 }
@@ -2267,7 +2268,7 @@ impl MpcNetworkLayer {
                                 crate::utils::get_eth_address_from_group_key(group_public_key);
                             let chain_id =
                                 crate::utils::transaction::get_chain_id_from_name("qubetics")
-                                    .unwrap_or(9029);
+                                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
 
                             // Estimate gas; abort if it would revert
                             let calldata_hex = format!("0x{}", hex::encode(&calldata));
@@ -3618,7 +3619,7 @@ impl MpcNetworkLayer {
                     let chain_id = crate::env_defaults::solver_contract_chain_id()
                         .parse::<u64>()
                         .ok()
-                        .unwrap_or(9029);
+                        .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
                     if contract_address_env == "0x0000000000000000000000000000000000000000" {
                         warn!("⚠️ [BTC_CLAIM_REWARD] Solver contract not configured; skipping unclaimed fetch");
                         continue;
@@ -4109,10 +4110,11 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
+                let tics_cid = crate::env_defaults::mpc_tics_chain_id();
                 let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
-                    .unwrap_or(9029);
-                let contract_chain_name = if contract_chain_id == 9029 {
+                    .unwrap_or(tics_cid);
+                let contract_chain_name = if contract_chain_id == tics_cid {
                     "qubetics"
                 } else {
                     "tics"
@@ -4355,7 +4357,7 @@ impl MpcNetworkLayer {
                 let chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
                     .ok()
-                    .unwrap_or(9029);
+                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
                 if contract_address_env == "0x0000000000000000000000000000000000000000" {
                     warn!("⚠️ [TICS_CLAIM_REWARD] Solver contract not configured; skipping");
                     return Ok(());
@@ -4452,10 +4454,11 @@ impl MpcNetworkLayer {
                     crate::utils::get_eth_address_from_group_key(group_public_key);
 
                 let contract_address_str = crate::env_defaults::solver_contract_address();
+                let tics_cid = crate::env_defaults::mpc_tics_chain_id();
                 let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
-                    .unwrap_or(9029);
-                let contract_chain_name = if contract_chain_id == 9029 {
+                    .unwrap_or(tics_cid);
+                let contract_chain_name = if contract_chain_id == tics_cid {
                     "qubetics"
                 } else {
                     "tics"
@@ -5373,9 +5376,10 @@ impl MpcNetworkLayer {
                     use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                     use ethers::types::Address;
 
+                    let tics_cid = crate::env_defaults::mpc_tics_chain_id();
                     let on_chain_id: u64 = match request.asset.as_str() {
                         "BTC" => 0,
-                        "TICS" => 9029,
+                        "TICS" => tics_cid,
                         _ => {
                             warn!(
                                 "⚠️ [PLATFORM_FEE] Unknown asset '{}' in gossip claim — skipping on-chain check",
@@ -5385,12 +5389,8 @@ impl MpcNetworkLayer {
                         }
                     };
 
-                    let rpc_url = std::env::var("TICS_CHAIN_RPC_URL")
-                        .unwrap_or_else(|_| "https://rpc.qubetics.com".to_string());
-                    let chain_id: u64 = std::env::var("TICS_CHAIN_ID")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(9029);
+                    let rpc_url = crate::env_defaults::tics_chain_rpc_url();
+                    let chain_id: u64 = crate::env_defaults::tics_chain_id();
                     let contract_address_env =
                         std::env::var("SOLVER_MANAGER_CONTRACT_ADDRESS").unwrap_or_default();
                     if let Ok(contract_address) = contract_address_env.parse::<Address>() {
@@ -6298,10 +6298,11 @@ impl MpcNetworkLayer {
 
                 // Build contract transaction: claimPlatformFee(amount, chainType, recipient)
                 let contract_address_str = crate::env_defaults::solver_contract_address();
+                let tics_cid = crate::env_defaults::mpc_tics_chain_id();
                 let contract_chain_id = crate::env_defaults::solver_contract_chain_id()
                     .parse::<u64>()
-                    .unwrap_or(9029);
-                let contract_chain_name = if contract_chain_id == 9029 {
+                    .unwrap_or(tics_cid);
+                let contract_chain_name = if contract_chain_id == tics_cid {
                     "qubetics"
                 } else {
                     "tics"

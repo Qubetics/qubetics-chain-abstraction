@@ -516,10 +516,11 @@ impl SigningEnvironmentBuilder {
         let peer_id = coordination::derive_peer_id_from_string(&self.id);
         let coordination = Coordination::new(peer_id, self.message_tx.clone());
 
-        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
+        let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+        let chain_handler = ChainHandlerFactory::create_tics_handler(tics_chain_id);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(tics_chain_id);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {
@@ -531,10 +532,11 @@ impl SigningEnvironmentBuilder {
     }
 
     pub fn build_with_coordination(self, coordination: Coordination) -> SigningEnvironment {
-        let chain_handler = ChainHandlerFactory::create_tics_handler(9029);
+        let tics_chain_id = crate::env_defaults::mpc_tics_chain_id();
+        let chain_handler = ChainHandlerFactory::create_tics_handler(tics_chain_id);
         let chain_handler: Arc<dyn ChainHandler> = chain_handler.into();
 
-        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(9029);
+        let contract_chain_handler = ChainHandlerFactory::create_tics_handler(tics_chain_id);
         let contract_chain_handler: Arc<dyn ChainHandler> = contract_chain_handler.into();
 
         SigningEnvironment {

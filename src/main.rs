@@ -435,6 +435,7 @@ async fn main() -> Result<()> {
     }
 
     init_network_type_from_env()?;
+    crate::env_defaults::log_env_config();
 
     let config = ConfigBuilder::new().build()?;
     let mut context = NodeContext::new(config, cli.bootstrap_peers)?;
