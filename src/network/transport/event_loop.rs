@@ -141,7 +141,7 @@ impl MpcNetworkLayer {
                 _ = ban_sweep_timer.tick() => {
                     // Sweep expired peer bans promptly (every 60s) so unblocked
                     // peers can reconnect without waiting for the hourly timer.
-                    let ban_duration = Duration::from_secs(3600);
+                    let ban_duration = Duration::from_secs(300);
                     let before = self.rejected_peers.len();
                     self.rejected_peers.retain(|_, banned_at| banned_at.elapsed() < ban_duration);
                     let expired = before - self.rejected_peers.len();

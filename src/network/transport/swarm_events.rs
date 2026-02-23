@@ -136,7 +136,7 @@ impl MpcNetworkLayer {
 
         // ===== BAN CHECK — reject peers that were recently banned (e.g. inactive solvers) =====
         if let Some(banned_at) = self.rejected_peers.get(&peer_id) {
-            let ban_duration = std::time::Duration::from_secs(3600); // 1 hour
+            let ban_duration = std::time::Duration::from_secs(300); // 5 minutes
             if banned_at.elapsed() < ban_duration {
                 warn!(
                     "🚫 [BAN] Rejecting connection from banned peer {} ({}) — {} minutes remaining",
@@ -147,8 +147,12 @@ impl MpcNetworkLayer {
                 swarm.disconnect_peer_id(peer_id).ok();
                 return Ok(());
             } else {
-                // Ban expired — remove and allow connection
+                // Ban expired — remove and allow connection.
+                // Reset sync flags so this node catches up on everything it missed while banned
+                // (intents, pending transactions, claim rewards, withdraw requests, VRF rounds, etc.).
                 self.rejected_peers.remove(&peer_id);
+                self.needs_state_sync = true;
+                self.vrf_round_requested = false;
             }
         }
 
@@ -178,7 +182,7 @@ impl MpcNetworkLayer {
                     "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
                     peer_id, remote_addr, e
                 );
-                self.rejected_peers.insert(peer_id, std::time::Instant::now());
+                self.rejected_peers.entry(peer_id).or_insert_with(std::time::Instant::now);
                 swarm.disconnect_peer_id(peer_id).ok();
                 return Ok(());
             }

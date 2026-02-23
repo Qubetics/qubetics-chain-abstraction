@@ -195,7 +195,7 @@ pub struct MpcNetworkLayer {
     pub(crate) clock_tick_count: u64,
     /// Addresses that failed to connect — retried every hour for up to 24 hours
     pub(crate) failed_dial_addresses: HashMap<Multiaddr, std::time::Instant>,
-    /// Peers rejected by solver validation — banned for 1 hour to prevent aggressive reconnect loops
+    /// Peers rejected by solver validation — banned for 5 minutes to prevent aggressive reconnect loops
     pub(crate) rejected_peers: HashMap<PeerId, std::time::Instant>,
     /// Tracks which (round, batch_type) batches have already been processed, preventing
     /// duplicate processing when multiple nodes broadcast competing batches for the same round.
