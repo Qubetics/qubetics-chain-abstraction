@@ -1976,8 +1976,7 @@ impl SigningNode {
             let internal_op_type = if op_type == "global_clock" {
                 let clock_interval_secs = crate::env_defaults::global_clock_interval_seconds()
                     .parse::<u64>()
-                    .ok()
-                    .unwrap_or(60);
+                    .unwrap_or(crate::env_defaults::DEFAULT_GLOBAL_CLOCK_INTERVAL_SECONDS.parse().unwrap());
 
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2351,8 +2350,7 @@ impl SigningNode {
         // Read max intents per cycle from environment (configurable)
         let max_intents_per_cycle = crate::env_defaults::max_intents_per_cycle()
             .parse::<usize>()
-            .ok()
-            .unwrap_or(10);
+            .unwrap_or(crate::env_defaults::DEFAULT_MAX_INTENTS_PER_CYCLE.parse().unwrap());
         
         // Get user intent manager
         let user_intent_manager = self.user_intent_manager
@@ -2494,11 +2492,9 @@ impl SigningNode {
         if target_chain.eq_ignore_ascii_case("bitcoin") {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
-            // Limit number of BTC withdraw requests per cycle from env
             let max_btc_withdraw_per_cycle = crate::env_defaults::max_btc_withdraw_per_cycle()
                 .parse::<usize>()
-                .ok()
-                .unwrap_or(15);
+                .unwrap_or(crate::env_defaults::DEFAULT_MAX_BTC_WITHDRAW_PER_CYCLE.parse().unwrap());
 
             let db = user_intent_manager.get_database();
 
@@ -2638,11 +2634,7 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
 
-        // Number of TICS UserToVault intents to pick per batch (default 10 if env not set)
-        let max_per_batch = std::env::var("MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(10);
+        let max_per_batch = crate::env_defaults::max_tics_user_to_vault_intents_per_batch();
 
         let exclusion_set: HashSet<String> = {
             let guard = self.last_tics_user_to_vault_batch_hashes.read().map_err(|e| anyhow!("lock poisoned: {}", e))?;
@@ -2756,10 +2748,7 @@ impl SigningNode {
             .as_ref()
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
 
-        let max_per_batch = std::env::var("MAX_BTC_USER_TO_VAULT_INTENTS_PER_BATCH")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(10);
+        let max_per_batch = crate::env_defaults::max_btc_user_to_vault_intents_per_batch();
 
         let exclusion_set: HashSet<String> = {
             let guard = self.last_btc_user_to_vault_batch_hashes.read().map_err(|e| anyhow!("lock poisoned: {}", e))?;
@@ -2867,10 +2856,7 @@ impl SigningNode {
             .ok_or_else(|| anyhow!("User intent manager not available"))?;
         let db = user_intent_manager.get_database();
 
-        let max_btc_claim_reward_per_cycle = std::env::var("MAX_BTC_CLAIM_REWARD_PER_CYCLE")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(10);
+        let max_btc_claim_reward_per_cycle = crate::env_defaults::max_btc_claim_reward_per_cycle();
 
         let all_claims: Vec<(String, crate::types::rpc_server::PendingClaimRewardRequest)> =
             db.get_values_with_prefix("pending_claim_reward:")
@@ -3294,11 +3280,7 @@ impl SigningNode {
         let database = self.database.as_ref()
             .ok_or_else(|| anyhow!("Database not available"))?;
 
-        // Read configuration
-        let max_batch_size = std::env::var("MAX_ADD_LIQUIDITY_BATCH")
-            .ok()
-            .and_then(|val| val.parse::<usize>().ok())
-            .unwrap_or(10);
+        let max_batch_size = crate::env_defaults::max_add_liquidity_batch();
 
         let min_age_seconds = 10; // Minimum age in seconds before batching
 
@@ -4662,11 +4644,7 @@ impl SigningNode {
                         .collect::<Vec<_>>()
                 );
 
-                // Get chain_id from environment variable for v calculation
-                let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
-                    .ok()
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id()); // Default: Qubetics chain ID from MPC_TICS_CHAIN_ID env var
+                let chain_id_for_v = crate::env_defaults::mpc_tics_chain_id();
 
                 // Perform aggregation
                 match self
@@ -5241,10 +5219,7 @@ impl SigningNode {
         // TICS UserToVault only - BTC UTV uses dedicated handler with multi-input support
         let slot_kind = SlotKind::TicsUserToVault;
 
-        let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
-            .ok()
-            .and_then(|id| id.parse::<u64>().ok())
-            .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
+        let chain_id = crate::env_defaults::mpc_tics_chain_id();
 
         let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
