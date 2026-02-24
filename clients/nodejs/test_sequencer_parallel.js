@@ -561,11 +561,11 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
       // target_address: "0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989",
       target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
-      source_chain: 'bitcoin',
-      target_chain: 'bitcoin',
+      source_chain: 'qubetics',
+      target_chain: 'qubetics',
       amount: amount,
-      source_token: 'BTC',
-      target_token: 'BTC',
+      source_token: 'TICS',
+      target_token: 'TICS',
       timestamp: intentTimestamp,
     };
 
@@ -884,8 +884,8 @@ async function step2_SubmitTransactions() {
 
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
-    // const amount = "5000000000000000000";  // 12 TICS
-    const amount = "200";  // btc
+    const amount = "5000000000000000000";  // 12 TICS
+    // const amount = "200";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });
