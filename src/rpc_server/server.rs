@@ -38,13 +38,13 @@ use crate::types::rpc_server::{
 const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024; // 256 KiB
 const REQUEST_TIMEOUT_SECONDS: u64 = 900;
 // Rate limiting configuration
-// Per-IP: 10 requests per 60 seconds
-const RATE_LIMIT_MAX_REQUESTS_PER_IP: u32 = 10;
-// Global: 100 requests (all IPs combined) per 60 seconds
-const RATE_LIMIT_MAX_GLOBAL_REQUESTS: u32 = 100;
+// Per-IP POST: 500 requests per 60 seconds
+const RATE_LIMIT_MAX_REQUESTS_PER_IP: u32 = 500;
+// Global POST: 500 requests (all IPs combined) per 60 seconds
+const RATE_LIMIT_MAX_GLOBAL_REQUESTS: u32 = 500;
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60; // Time window in seconds
-// Per-IP GET rate limit: 100 requests per IP per 60 seconds
-const RATE_LIMIT_MAX_GET_REQUESTS_PER_IP: u32 = 100;
+// Per-IP GET rate limit: 500 requests per IP per 60 seconds
+const RATE_LIMIT_MAX_GET_REQUESTS_PER_IP: u32 = 500;
 // Global GET rate limit: 500 requests (all IPs combined) per 60 seconds
 const RATE_LIMIT_MAX_GET_GLOBAL_REQUESTS: u32 = 500;
 
