@@ -2267,8 +2267,8 @@ pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
 /// Only supports Qubetics as an EVM chain
 pub fn get_default_gas_price_for_chain(chain_name: &str) -> String {
     match chain_name {
-        "qubetics" => "0x3B9ACA00".to_string(), // 1 Gwei (fallback)
-        _ => "0x3B9ACA00".to_string(),          // Default to 1 Gwei for Qubetics
+        "qubetics" => "0x2540be400".to_string(), // 1 Gwei (fallback)
+        _ => "0x2540be400".to_string(),          // Default to 1 Gwei for Qubetics
     }
 }
 
@@ -2334,10 +2334,10 @@ mod tests {
         // Test Qubetics static gas price (fallback value)
         let static_price = get_default_gas_price_for_chain("qubetics");
         println!("🔧 Qubetics static gas price: {}", static_price);
-        assert_eq!(static_price, "0x3B9ACA00");
+        assert_eq!(static_price, "0x2540BE400");
 
         // Convert to decimal to show the actual value
-        let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+        let price_decimal = u64::from_str_radix("2540BE400", 16).unwrap();
         println!(
             "🔧 Qubetics static gas price in decimal: {} wei ({} Gwei)",
             price_decimal,
@@ -2361,9 +2361,9 @@ mod tests {
 
         // The test might get either the fallback or the real RPC value depending on network conditions
         // Both are valid - the important thing is that it doesn't crash
-        if gas_price == "0x3B9ACA00" {
-            println!("🔧 Got fallback gas price: {} (1 Gwei)", gas_price);
-            let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+        if gas_price == "0x2540BE400" {
+            println!("🔧 Got fallback gas price: {} (10 Gwei)", gas_price);
+            let price_decimal = u64::from_str_radix("2540BE400", 16).unwrap();
             println!(
                 "🔧 Fallback gas price in decimal: {} wei ({} Gwei)",
                 price_decimal,
@@ -2408,8 +2408,8 @@ mod tests {
     fn test_qubetics_gas_price_hex_conversion() {
         ensure_testnet_network_type();
         // Test that Qubetics hex values are correct
-        let qubetics_hex = "0x3B9ACA00";
-        let price_decimal = u64::from_str_radix("3B9ACA00", 16).unwrap();
+        let qubetics_hex = "0x2540BE400";
+        let price_decimal = u64::from_str_radix("2540BE400", 16).unwrap();
 
         println!("🔧 Qubetics gas price hex: {}", qubetics_hex);
         println!("🔧 Qubetics gas price decimal: {} wei", price_decimal);
@@ -2418,7 +2418,7 @@ mod tests {
             price_decimal / 1_000_000_000
         );
 
-        assert_eq!(price_decimal, 1_000_000_000); // 1 Gwei
+        assert_eq!(price_decimal, 10_000_000_000); // 10 Gwei
     }
 
     #[test]
@@ -2433,7 +2433,7 @@ mod tests {
         println!("  - Second call: {}", price2);
 
         assert_eq!(price1, price2);
-        assert_eq!(price1, "0x3B9ACA00");
+        assert_eq!(price1, "0x2540BE400");
     }
 
     #[tokio::test]
