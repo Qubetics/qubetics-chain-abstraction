@@ -903,22 +903,24 @@ impl MpcNetworkLayer {
                                     );
                                     continue;
                                 }
+                                let new_status = if transaction_type == "intent_rejected" {
+                                    IntentStatus::Rejected
+                                } else {
+                                    IntentStatus::Pending
+                                };
+
                                 if let Err(e) = user_intent_manager
-                                    .update_intent_status(
-                                        &user.tics_address,
-                                        h,
-                                        IntentStatus::Pending,
-                                    )
+                                    .update_intent_status(&user.tics_address, h, new_status.clone())
                                     .await
                                 {
                                     warn!(
-                                        "⚠️ [NETWORK] Failed to revert intent {} to Pending: {}",
-                                        h, e
+                                        "⚠️ [NETWORK] Failed to transition intent {} to {:?}: {}",
+                                        h, new_status, e
                                     );
                                 } else {
                                     info!(
-                                        "🔄 [NETWORK] Reverted intent {} to Pending for user {} (synced from node {})",
-                                        h, user.tics_address, node_id
+                                        "🔄 [NETWORK] Transitioned intent {} to {:?} for user {} (synced from node {})",
+                                        h, new_status, user.tics_address, node_id
                                     );
                                 }
                             }
@@ -1087,7 +1089,11 @@ impl MpcNetworkLayer {
                 // Calculate required balance: amount + 5% buffer + estimated tx fee
                 let five_percent_buffer = source_amount / 20;
                 let estimated_tx_fee: u128 = if source_blockchain == "btc" {
-                    1000 // ~1000 sats covers typical P2WPKH tx with margin
+                    let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse::<u128>().ok())
+                        .unwrap_or(2);
+                    208 * fee_rate
                 } else {
                     300_000_000_000_000u128 // gas_limit=300k * gas_price=1 Gwei
                 };
@@ -2650,6 +2656,53 @@ impl MpcNetworkLayer {
                                         continue;
                                     }
                                 }
+
+                                let source_amount = match intent.amount.trim().parse::<u128>() {
+                                    Ok(a) if a > 0 => a,
+                                    _ => {
+                                        warn!(
+                                            "⚠️ [TICS_UTV_BATCH] Invalid amount for intent {}",
+                                            intent_hash
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let five_percent_buffer = source_amount / 20;
+                                let estimated_tx_fee: u128 = 300_000_000_000_000;
+                                let required_balance =
+                                    source_amount + five_percent_buffer + estimated_tx_fee;
+
+                                match crate::rpc_server::utils::fetch_network_balance(
+                                    &intent.source_address,
+                                    "eth",
+                                )
+                                .await
+                                {
+                                    Ok(user_balance) => {
+                                        if user_balance < required_balance {
+                                            tracing::warn!(
+                                                "⚠️ [TICS_UTV_BATCH] Insufficient balance for intent in batch {}: has {}, needs {}. Rejecting locally.",
+                                                intent_hash, user_balance, required_balance
+                                            );
+                                            if let Err(e) = user_intent_manager
+                                                .update_intent_status(
+                                                    &user.tics_address,
+                                                    intent_hash,
+                                                    crate::types::IntentStatus::Rejected,
+                                                )
+                                                .await
+                                            {
+                                                tracing::error!("Failed to update intent status to Rejected for {}: {}", intent_hash, e);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("⚠️ [TICS_UTV_BATCH] Failed to fetch balance for intent {}: {}", intent_hash, e);
+                                        continue;
+                                    }
+                                }
+
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,
@@ -3019,6 +3072,52 @@ impl MpcNetworkLayer {
                                         continue;
                                     }
                                 }
+
+                                let five_percent_buffer = parsed_amount / 20;
+                                let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
+                                    .ok()
+                                    .and_then(|v| v.parse::<u128>().ok())
+                                    .unwrap_or(2);
+                                let estimated_tx_fee: u128 = 208 * fee_rate;
+                                let required_balance =
+                                    parsed_amount + five_percent_buffer + estimated_tx_fee;
+
+                                match crate::utils::transaction::fetch_bitcoin_utxos(
+                                    &intent.source_address,
+                                    false,
+                                )
+                                .await
+                                {
+                                    Ok(utxos) => {
+                                        let confirmed_balance: u128 = utxos
+                                            .iter()
+                                            .filter(|u| u.status.confirmed)
+                                            .map(|u| u.value as u128)
+                                            .sum();
+                                        if confirmed_balance < required_balance {
+                                            tracing::warn!(
+                                                "⚠️ [BTC_UTV_BATCH] Insufficient confirmed UTXOs for intent in batch {}: has {}, needs {}. Rejecting locally.",
+                                                intent_hash, confirmed_balance, required_balance
+                                            );
+                                            if let Err(e) = user_intent_manager
+                                                .update_intent_status(
+                                                    &user.tics_address,
+                                                    intent_hash,
+                                                    crate::types::IntentStatus::Rejected,
+                                                )
+                                                .await
+                                            {
+                                                tracing::error!("Failed to update intent status to Rejected for {}: {}", intent_hash, e);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("⚠️ [BTC_UTV_BATCH] Failed to fetch utxos for intent {}: {}", intent_hash, e);
+                                        continue;
+                                    }
+                                }
+
                                 batch_intents.push((
                                     intent_hash.clone(),
                                     intent,

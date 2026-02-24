@@ -2654,6 +2654,52 @@ impl SigningNode {
             )
             .await;
 
+        let mut valid_pending = Vec::new();
+        for (hash, intent, user) in pending {
+            let source_amount = match intent.amount.trim().parse::<u128>() {
+                Ok(a) if a > 0 => a,
+                _ => {
+                    tracing::warn!("⚠️ [CLOCK][TICS_UTV_BATCH] Invalid amount for intent {}", hash);
+                    continue;
+                }
+            };
+            
+            let five_percent_buffer = source_amount / 20;
+            let estimated_tx_fee: u128 = 300_000_000_000_000;
+            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+            
+            match crate::rpc_server::utils::fetch_network_balance(&intent.source_address, "eth").await {
+                Ok(user_balance) => {
+                    if user_balance < required_balance {
+                        tracing::warn!(
+                            "⚠️ [CLOCK][TICS_UTV_BATCH] Insufficient balance for intent {}: has {}, needs {}",
+                            hash, user_balance, required_balance
+                        );
+                        if let Err(e) = user_intent_manager.update_intent_status(&user, &hash, crate::types::IntentStatus::Rejected).await {
+                             tracing::error!("Failed to update intent status to Rejected for {}: {}", hash, e);
+                        }
+                        let error_msg = crate::types::GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: vec![hash.clone()],
+                            error_message: format!("Insufficient balance: has {}, needs {}", user_balance, required_balance),
+                            transaction_type: "intent_rejected".to_string(),
+                            solver_address: None,
+                            node_id: self.id.clone(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.broadcast("signing", &data).await;
+                        }
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("⚠️ [CLOCK][TICS_UTV_BATCH] Failed to fetch balance for intent {}: {}", hash, e);
+                    continue;
+                }
+            }
+            valid_pending.push((hash, intent, user));
+        }
+        let pending = valid_pending;
+
         if pending.is_empty() {
             if !exclusion_set.is_empty() {
                 let mut guard = self.last_tics_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
@@ -2777,6 +2823,61 @@ impl SigningNode {
                 Some(&exclusion_set),
             )
             .await;
+
+        let mut valid_pending = Vec::new();
+        for (hash, intent, user) in pending {
+            let source_amount = match intent.amount.trim().parse::<u128>() {
+                Ok(a) if a > 0 => a,
+                _ => {
+                    tracing::warn!("⚠️ [CLOCK][BTC_UTV_BATCH] Invalid amount for intent {}", hash);
+                    continue;
+                }
+            };
+            
+            let five_percent_buffer = source_amount / 20;
+            let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
+                .ok()
+                .and_then(|v| v.parse::<u128>().ok())
+                .unwrap_or(2);
+            let estimated_tx_fee: u128 = 208 * fee_rate;
+            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+            
+            match crate::utils::transaction::fetch_bitcoin_utxos(&intent.source_address, false).await {
+                Ok(utxos) => {
+                    let confirmed_balance: u128 = utxos
+                        .iter()
+                        .filter(|u| u.status.confirmed)
+                        .map(|u| u.value as u128)
+                        .sum();
+                    if confirmed_balance < required_balance {
+                        tracing::warn!(
+                            "⚠️ [CLOCK][BTC_UTV_BATCH] Insufficient confirmed UTXOs for intent {}: has {}, needs {}",
+                            hash, confirmed_balance, required_balance
+                        );
+                        if let Err(e) = user_intent_manager.update_intent_status(&user, &hash, crate::types::IntentStatus::Rejected).await {
+                             tracing::error!("Failed to update intent status to Rejected for {}: {}", hash, e);
+                        }
+                        let error_msg = crate::types::GossipsubMessage::TransactionErrorBroadcast {
+                            intent_hashes: vec![hash.clone()],
+                            error_message: format!("Insufficient confirmed UTXOs: has {}, needs {}", confirmed_balance, required_balance),
+                            transaction_type: "intent_rejected".to_string(),
+                            solver_address: None,
+                            node_id: self.id.clone(),
+                        };
+                        if let Ok(data) = serde_json::to_vec(&error_msg) {
+                            let _ = self.broadcast("signing", &data).await;
+                        }
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("⚠️ [CLOCK][BTC_UTV_BATCH] Failed to fetch utxos for intent {}: {}", hash, e);
+                    continue; 
+                }
+            }
+            valid_pending.push((hash, intent, user));
+        }
+        let pending = valid_pending;
 
         if pending.is_empty() {
             if !exclusion_set.is_empty() {

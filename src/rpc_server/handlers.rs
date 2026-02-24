@@ -18,16 +18,15 @@ use crate::{
         messaging::ChannelMessage,
         rpc_server::{
             AddLiquidityRequest, AddLiquidityResponse, ClaimPlatformFeeRequest,
-            ClaimPlatformFeeResponse, ClaimRewardRequest, ClaimRewardResponse,
-            DKGStatusResponse, EnhancedUserRegistrationResponse, GetSolverRewardsRequest,
-            GetSolverRewardsResponse, HeartbeatResponse, IntentDetailsResponse,
-            IntentsSolvedCountResponse, NodeIdResponse, PeerConnectionResponse,
-            PendingClaimPlatformFeeRequest, PendingClaimRewardRequest,
+            ClaimPlatformFeeResponse, ClaimRewardRequest, ClaimRewardResponse, DKGStatusResponse,
+            EnhancedUserRegistrationResponse, GetSolverRewardsRequest, GetSolverRewardsResponse,
+            HeartbeatResponse, IntentDetailsResponse, IntentsSolvedCountResponse, NodeIdResponse,
+            PeerConnectionResponse, PendingClaimPlatformFeeRequest, PendingClaimRewardRequest,
             PendingIntentsCountResponse, PendingWithdrawRequest, RejoinStatusResponse,
-            RequestContext, SolverLiquidityRequest, SolverLiquidityResponse,
-            UnclaimedRewardEntry, UptimeResponse, UserCountResponse, UserInfoResponse,
-            UserMpcDepositRequest, UserMpcDepositVerifyResponse, UserRegistrationRequest,
-            WithdrawLiquidityRequest, WithdrawLiquidityResponse,
+            RequestContext, SolverLiquidityRequest, SolverLiquidityResponse, UnclaimedRewardEntry,
+            UptimeResponse, UserCountResponse, UserInfoResponse, UserMpcDepositRequest,
+            UserMpcDepositVerifyResponse, UserRegistrationRequest, WithdrawLiquidityRequest,
+            WithdrawLiquidityResponse,
         },
         IntentStatus,
     },
@@ -662,7 +661,9 @@ pub(crate) async fn handle_register_admin(
     };
 
     // --- 2. Load ADMIN_PUBLIC_ADDRESS from env (or default) ---
-    let admin_public_address = crate::env_defaults::admin_public_address().trim().to_string();
+    let admin_public_address = crate::env_defaults::admin_public_address()
+        .trim()
+        .to_string();
     if admin_public_address.is_empty() {
         error!("❌ ADMIN_PUBLIC_ADDRESS env var is not configured");
         return Ok(warp::reply::json(&AdminRegistrationResponse {
@@ -1138,7 +1139,8 @@ pub(crate) async fn handle_user_mpc_deposit(
     let transaction_type = TransactionType::UserToVault;
 
     // CRITICAL: Validate intent BEFORE storing intent_hash to prevent orphaned hashes
-    if let Err(e) = crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&req.msg)
+    if let Err(e) =
+        crate::utils::intent_validation::validate_intent_chains_tokens_addresses(&req.msg)
     {
         warn!(
             request_id = %request_context.request_id,
@@ -1200,7 +1202,10 @@ pub(crate) async fn handle_user_mpc_deposit(
 
                 // Reject zero-amount intents immediately
                 if source_amount == 0 {
-                    warn!("⚠️ [HTTP] Rejecting intent {} - amount is zero", intent_hash_hex);
+                    warn!(
+                        "⚠️ [HTTP] Rejecting intent {} - amount is zero",
+                        intent_hash_hex
+                    );
                     return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                         status: "error".to_string(),
                         intent_hash: intent_hash_hex.clone(),
@@ -1223,8 +1228,11 @@ pub(crate) async fn handle_user_mpc_deposit(
                 let estimated_tx_fee: u128 = if source_blockchain == "btc" {
                     // BTC: conservative estimate for P2WPKH tx (2 inputs, 2 outputs)
                     // vbytes = 10 + 68*2 + 31*2 = 208, fee = 208 * 2 sat/vbyte = 416 sats
-                    // Use 1000 sats as a safe upper bound
-                    1000
+                    let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
+                        .ok()
+                        .and_then(|v| v.parse::<u128>().ok())
+                        .unwrap_or(2);
+                    208 * fee_rate
                 } else {
                     // TICS (EVM): gas_limit=300_000, gas_price=1 Gwei (1e9 wei)
                     // fee = 300_000 * 1_000_000_000 = 300_000_000_000_000 wei (0.0003 TICS)
@@ -1326,10 +1334,17 @@ pub(crate) async fn handle_user_mpc_deposit(
                 let target_amount = if is_same_chain {
                     source_amount
                 } else {
-                    let prices = match crate::rpc_server::utils::fetch_crypto_prices(Some(req.msg.timestamp)).await {
+                    let prices = match crate::rpc_server::utils::fetch_crypto_prices(Some(
+                        req.msg.timestamp,
+                    ))
+                    .await
+                    {
                         Ok(p) => p,
                         Err(e) => {
-                            warn!("❌ [HTTP] Failed to fetch prices for intent {}: {}", intent_hash_hex, e);
+                            warn!(
+                                "❌ [HTTP] Failed to fetch prices for intent {}: {}",
+                                intent_hash_hex, e
+                            );
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
@@ -1353,7 +1368,10 @@ pub(crate) async fn handle_user_mpc_deposit(
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
-                                error_message: Some(format!("Failed to compute target amount: {:?}", e)),
+                                error_message: Some(format!(
+                                    "Failed to compute target amount: {:?}",
+                                    e
+                                )),
                                 signer_eth_address: None,
                             }));
                         }
@@ -1473,10 +1491,19 @@ pub(crate) async fn handle_user_mpc_deposit(
 
                 if !network_address.is_empty() {
                     let network_blockchain = if dst_is_btc { "btc" } else { "eth" };
-                    match crate::rpc_server::utils::fetch_network_balance(&network_address, network_blockchain).await {
+                    match crate::rpc_server::utils::fetch_network_balance(
+                        &network_address,
+                        network_blockchain,
+                    )
+                    .await
+                    {
                         Ok(network_balance) => {
                             if network_balance < target_amount {
-                                let liquidity_source = if dst_is_tics { "treasury vault" } else { "network" };
+                                let liquidity_source = if dst_is_tics {
+                                    "treasury vault"
+                                } else {
+                                    "network"
+                                };
                                 warn!(
                                     "⚠️ [HTTP] Insufficient {} balance for intent {}: have {}, need {}",
                                     liquidity_source, intent_hash_hex, network_balance, target_amount
@@ -1504,7 +1531,10 @@ pub(crate) async fn handle_user_mpc_deposit(
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
-                                error_message: Some(format!("Failed to verify network liquidity: {}", e)),
+                                error_message: Some(format!(
+                                    "Failed to verify network liquidity: {}",
+                                    e
+                                )),
                                 signer_eth_address: None,
                             }));
                         }
@@ -2293,21 +2323,25 @@ pub(crate) async fn handle_get_solver_rewards(
     };
 
     // Fetch unclaimed reward amounts from the SolverManager contract.
-    let (reward_btc, reward_tics) = match fetch_solver_unclaimed_rewards_from_contract(&normalized_address).await {
-        Ok((btc, tics)) => (Some(btc), Some(tics)),
-        Err(e) => {
-            warn!("⚠️ [SOLVER_REWARDS] Failed to fetch contract rewards for {}: {}", normalized_address, e);
-            return Ok(warp::reply::json(&GetSolverRewardsResponse {
-                status: "error".to_string(),
-                solver_address: normalized_address.clone(),
-                reward_btc: None,
-                reward_tics: None,
-                unclaimed_rewards: vec![],
-                message: e.clone(),
-                error_message: Some(e),
-            }));
-        }
-    };
+    let (reward_btc, reward_tics) =
+        match fetch_solver_unclaimed_rewards_from_contract(&normalized_address).await {
+            Ok((btc, tics)) => (Some(btc), Some(tics)),
+            Err(e) => {
+                warn!(
+                    "⚠️ [SOLVER_REWARDS] Failed to fetch contract rewards for {}: {}",
+                    normalized_address, e
+                );
+                return Ok(warp::reply::json(&GetSolverRewardsResponse {
+                    status: "error".to_string(),
+                    solver_address: normalized_address.clone(),
+                    reward_btc: None,
+                    reward_tics: None,
+                    unclaimed_rewards: vec![],
+                    message: e.clone(),
+                    error_message: Some(e),
+                }));
+            }
+        };
 
     let db = user_intent_manager.get_database();
     let prefix = format!(
@@ -2610,7 +2644,10 @@ pub(crate) async fn handle_claim_reward(
                 }));
             }
             Err(e) => {
-                warn!("⚠️ [CLAIM_REWARD] get_solver_id failed for {}: {}", normalized_address, e);
+                warn!(
+                    "⚠️ [CLAIM_REWARD] get_solver_id failed for {}: {}",
+                    normalized_address, e
+                );
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
                     tics_address: req.tics_address.clone(),
@@ -2630,7 +2667,10 @@ pub(crate) async fn handle_claim_reward(
         {
             Ok(r) => r,
             Err(e) => {
-                warn!("⚠️ [CLAIM_REWARD] get_solvers_unclaimed_rewards failed: {}", e);
+                warn!(
+                    "⚠️ [CLAIM_REWARD] get_solvers_unclaimed_rewards failed: {}",
+                    e
+                );
                 return Ok(warp::reply::json(&ClaimRewardResponse {
                     status: "error".to_string(),
                     tics_address: req.tics_address.clone(),
@@ -3101,7 +3141,11 @@ pub(crate) async fn handle_withdraw_liquidity(
     // Reject if this solver already has a withdraw request for the same asset in Pending or Batched status
     // (one in-flight withdraw per solver per asset; persists over gossip so no duplicate on any node).
     {
-        let withdraw_asset = if withdraw_tics_amount.is_some() { "TICS" } else { "BTC" };
+        let withdraw_asset = if withdraw_tics_amount.is_some() {
+            "TICS"
+        } else {
+            "BTC"
+        };
         let db = user_intent_manager.get_database();
         let prefix = format!(
             "pending_withdraw_liquidity:{}:",
@@ -3130,9 +3174,9 @@ pub(crate) async fn handle_withdraw_liquidity(
                 }));
             }
         };
-        let has_pending_or_batched = entries
-            .iter()
-            .any(|(_, r)| r.asset == withdraw_asset && (r.status == "Pending" || r.status == "Batched"));
+        let has_pending_or_batched = entries.iter().any(|(_, r)| {
+            r.asset == withdraw_asset && (r.status == "Pending" || r.status == "Batched")
+        });
         if has_pending_or_batched {
             info!(
                 "🚫 [WITHDRAW_LIQUIDITY] Rejecting {} withdraw for solver {}: already has a {} request in Pending/Batched",
@@ -3248,8 +3292,7 @@ pub(crate) async fn handle_add_liquidity(
     );
 
     // 1) Load VERIFICATION_ADDRESS from env (must NOT be hardcoded).
-    let verification_address_raw =
-        crate::env_defaults::verification_address();
+    let verification_address_raw = crate::env_defaults::verification_address();
     if verification_address_raw.trim().is_empty() {
         warn!("❌ [ADD_LIQUIDITY] VERIFICATION_ADDRESS not configured");
         return Ok(warp::reply::json(&AddLiquidityResponse {
@@ -3366,7 +3409,10 @@ pub(crate) async fn handle_add_liquidity(
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             message: "Unsupported chainId".to_string(),
-            error_message: Some(format!("chainId must be 0 (BTC) or {} (EVM)", tics_chain_id)),
+            error_message: Some(format!(
+                "chainId must be 0 (BTC) or {} (EVM)",
+                tics_chain_id
+            )),
         }));
     }
 
@@ -3382,11 +3428,16 @@ pub(crate) async fn handle_add_liquidity(
 
     // Validate solver_address is a valid Ethereum address
     if let Err(e) = super::errors::validate_tics_address(&payload.solver_address) {
-        warn!("❌ [ADD_LIQUIDITY] Invalid solver_address '{}': {:?}", payload.solver_address, e);
+        warn!(
+            "❌ [ADD_LIQUIDITY] Invalid solver_address '{}': {:?}",
+            payload.solver_address, e
+        );
         return Ok(warp::reply::json(&AddLiquidityResponse {
             status: "error".to_string(),
             message: "Invalid solver address format".to_string(),
-            error_message: Some("solverAddress must be a valid Ethereum address (0x + 40 hex chars)".to_string()),
+            error_message: Some(
+                "solverAddress must be a valid Ethereum address (0x + 40 hex chars)".to_string(),
+            ),
         }));
     }
 
@@ -3394,15 +3445,24 @@ pub(crate) async fn handle_add_liquidity(
     match crate::contract::validate_solver_onboarded(&payload.solver_id, "ADD_LIQUIDITY").await {
         Ok(true) => {} // solver is onboarded
         Ok(false) => {
-            warn!("❌ [ADD_LIQUIDITY] Solver '{}' is not onboarded on-chain", payload.solver_id);
+            warn!(
+                "❌ [ADD_LIQUIDITY] Solver '{}' is not onboarded on-chain",
+                payload.solver_id
+            );
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 message: "Solver is not onboarded".to_string(),
-                error_message: Some(format!("Solver '{}' is not onboarded on the solver contract", payload.solver_id)),
+                error_message: Some(format!(
+                    "Solver '{}' is not onboarded on the solver contract",
+                    payload.solver_id
+                )),
             }));
         }
         Err(e) => {
-            warn!("❌ [ADD_LIQUIDITY] Failed to verify solver '{}' on-chain: {}", payload.solver_id, e);
+            warn!(
+                "❌ [ADD_LIQUIDITY] Failed to verify solver '{}' on-chain: {}",
+                payload.solver_id, e
+            );
             return Ok(warp::reply::json(&AddLiquidityResponse {
                 status: "error".to_string(),
                 message: "Solver verification failed".to_string(),
@@ -3681,7 +3741,10 @@ pub(crate) async fn handle_rejoin_status(
         format!("Node {} is clear to rejoin the network", solver_id)
     };
 
-    info!("📋 [REJOIN_STATUS] solver_id={}, blocked={}, pending_records={}", solver_id, blocked, pending_records);
+    info!(
+        "📋 [REJOIN_STATUS] solver_id={}, blocked={}, pending_records={}",
+        solver_id, blocked, pending_records
+    );
 
     Ok(warp::reply::json(&RejoinStatusResponse {
         solver_id,
@@ -3789,7 +3852,10 @@ pub(crate) async fn handle_claim_platform_fee(
     // --- 1b. Validate target address format ---
     if let Some(ref tics_addr) = req.tics_target_address {
         if let Err(e) = super::errors::validate_tics_address(tics_addr) {
-            warn!("❌ [PLATFORM_FEE] Invalid tics_target_address '{}': {:?}", tics_addr, e);
+            warn!(
+                "❌ [PLATFORM_FEE] Invalid tics_target_address '{}': {:?}",
+                tics_addr, e
+            );
             return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                 status: "error".to_string(),
                 request_id: None,
@@ -3797,13 +3863,19 @@ pub(crate) async fn handle_claim_platform_fee(
                 tics_target_address: req.tics_target_address.clone(),
                 btc_target_address: req.btc_target_address.clone(),
                 message: "Invalid TICS target address format".to_string(),
-                error_message: Some("tics_target_address must be a valid Ethereum address (0x + 40 hex chars)".to_string()),
+                error_message: Some(
+                    "tics_target_address must be a valid Ethereum address (0x + 40 hex chars)"
+                        .to_string(),
+                ),
             }));
         }
     }
     if let Some(ref btc_addr) = req.btc_target_address {
         if !crate::utils::is_valid_bitcoin_address(btc_addr) {
-            warn!("❌ [PLATFORM_FEE] Invalid btc_target_address '{}'", btc_addr);
+            warn!(
+                "❌ [PLATFORM_FEE] Invalid btc_target_address '{}'",
+                btc_addr
+            );
             return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                 status: "error".to_string(),
                 request_id: None,
@@ -3812,8 +3884,7 @@ pub(crate) async fn handle_claim_platform_fee(
                 btc_target_address: req.btc_target_address.clone(),
                 message: "Invalid BTC target address format".to_string(),
                 error_message: Some(
-                    "btc_target_address must be a syntactically valid Bitcoin address"
-                        .to_string(),
+                    "btc_target_address must be a syntactically valid Bitcoin address".to_string(),
                 ),
             }));
         }
@@ -3871,7 +3942,9 @@ pub(crate) async fn handle_claim_platform_fee(
     }
 
     // --- 3. Load ADMIN_PUBLIC_ADDRESS from env (or default) and verify admin signature ---
-    let admin_public_address = crate::env_defaults::admin_public_address().trim().to_string();
+    let admin_public_address = crate::env_defaults::admin_public_address()
+        .trim()
+        .to_string();
     if admin_public_address.is_empty() {
         warn!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS not configured");
         return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
@@ -3938,9 +4011,7 @@ pub(crate) async fn handle_claim_platform_fee(
             tics_target_address: req.tics_target_address.clone(),
             btc_target_address: req.btc_target_address.clone(),
             message: "Unauthorized claim_platform_fee request".to_string(),
-            error_message: Some(
-                "Recovered signer does not match ADMIN_PUBLIC_ADDRESS".to_string(),
-            ),
+            error_message: Some("Recovered signer does not match ADMIN_PUBLIC_ADDRESS".to_string()),
         }));
     }
 
@@ -3948,7 +4019,10 @@ pub(crate) async fn handle_claim_platform_fee(
     let admin_address_cs = match admin_public_address.parse::<Address>() {
         Ok(addr) => ethers::utils::to_checksum(&addr, None),
         Err(e) => {
-            error!("❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS '{}' is not a valid address: {}", admin_public_address, e);
+            error!(
+                "❌ [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS '{}' is not a valid address: {}",
+                admin_public_address, e
+            );
             return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                 status: "error".to_string(),
                 request_id: None,
@@ -3956,7 +4030,9 @@ pub(crate) async fn handle_claim_platform_fee(
                 tics_target_address: req.tics_target_address.clone(),
                 btc_target_address: req.btc_target_address.clone(),
                 message: "ADMIN_PUBLIC_ADDRESS configuration is invalid".to_string(),
-                error_message: Some("ADMIN_PUBLIC_ADDRESS env var is not a valid Ethereum address".to_string()),
+                error_message: Some(
+                    "ADMIN_PUBLIC_ADDRESS env var is not a valid Ethereum address".to_string(),
+                ),
             }));
         }
     };
@@ -4012,7 +4088,11 @@ pub(crate) async fn handle_claim_platform_fee(
     };
 
     // chainId: 0 for BTC, TICS chain ID for TICS (matches contract REQUIRED_CHAIN_BTC / REQUIRED_CHAIN_TICS)
-    let on_chain_id: u64 = if asset == "BTC" { 0 } else { crate::env_defaults::mpc_tics_chain_id() };
+    let on_chain_id: u64 = if asset == "BTC" {
+        0
+    } else {
+        crate::env_defaults::mpc_tics_chain_id()
+    };
 
     let requested_amount = match req.amount.trim().parse::<u128>() {
         Ok(a) => ethers::types::U256::from(a),
@@ -4043,10 +4123,7 @@ pub(crate) async fn handle_claim_platform_fee(
         let contract_addr: Address = match contract_address_str.parse() {
             Ok(a) => a,
             Err(e) => {
-                warn!(
-                    "⚠️ [PLATFORM_FEE] Invalid SOLVER_CONTRACT_ADDRESS: {}",
-                    e
-                );
+                warn!("⚠️ [PLATFORM_FEE] Invalid SOLVER_CONTRACT_ADDRESS: {}", e);
                 return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                     status: "error".to_string(),
                     request_id: None,
@@ -4082,10 +4159,7 @@ pub(crate) async fn handle_claim_platform_fee(
         let contract = match SolverManagerContract::new(&config, client.provider()) {
             Ok(c) => c,
             Err(e) => {
-                warn!(
-                    "⚠️ [PLATFORM_FEE] SolverManagerContract::new failed: {}",
-                    e
-                );
+                warn!("⚠️ [PLATFORM_FEE] SolverManagerContract::new failed: {}", e);
                 return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                     status: "error".to_string(),
                     request_id: None,
@@ -4115,9 +4189,7 @@ pub(crate) async fn handle_claim_platform_fee(
                     tics_target_address: req.tics_target_address.clone(),
                     btc_target_address: req.btc_target_address.clone(),
                     message: "Failed to query on-chain unclaimed platform fee".to_string(),
-                    error_message: Some(format!(
-                        "getPlatformUnclaimedFee failed: {e}"
-                    )),
+                    error_message: Some(format!("getPlatformUnclaimedFee failed: {e}")),
                 }));
             }
         };
@@ -4235,9 +4307,9 @@ pub(crate) async fn handle_claim_platform_fee(
         let prefix = crate::database::primitives::keys::PENDING_CLAIM_PLATFORM_FEE;
         let entries: Vec<(String, PendingClaimPlatformFeeRequest)> =
             db.get_values_with_prefix(prefix).unwrap_or_default();
-        let active = entries.iter().find(|(_, r)| {
-            r.asset == asset && (r.status == "Pending" || r.status == "Batched")
-        });
+        let active = entries
+            .iter()
+            .find(|(_, r)| r.asset == asset && (r.status == "Pending" || r.status == "Batched"));
         if let Some((_, existing)) = active {
             warn!(
                 "❌ [PLATFORM_FEE] Duplicate {} claim rejected — existing request_id={} is {}",
