@@ -19,11 +19,13 @@ import path from 'path';
 
 // Configuration
 const RPC_NODES = [
-  'http://127.0.0.1:8082',
+  // 'http://127.0.0.1:8082',
   // 'http://127.0.0.1:8083',
   // 'http://127.0.0.1:8084',
   // 'http://127.0.0.1:8082',
   // 'http://124.243.185.174:8082',
+  // 'http://124.243.183.85:8082',
+  'http://159.138.121.15:8082'
 ];
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
@@ -557,13 +559,13 @@ async function testUserMpcDeposit({ wallet, amount, userId, nodeUrl }) {
       // target_address: userInfo.data.derived_eth_address,
       // target_address: "0x052e109a83bce9217270ca2880035c9d7de9065e",
       // target_address: "0xCDB3684EA93DD34F45E5Ea4c370000130eBCbDA9",
-      target_address: "0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989",
-      // target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
+      // target_address: "0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989",
+      target_address: "tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42",
       source_chain: 'bitcoin',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: amount,
       source_token: 'BTC',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: intentTimestamp,
     };
 
@@ -883,7 +885,7 @@ async function step2_SubmitTransactions() {
   // Submit all transactions in parallel, distributed across nodes
   const depositPromises = wallets.map(({ wallet, userId }) => {
     // const amount = "5000000000000000000";  // 12 TICS
-    const amount = "40000";  // btc
+    const amount = "200";  // btc
     const nodeUrl = getNodeForUser(userId);
     return testUserMpcDeposit({ wallet, amount, userId, nodeUrl });
   });

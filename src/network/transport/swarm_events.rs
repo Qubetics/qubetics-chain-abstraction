@@ -3,8 +3,8 @@
 use anyhow::Result;
 use libp2p::swarm::{ConnectionError, SwarmEvent};
 use libp2p::{
-    gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage,
-    Multiaddr, PeerId,
+    gossipsub, kad::Event as KademliaEvent, request_response::Message as ReqRespMessage, Multiaddr,
+    PeerId,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
@@ -110,10 +110,7 @@ impl MpcNetworkLayer {
                             self.failed_dial_addresses.entry(addr.clone())
                         {
                             entry.insert(std::time::Instant::now());
-                            debug!(
-                                "[DIAL] Recorded failed address for hourly retry: {}",
-                                addr
-                            );
+                            debug!("[DIAL] Recorded failed address for hourly retry: {}", addr);
                         }
                     }
                 }
@@ -134,34 +131,52 @@ impl MpcNetworkLayer {
 
         let remote_addr = endpoint.get_remote_address();
 
+        // Determine if this peer is an invulnerable (initial DKG signer).
+        // Before DKG has completed (no invulnerables stored yet), treat all peers as invulnerable
+        // so initial bootstrap nodes can connect even if the contract is not configured yet.
+        let solver_id = peer_id.to_string();
+        let is_invulnerable = match self
+            .db
+            .get_string::<Vec<String>>(crate::database::keys::DKG_INVULNERABLES)
+        {
+            Ok(Some(invulnerables)) if !invulnerables.is_empty() => {
+                invulnerables.contains(&solver_id)
+            }
+            // No invulnerables stored yet or read error — assume bootstrap phase and
+            // treat this peer as invulnerable to allow initial nodes to join.
+            _ => true,
+        };
+
         // ===== BAN CHECK — reject peers that were recently banned (e.g. inactive solvers) =====
-        if let Some(banned_at) = self.rejected_peers.get(&peer_id) {
-            let ban_duration = std::time::Duration::from_secs(300); // 5 minutes
-            if banned_at.elapsed() < ban_duration {
-                warn!(
-                    "🚫 [BAN] Rejecting connection from banned peer {} ({}) — {} minutes remaining",
-                    peer_id,
-                    remote_addr,
-                    (ban_duration.as_secs() - banned_at.elapsed().as_secs()) / 60
-                );
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
-            } else {
-                // Ban expired — remove and allow connection.
-                // Reset sync flags so this node catches up on everything it missed while banned
-                // (intents, pending transactions, claim rewards, withdraw requests, VRF rounds, etc.).
-                self.rejected_peers.remove(&peer_id);
-                self.needs_state_sync = true;
-                self.vrf_round_requested = false;
+        if !is_invulnerable {
+            if let Some(banned_at) = self.rejected_peers.get(&peer_id) {
+                let ban_duration = std::time::Duration::from_secs(300); // 5 minutes
+                if banned_at.elapsed() < ban_duration {
+                    warn!(
+                        "🚫 [BAN] Rejecting connection from banned peer {} ({}) — {} minutes remaining",
+                        peer_id,
+                        remote_addr,
+                        (ban_duration.as_secs() - banned_at.elapsed().as_secs()) / 60
+                    );
+                    swarm.disconnect_peer_id(peer_id).ok();
+                    return Ok(());
+                } else {
+                    // Ban expired — remove and allow connection.
+                    // Reset sync flags so this node catches up on everything it missed while banned
+                    // (intents, pending transactions, claim rewards, withdraw requests, VRF rounds, etc.).
+                    self.rejected_peers.remove(&peer_id);
+                    self.needs_state_sync = true;
+                    self.vrf_round_requested = false;
+                }
             }
         }
 
         // Clear this peer from the failed-dial retry list (connection succeeded)
         let removed_count = self.failed_dial_addresses.len();
         self.failed_dial_addresses.retain(|addr, _| {
-            !addr.iter().any(|proto| {
-                matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
-            })
+            !addr
+                .iter()
+                .any(|proto| matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id))
         });
         let cleared = removed_count - self.failed_dial_addresses.len();
         if cleared > 0 {
@@ -173,20 +188,29 @@ impl MpcNetworkLayer {
 
         // ===== VALIDATION GATES (run BEFORE adding peer to any subsystem) =====
 
-        // 1. Solver contract validation (disabled for testing)
-        match crate::contract::validate_solver_active_strict(&peer_id.to_string(), "SOLVER_VALIDATION").await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                warn!(
-                    "🚫 [SOLVER_VALIDATION] Rejecting connection from peer {} ({}): {}",
-                    peer_id, remote_addr, e
-                );
-                self.rejected_peers.entry(peer_id).or_insert_with(std::time::Instant::now);
-                swarm.disconnect_peer_id(peer_id).ok();
-                return Ok(());
+        // 1. Solver contract validation — skipped for invulnerable nodes (initial DKG signers)
+        if !is_invulnerable {
+            match crate::contract::validate_solver_active_strict(
+                &solver_id,
+                "SOLVER_VALIDATION",
+            )
+            .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        "🚫 Rejecting connection from peer {} ({}): {}",
+                        peer_id, remote_addr, e
+                    );
+                    self.rejected_peers
+                        .entry(peer_id)
+                        .or_insert_with(std::time::Instant::now);
+                    swarm.disconnect_peer_id(peer_id).ok();
+                    return Ok(());
+                }
             }
         }
+
 
         // 2. Staging cleanup — if this peer is in the disconnection staging map it means it
         //    disconnected earlier but is now rejoining before epoch-2 promoted it to the
@@ -702,7 +726,10 @@ impl MpcNetworkLayer {
             );
 
             // Remove from gossipsub explicit peers to stop message routing attempts
-            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+            swarm
+                .behaviour_mut()
+                .gossipsub
+                .remove_explicit_peer(&peer_id);
             info!(
                 "🧹 [DISCONNECT] Removed peer {} from gossipsub explicit peers",
                 peer_id
@@ -746,7 +773,9 @@ impl MpcNetworkLayer {
                 let solver_id = peer_id.to_string(); // peer_id IS the solver_id
 
                 // Guard: invulnerable nodes (initial DKG signers) are never staged for invalidation
-                if let Ok(Some(invulnerables)) = self.db.get_string::<Vec<String>>(keys::DKG_INVULNERABLES) {
+                if let Ok(Some(invulnerables)) =
+                    self.db.get_string::<Vec<String>>(keys::DKG_INVULNERABLES)
+                {
                     if invulnerables.contains(&solver_id) {
                         info!(
                             "🛡️ [DISCONNECT] Solver {} is an invulnerable (DKG signer) — skipping disconnection staging",
@@ -807,10 +836,7 @@ impl MpcNetworkLayer {
 
                 if let Ok(record_str) = serde_json::to_string(&disconnection_record) {
                     if let Err(e) = self.db.put_string(&staging_key, &record_str) {
-                        error!(
-                            "❌ [DISCONNECT] Failed to store staging record: {}",
-                            e
-                        );
+                        error!("❌ [DISCONNECT] Failed to store staging record: {}", e);
                     } else {
                         info!(
                             "💾 [DISCONNECT] Stored disconnection staging record for solver: {} (will be promoted to invalidation at epoch-2 if peer does not rejoin)",
