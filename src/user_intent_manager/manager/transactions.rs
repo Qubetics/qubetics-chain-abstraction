@@ -72,15 +72,16 @@ impl UserIntentManager {
         if let Ok(Some(intent)) = self.intent_storage.get_intent(intent_hash).await {
             let target_chain_lower = intent.target_chain.to_lowercase();
             let is_tics = target_chain_lower == "qubetics" || target_chain_lower == "tics";
-            
+
             if is_tics {
                 info!(
                     "💎 [DB_USER_REGISTRY] TICS transaction detected (target_chain: {}), marking intent as Solved",
                     intent.target_chain
                 );
-                
+
                 // Find the user who owns this intent
-                if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(intent_hash).await {
+                if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(intent_hash).await
+                {
                     // Update intent status to Solved
                     if let Err(e) = self
                         .user_storage
@@ -358,7 +359,13 @@ impl UserIntentManager {
                     }
                     _ => {
                         // Only Pending intents; exclude Batched and others
-                        if matches!(status, Some(IntentStatus::Batched) | Some(IntentStatus::Processing) | Some(IntentStatus::Solved) | Some(IntentStatus::Rejected)) {
+                        if matches!(
+                            status,
+                            Some(IntentStatus::Batched)
+                                | Some(IntentStatus::Processing)
+                                | Some(IntentStatus::Solved)
+                                | Some(IntentStatus::Rejected)
+                        ) {
                             continue;
                         }
                     }
@@ -472,7 +479,11 @@ impl UserIntentManager {
         // Exclude intents already marked Solved (TICS-TICS and others get marked Solved after fulfillment)
         let mut filtered = Vec::new();
         for (intent_hash, intent, tx_ids) in intents {
-            if let Ok(Some(user)) = self.user_storage.get_user_by_intent_hash(&intent_hash).await {
+            if let Ok(Some(user)) = self
+                .user_storage
+                .get_user_by_intent_hash(&intent_hash)
+                .await
+            {
                 if let Some(status) = user.intent_hashes.get(&intent_hash) {
                     if *status == IntentStatus::Solved {
                         continue; // Skip solved intents so they are not included in the batch again
@@ -502,7 +513,10 @@ impl UserIntentManager {
         let users = match self.user_storage.get_all_users().await {
             Ok(u) => u,
             Err(e) => {
-                error!("❌ [STALE_INTENT] Failed to load users for stale intent sweep: {}", e);
+                error!(
+                    "❌ [STALE_INTENT] Failed to load users for stale intent sweep: {}",
+                    e
+                );
                 return 0;
             }
         };
@@ -529,8 +543,12 @@ impl UserIntentManager {
                     }
                 }
 
-                // intent.timestamp is Unix seconds (u128)
-                let age_secs = now_secs.saturating_sub(intent.timestamp);
+                // intent.timestamp is Unix seconds (u128) or conditionally evaluated as milliseconds
+                let mut intent_timestamp = intent.timestamp;
+                if intent_timestamp > 1_000_000_000_000 {
+                    intent_timestamp /= 1000;
+                }
+                let age_secs = now_secs.saturating_sub(intent_timestamp);
                 if age_secs >= max_age_secs as u128 {
                     info!(
                         "⏰ [STALE_INTENT] Rejecting stale intent {} for user {} — status {:?}, age {}s (>{} max)",

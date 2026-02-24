@@ -124,9 +124,9 @@ impl MpcNetworkLayer {
                 _ = dkg_status_timer.tick() => {
                     self.log_periodic_dkg_status().await;
 
-                    // Reject user-to-vault intents stuck in Pending/Batched for > 30 minutes
+                    // Reject user-to-vault intents stuck in Pending/Batched for > 15 minutes
                     if let Some(ref uim) = self.user_intent_manager {
-                        const STALE_INTENT_MAX_AGE_SECS: u64 = 30 * 60; // 30 minutes
+                        const STALE_INTENT_MAX_AGE_SECS: u64 = 15 * 60; // 15 minutes
                         uim.reject_stale_intents(STALE_INTENT_MAX_AGE_SECS).await;
                     }
                 }
@@ -414,7 +414,9 @@ impl MpcNetworkLayer {
                 }
                 let current_node_count = self.node_manager.get_total_nodes();
                 if current_node_count > 0 {
-                    signing_node.update_nonce_manager_total_nodes(current_node_count).await;
+                    signing_node
+                        .update_nonce_manager_total_nodes(current_node_count)
+                        .await;
                 }
 
                 if !signing_node.is_nonce_pool_ready().await {
@@ -442,7 +444,9 @@ impl MpcNetworkLayer {
                     if let Some(vrf_service) = sn.vrf_service() {
                         let current_round = vrf_service.get_current_round().await;
                         if current_round > 1000 {
-                            let _ = signing_storage.sweep_rounds_before(current_round - 1000).await;
+                            let _ = signing_storage
+                                .sweep_rounds_before(current_round - 1000)
+                                .await;
                         }
                     }
                 }
@@ -474,10 +478,7 @@ impl MpcNetworkLayer {
 
             match &sync_result {
                 Ok(synced_round) => signing_node.replicate_vrf_round_to_consensus(*synced_round),
-                Err(e) => warn!(
-                    "⏰ [CLOCK] Failed to sync rounds before selection: {}",
-                    e
-                ),
+                Err(e) => warn!("⏰ [CLOCK] Failed to sync rounds before selection: {}", e),
             }
             signing_node.replicate_vrf_round_to_consensus(round);
 

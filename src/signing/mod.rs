@@ -2655,6 +2655,13 @@ impl SigningNode {
             .await;
 
         if pending.is_empty() {
+            if !exclusion_set.is_empty() {
+                let mut guard = self.last_tics_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+                guard.push_back(HashSet::new());
+                while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                    guard.pop_front();
+                }
+            }
             info!(
                 "ℹ️  [CLOCK][TICS_UTV_BATCH] No pending TICS-source intents (UserToVault not done) for round {}",
                 round
@@ -2772,6 +2779,13 @@ impl SigningNode {
             .await;
 
         if pending.is_empty() {
+            if !exclusion_set.is_empty() {
+                let mut guard = self.last_btc_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
+                guard.push_back(HashSet::new());
+                while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
+                    guard.pop_front();
+                }
+            }
             info!(
                 "ℹ️  [CLOCK][BTC_UTV_BATCH] No pending BTC-source intents (UserToVault not done) for round {}",
                 round
