@@ -690,7 +690,8 @@ pub async fn create_bitcoin_transaction(
 
     // let is_testnet = is_testnet_p2pkh_address(&from_address);
     let (from_kind, from_net) = classify_address(from_address)?;
-    let (_to_kind, to_net) = classify_address(to_address)?;
+    // Use get_bitcoin_network for the recipient: any valid address type is accepted as a target.
+    let to_net = get_bitcoin_network(to_address)?;
 
     // Sanity: prevent net mismatch
     if from_net != to_net {
@@ -1027,6 +1028,27 @@ pub(crate) fn classify_address(addr: &str) -> Result<(SpendKind, bitcoin::Networ
     );
 
     Ok((kind, net))
+}
+
+/// Determine the Bitcoin network for any address type without restricting which spend type
+/// (P2PKH / P2SH / P2WPKH / P2WSH / P2TR / …) is used.  Use this for *recipient* addresses
+/// where the only requirement is that the address is syntactically valid and belongs to the
+/// configured network.
+///
+/// Use `classify_address` instead for *source* (spender) addresses because the signing path
+/// needs to know the `SpendKind`.
+pub(crate) fn get_bitcoin_network(addr: &str) -> anyhow::Result<bitcoin::Network> {
+    use bitcoin::address::{Address, NetworkUnchecked};
+    use bitcoin::Network;
+
+    let a: Address<NetworkUnchecked> = addr.parse().map_err(|e| {
+        anyhow::anyhow!("Invalid Bitcoin address '{}': {}", addr, e)
+    })?;
+
+    [Network::Bitcoin, Network::Testnet, Network::Signet, Network::Regtest]
+        .into_iter()
+        .find(|n| a.is_valid_for_network(*n))
+        .ok_or_else(|| anyhow::anyhow!("Address '{}' is not valid for any known network", addr))
 }
 
 // Internal implementation of transaction creation with optional UTXO checking

@@ -3647,6 +3647,7 @@ pub(crate) async fn handle_get_network_addresses(
             status: "success".to_string(),
             network_addresses,
             liquidity_operator_addresses,
+            vault_address: crate::env_defaults::treasury_vault_contract_address(),
             message: "Retrieved network addresses (same across all nodes)".to_string(),
             error_message: None,
         },
@@ -3801,8 +3802,7 @@ pub(crate) async fn handle_claim_platform_fee(
         }
     }
     if let Some(ref btc_addr) = req.btc_target_address {
-        let addr = btc_addr.trim();
-        if addr.is_empty() || addr.starts_with("0x") || !(25..=90).contains(&addr.len()) {
+        if !crate::utils::is_valid_bitcoin_address(btc_addr) {
             warn!("❌ [PLATFORM_FEE] Invalid btc_target_address '{}'", btc_addr);
             return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
                 status: "error".to_string(),
@@ -3811,7 +3811,10 @@ pub(crate) async fn handle_claim_platform_fee(
                 tics_target_address: req.tics_target_address.clone(),
                 btc_target_address: req.btc_target_address.clone(),
                 message: "Invalid BTC target address format".to_string(),
-                error_message: Some("btc_target_address must be a valid Bitcoin address (25-90 chars, no 0x prefix)".to_string()),
+                error_message: Some(
+                    "btc_target_address must be a syntactically valid Bitcoin address"
+                        .to_string(),
+                ),
             }));
         }
     }

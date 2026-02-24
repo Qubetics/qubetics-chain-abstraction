@@ -1518,7 +1518,6 @@ impl MpcNetworkLayer {
                     peer, sequence, index
                 );
 
-                
                 // ===== SOLVER VALIDATION =====
                 // Validate that the discovered peer is an active solver before processing,
                 // but skip validation for invulnerable nodes (initial DKG signers).
@@ -1526,19 +1525,18 @@ impl MpcNetworkLayer {
 
                 // Before DKG has completed (no invulnerables stored yet), treat all peers as
                 // invulnerable so initial bootstrap nodes can be discovered and connected.
-                let is_invulnerable =
-                    match self
-                        .db
-                        .get_string_async::<Vec<String>>(crate::database::keys::DKG_INVULNERABLES)
-                        .await
-                    {
-                        Ok(Some(invulnerables)) if !invulnerables.is_empty() => {
-                            invulnerables.contains(&solver_id)
-                        }
-                        // No invulnerables stored yet or read error — assume bootstrap phase and
-                        // treat this peer as invulnerable to allow initial nodes to join.
-                        _ => true,
-                    };
+                let is_invulnerable = match self
+                    .db
+                    .get_string_async::<Vec<String>>(crate::database::keys::DKG_INVULNERABLES)
+                    .await
+                {
+                    Ok(Some(invulnerables)) if !invulnerables.is_empty() => {
+                        invulnerables.contains(&solver_id)
+                    }
+                    // No invulnerables stored yet or read error — assume bootstrap phase and
+                    // treat this peer as invulnerable to allow initial nodes to join.
+                    _ => true,
+                };
 
                 if !is_invulnerable {
                     match crate::contract::validate_solver_active_strict(
@@ -5397,12 +5395,8 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // Validate solver_address is a valid Ethereum address
-                let solver_addr = request.solver_address.trim();
-                if !solver_addr.starts_with("0x")
-                    || solver_addr.len() != 42
-                    || !solver_addr[2..].chars().all(|c| c.is_ascii_hexdigit())
-                {
+                // Validate solver_address is a valid TICS/Ethereum address
+                if !crate::utils::is_valid_tics_address(request.solver_address.trim()) {
                     warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid solver_address '{}'", request.request_id, request.solver_address);
                     return Ok(());
                 }
@@ -5411,12 +5405,8 @@ impl MpcNetworkLayer {
                 match request.asset.as_str() {
                     "TICS" => match &request.tics_address {
                         Some(addr) if !addr.trim().is_empty() => {
-                            let a = addr.trim();
-                            if !a.starts_with("0x")
-                                || a.len() != 42
-                                || !a[2..].chars().all(|c| c.is_ascii_hexdigit())
-                            {
-                                warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid tics_address format '{}'", request.request_id, addr);
+                            if !crate::utils::is_valid_tics_address(addr.trim()) {
+                                warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid tics_address '{}'", request.request_id, addr);
                                 return Ok(());
                             }
                         }
@@ -5426,12 +5416,10 @@ impl MpcNetworkLayer {
                         }
                     },
                     "BTC" => match &request.btc_address {
-                        Some(addr) if !addr.trim().is_empty() => {
-                            let a = addr.trim();
-                            if a.starts_with("0x") || !(25..=90).contains(&a.len()) {
-                                warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid btc_address format '{}'", request.request_id, addr);
-                                return Ok(());
-                            }
+                        Some(addr) if crate::utils::is_valid_bitcoin_address(addr) => {}
+                        Some(addr) => {
+                            warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid btc_address '{}'", request.request_id, addr);
+                            return Ok(());
                         }
                         _ => {
                             warn!("🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: BTC withdrawal missing btc_address", request.request_id);
@@ -5516,12 +5504,8 @@ impl MpcNetworkLayer {
                 match request.asset.as_str() {
                     "TICS" => match &request.tics_target_address {
                         Some(addr) if !addr.trim().is_empty() => {
-                            let a = addr.trim();
-                            if !a.starts_with("0x")
-                                || a.len() != 42
-                                || !a[2..].chars().all(|c| c.is_ascii_hexdigit())
-                            {
-                                warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid tics_target_address format '{}'", request.request_id, addr);
+                            if !crate::utils::is_valid_tics_address(addr.trim()) {
+                                warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid tics_target_address '{}'", request.request_id, addr);
                                 return Ok(());
                             }
                         }
@@ -5531,15 +5515,19 @@ impl MpcNetworkLayer {
                         }
                     },
                     "BTC" => match &request.btc_target_address {
-                        Some(addr) if !addr.trim().is_empty() => {
-                            let a = addr.trim();
-                            if a.starts_with("0x") || !(25..=90).contains(&a.len()) {
-                                warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid btc_target_address format '{}'", request.request_id, addr);
-                                return Ok(());
-                            }
+                        Some(addr) if crate::utils::is_valid_bitcoin_address(addr) => {}
+                        Some(addr) => {
+                            warn!(
+                                "🚫 [PLATFORM_FEE] Rejecting gossip claim {}: invalid btc_target_address format '{}'",
+                                request.request_id, addr
+                            );
+                            return Ok(());
                         }
                         _ => {
-                            warn!("🚫 [PLATFORM_FEE] Rejecting gossip claim {}: BTC claim missing btc_target_address", request.request_id);
+                            warn!(
+                                "🚫 [PLATFORM_FEE] Rejecting gossip claim {}: BTC claim missing btc_target_address",
+                                request.request_id
+                            );
                             return Ok(());
                         }
                     },
@@ -5751,12 +5739,8 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Validate solver_address is a valid Ethereum address
-                let solver_addr = request.solver_address.trim();
-                if !solver_addr.starts_with("0x")
-                    || solver_addr.len() != 42
-                    || !solver_addr[2..].chars().all(|c| c.is_ascii_hexdigit())
-                {
+                // Validate solver_address is a valid TICS/Ethereum address
+                if !crate::utils::is_valid_tics_address(request.solver_address.trim()) {
                     warn!(
                         "🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid solver_address '{}'",
                         request.request_id, request.solver_address
@@ -5781,24 +5765,22 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
 
-                // Validate TICS address format if provided
+                // Validate TICS address format if provided (strict: checksum via is_valid_tics_address)
                 if let Some(ref addr) = request.tics_address {
                     let a = addr.trim();
-                    if !a.is_empty()
-                        && (!a.starts_with("0x")
-                            || a.len() != 42
-                            || !a[2..].chars().all(|c| c.is_ascii_hexdigit()))
-                    {
-                        warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid tics_address format '{}'", request.request_id, addr);
+                    if !a.is_empty() && !crate::utils::is_valid_tics_address(a) {
+                        warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid tics_address '{}'", request.request_id, addr);
                         return Ok(());
                     }
                 }
 
                 // Validate BTC address format if provided
                 if let Some(ref addr) = request.btc_address {
-                    let a = addr.trim();
-                    if !a.is_empty() && (a.starts_with("0x") || !(25..=90).contains(&a.len())) {
-                        warn!("🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid btc_address format '{}'", request.request_id, addr);
+                    if !crate::utils::is_valid_bitcoin_address(addr) {
+                        warn!(
+                            "🚫 [CLAIM_REWARD] Rejecting gossip claim {}: invalid btc_address format '{}'",
+                            request.request_id, addr
+                        );
                         return Ok(());
                     }
                 }
@@ -6866,4 +6848,3 @@ impl MpcNetworkLayer {
         self.channel_health.health_check();
     }
 }
-

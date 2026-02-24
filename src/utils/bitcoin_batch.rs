@@ -3,7 +3,7 @@ use crate::types::{
     BitcoinInput, BitcoinOutput, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
     BitcoinWitnessInput, BitcoinWitnessUtxo, SpendKind,
 };
-use crate::utils::transaction::{classify_address, create_bitcoin_script_pubkey, DUST_LIMIT_SATS};
+use crate::utils::transaction::{create_bitcoin_script_pubkey, DUST_LIMIT_SATS};
 use secp256k1::ecdsa::RecoverableSignature;
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -226,15 +226,9 @@ pub fn build_batch_unsigned_tx(
     change_address: &str,
     policy: &BatchPolicy,
 ) -> BatchResult<BitcoinTransaction> {
-    let (change_kind, _) = classify_address(change_address)
-        .map_err(|e| BatchTxError::InvalidAddress(e.to_string()))?;
-    if change_kind != policy.spend_kind {
-        return Err(BatchTxError::UnsupportedAddressType(format!(
-            "{:?}",
-            change_kind
-        )));
-    }
-
+    // Build the change script-pubkey directly — create_bitcoin_script_pubkey enforces the runtime
+    // network for any address type (P2PKH, P2WPKH, P2SH, P2WSH, P2TR, …), so no separate
+    // classify_address / spend_kind check is needed here.
     let change_spk = create_bitcoin_script_pubkey(change_address)
         .map_err(|e| BatchTxError::InvalidAddress(e.to_string()))?;
 

@@ -374,6 +374,8 @@ pub struct GetNetworkAddressesResponse {
     pub status: String,
     pub network_addresses: Option<AddressInfo>,
     pub liquidity_operator_addresses: Option<AddressInfo>,
+    /// Treasury vault contract address on TICS chain
+    pub vault_address: String,
     pub message: String,
     pub error_message: Option<String>,
 }

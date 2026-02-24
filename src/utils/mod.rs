@@ -168,6 +168,46 @@ pub fn get_btc_address_from_group_key_p2pkh(pubkey: ProjectivePoint) -> Result<S
     Ok(btc_address.to_string())
 }
 
+/// Validate a Bitcoin address using the `bitcoin` crate.
+/// Accepts any syntactically valid Bitcoin address (mainnet/testnet/regtest),
+/// rejecting empty strings and obviously malformed inputs.
+pub fn is_valid_bitcoin_address(addr: &str) -> bool {
+    use bitcoin::Address;
+    use std::str::FromStr;
+
+    let trimmed = addr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    Address::from_str(trimmed).is_ok()
+}
+
+/// Validate a TICS / Ethereum address.
+///
+/// Returns `true` only when the address:
+/// - is not empty after trimming,
+/// - starts with `0x` and is exactly 42 characters long (2 prefix + 40 hex digits), and
+/// - passes EIP-55 checksum normalisation via `checksum_from_any`.
+///
+/// This is the canonical check used by both RPC handlers and gossipsub handlers so
+/// that the same rules are enforced everywhere.
+pub fn is_valid_tics_address(addr: &str) -> bool {
+    use crate::user_intent_manager::checksum_from_any;
+
+    let trimmed = addr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if !trimmed.starts_with("0x") || trimmed.len() != 42 {
+        return false;
+    }
+    if !trimmed[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    checksum_from_any(trimmed).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
