@@ -284,6 +284,14 @@ pub enum ChannelMessage {
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
         nonce_tuple_id: Option<String>,
     },
+    /// Broadcast when a peer invalidation request is safely deleted because the solver
+    /// was already invalidated on the smart contract.
+    PeerInvalidationDeleted {
+        /// The solver ID that was deleted
+        solver_id: String,
+        /// The node ID that detected the on-chain invalidation
+        node_id: String,
+    },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same pattern as WithdrawTxIdBroadcast).
     /// - TICS: txid starts with "0x" (EVM); store tx_id on TICS requests and mark done; mark BTC requests in batch done only. Single: solver_address Some, requests empty. Batch: requests non-empty.
     /// - BTC: txid is BTC txid; store tx_id on each PendingClaimRewardRequest (do not mark done). Batch only: requests non-empty.
@@ -780,6 +788,14 @@ pub enum GossipsubMessage {
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
         #[serde(default)]
         nonce_tuple_id: Option<String>,
+    },
+    /// Broadcast when a peer invalidation request is safely deleted because the solver
+    /// was already invalidated on the smart contract.
+    PeerInvalidationDeleted {
+        /// The solver ID that was deleted
+        solver_id: String,
+        /// The node ID that detected the on-chain invalidation
+        node_id: String,
     },
     /// Periodic active peer list broadcast for peer count reconciliation.
     /// Nodes broadcast their active peer list every 3rd clock tick so peers

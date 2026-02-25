@@ -1007,6 +1007,24 @@ impl MpcNetworkLayer {
                     warn!("❌ [NETWORK] No user registry available to store synchronized transaction error");
                 }
             }
+            GossipsubMessage::PeerInvalidationDeleted { solver_id, node_id } => {
+                info!(
+                    "🧹 [PEER_INVALIDATION] Received PeerInvalidationDeleted from node {}: cleaning up solver {}",
+                    node_id, solver_id
+                );
+                let staging_key = format!("pending_disconnection:{}", solver_id);
+                if let Err(e) = self.db.delete_string(&staging_key) {
+                    warn!(
+                        "⚠️ [PEER_INVALIDATION] Failed to delete {} upon receiving PeerInvalidationDeleted: {}",
+                        staging_key, e
+                    );
+                } else {
+                    info!(
+                        "✅ [PEER_INVALIDATION] Successfully removed {} after receiving PeerInvalidationDeleted",
+                        staging_key
+                    );
+                }
+            }
             GossipsubMessage::DepositIntent {
                 intent,
                 intent_id: _intent_id,
@@ -3661,6 +3679,38 @@ impl MpcNetworkLayer {
                     selected.change
                 );
 
+                // Deduct fee_per_output from each output and filter dust
+                let fee_per_solver = selected.fee_per_output;
+
+                let mut valid_outputs = Vec::new();
+                let mut valid_requests = Vec::new();
+
+                for (idx, output) in batch_outputs.into_iter().enumerate() {
+                    let req_tuple = used_requests[idx].clone();
+
+                    if output.amount > fee_per_solver + policy.dust_threshold {
+                        valid_outputs.push(BatchOutput {
+                            address: output.address,
+                            amount: output.amount - fee_per_solver,
+                        });
+                        valid_requests.push(req_tuple);
+                    } else {
+                        warn!(
+                            "⚠️ [BTC_WITHDRAW] Dropping request {} because amount {} cannot cover fee {} + dust {}",
+                            req_tuple.0, output.amount, fee_per_solver, policy.dust_threshold
+                        );
+                    }
+                }
+
+                if valid_outputs.is_empty() {
+                    warn!("⚠️ [BTC_WITHDRAW] All outputs were dropped due to insufficient amounts to cover fees");
+                    return Ok(());
+                }
+
+                // Update the batch vectors used downstream
+                batch_outputs = valid_outputs;
+                used_requests = valid_requests;
+
                 // Step 6: Build unsigned transaction
                 let unsigned_tx = match build_batch_unsigned_tx(&selected, &batch_outputs, &policy)
                 {
@@ -4072,6 +4122,44 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 };
+
+                info!(
+                    "💰 [BTC_CLAIM_REWARD] Selected {} UTXOs: total={} sats, fee={} sats, change={} sats",
+                    selected.utxos.len(),
+                    selected.total_input_value,
+                    selected.fee,
+                    selected.change
+                );
+
+                let fee_per_solver = selected.fee_per_output;
+
+                let mut valid_outputs = Vec::new();
+                let mut valid_requests = Vec::new();
+
+                for (idx, output) in batch_outputs.into_iter().enumerate() {
+                    let req_tuple = used_requests[idx].clone();
+
+                    if output.amount > fee_per_solver + policy.dust_threshold {
+                        valid_outputs.push(BatchOutput {
+                            address: output.address,
+                            amount: output.amount - fee_per_solver,
+                        });
+                        valid_requests.push(req_tuple);
+                    } else {
+                        warn!(
+                            "⚠️ [BTC_CLAIM_REWARD] Dropping request {} because amount {} cannot cover fee {} + dust {}",
+                            req_tuple.0, output.amount, fee_per_solver, policy.dust_threshold
+                        );
+                    }
+                }
+
+                if valid_outputs.is_empty() {
+                    warn!("⚠️ [BTC_CLAIM_REWARD] All outputs were dropped due to insufficient amounts to cover fees");
+                    return Ok(());
+                }
+
+                batch_outputs = valid_outputs;
+                used_requests = valid_requests;
 
                 let unsigned_tx = match build_batch_unsigned_tx(&selected, &batch_outputs, &policy)
                 {
@@ -5331,13 +5419,10 @@ impl MpcNetworkLayer {
                 }
                 self.processed_batch_rounds.insert(batch_key);
 
-                // Store round -> solver_ids so we can broadcast PeerInvalidationTxConfirmed after tx receipt
-                {
-                    let mut pending = self.peer_invalidation_pending.lock().await;
-                    pending.insert(round.to_string(), solver_ids.clone());
-                }
+                // Check on-chain validity for each solver individually before proceeding.
+                // If already invalidated, drop it and broadcast a deletion so other nodes wipe it.
+                let mut valid_solver_ids = Vec::new();
 
-                // Get contract configuration
                 let contract_config_opt = crate::contract::get_solver_contract_config()?;
                 let contract_config = match contract_config_opt {
                     Some(config) => config,
@@ -5346,6 +5431,59 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 };
+
+                if let Ok(client) = crate::contract::ContractClient::new(contract_config.clone()) {
+                    if let Ok(contract) = crate::contract::SolverManagerContract::new(
+                        &contract_config,
+                        client.provider(),
+                    ) {
+                        for sid in &solver_ids {
+                            match contract.is_solver_id_validated(sid).await {
+                                Ok(true) => {
+                                    valid_solver_ids.push(sid.clone());
+                                }
+                                Ok(false) => {
+                                    info!(
+                                        "ℹ️ [PEER_INVALIDATION] Solver {} already invalidated on-chain, wiping local record and broadcasting deletion",
+                                        sid
+                                    );
+                                    let pending_key = format!("pending_disconnection:{}", sid);
+                                    let _ = self.db.delete_string(&pending_key);
+
+                                    // Broadcast deletion so other peers wipe it
+                                    let del_msg =
+                                        crate::types::ChannelMessage::PeerInvalidationDeleted {
+                                            solver_id: sid.clone(),
+                                            node_id: self.local_peer_id.to_string(),
+                                        };
+                                    let _ = self.message_tx.send(del_msg).await;
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️ [PEER_INVALIDATION] Failed to check on-chain validation for {}: {} — keeping in batch",
+                                        sid, e
+                                    );
+                                    valid_solver_ids.push(sid.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        valid_solver_ids = solver_ids.clone();
+                    }
+                } else {
+                    valid_solver_ids = solver_ids.clone();
+                }
+
+                if valid_solver_ids.is_empty() {
+                    info!("✅ [PEER_INVALIDATION] All solvers in batch are already invalidated on-chain, nothing to do");
+                    return Ok(());
+                }
+
+                // Store round -> solver_ids so we can broadcast PeerInvalidationTxConfirmed after tx receipt
+                {
+                    let mut pending = self.peer_invalidation_pending.lock().await;
+                    pending.insert(round.to_string(), valid_solver_ids.clone());
+                }
 
                 let solver_contract_address = format!("{:?}", contract_config.contract_address);
                 let chain_id = contract_config.chain_id;
@@ -5378,7 +5516,7 @@ impl MpcNetworkLayer {
                 // Build the invalidateSolverIds transaction (all nodes build the same tx)
                 let chain_tx = crate::utils::transaction::create_invalidate_solver_ids_transaction(
                     &liquidity_operator_address,
-                    &solver_ids,
+                    &valid_solver_ids,
                     &solver_contract_address,
                     chain_id,
                 )

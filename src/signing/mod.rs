@@ -8836,6 +8836,13 @@ impl SigningNode {
                                 );
                                 let pending_key = format!("{}{}", prefix, sid);
                                 let _ = database.delete_string(&pending_key);
+
+                                // Broadcast deletion so other peers wipe it
+                                let del_msg = crate::types::ChannelMessage::PeerInvalidationDeleted {
+                                    solver_id: sid.clone(),
+                                    node_id: self.id.clone(),
+                                };
+                                let _ = self.message_tx.send(del_msg).await;
                             }
                             Err(e) => {
                                 warn!(

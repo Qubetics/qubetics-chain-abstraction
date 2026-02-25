@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use bitcoin::{
     hashes::Hash, // For as_byte_array
-    secp256k1::{ecdsa::RecoverableSignature},
+    secp256k1::ecdsa::RecoverableSignature,
     Address,
     Amount,
     OutPoint,
@@ -57,6 +57,7 @@ pub struct SelectedUtxos {
     pub total_input_value: u64,
     pub fee: u64,
     pub change: u64,
+    pub fee_per_output: u64,
 }
 
 /// Select UTXOs using the strategy from the reference script:
@@ -167,11 +168,18 @@ pub fn select_utxos_for_batch(
         0
     };
 
+    let fee_per_output = if output_count > 0 {
+        final_fee / (output_count as u64)
+    } else {
+        0
+    };
+
     Ok(SelectedUtxos {
         utxos: selected,
         total_input_value,
         fee: final_fee,
         change: effective_change,
+        fee_per_output,
     })
 }
 
@@ -358,6 +366,7 @@ mod tests {
         assert_eq!(res.utxos.len(), 1);
         assert_eq!(res.fee, 284);
         assert_eq!(res.change, 0);
+        assert_eq!(res.fee_per_output, 284);
     }
 
     #[test]
@@ -381,6 +390,7 @@ mod tests {
         assert_eq!(res.utxos.len(), 1);
         assert_eq!(res.fee, 284);
         assert_eq!(res.change, 716);
+        assert_eq!(res.fee_per_output, 284);
     }
 
     #[test]
@@ -404,6 +414,7 @@ mod tests {
         assert_eq!(res.utxos.len(), 1);
         assert_eq!(res.fee, 284 + 16); // 300
         assert_eq!(res.change, 0);
+        assert_eq!(res.fee_per_output, 300);
     }
 
     #[test]
