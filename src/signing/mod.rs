@@ -22,6 +22,9 @@ mod config;
 pub mod coordination;
 pub mod db_signing;
 mod key;
+pub mod mpc_keygen;
+pub mod mpc_net;
+pub mod mpc_sign;
 pub mod nonce;
 mod rewards;
 pub mod state;
@@ -964,65 +967,19 @@ impl SigningNode {
                 .await?;
             }
 
-            // Nonce protocol messages - forward to NonceManager
-            // ONLY DKG signers participate in nonce commit-reveal protocol.
-            // Observer nodes receive finalized nonces via NonceTupleBroadcast instead.
-            // If observers participate, different nodes may aggregate different sets of k_i
-            // (due to varying effective_total), producing different aggregated_k values
-            // for the same tuple_id — which makes partial signatures incompatible.
-            SigningMessage::NonceCommitment { ref from, ref batch_id, round, batch_size, .. } => {
-                if self.has_dkg_share().await {
-                    info!(
-                        "📥 [SIGNING] Node {} received nonce commitment from {} for batch {} round {} (batch_size: {})",
-                        self.id, from, batch_id, round, batch_size
-                    );
-                    if let Some(manager) = &self.nonce_manager {
-                        let mgr = manager.lock().await;
-                        if let Err(e) = mgr.handle_message(msg.clone()).await {
-                            warn!("⚠️ [SIGNING] Failed to handle nonce commitment: {}", e);
-                        }
-                    }
-                }
-            }
-            SigningMessage::NonceReveal { ref from, ref batch_id, round, .. } => {
-                if self.has_dkg_share().await {
-                    info!(
-                        "📥 [SIGNING] Node {} received nonce reveal from {} for batch {} round {}",
-                        self.id, from, batch_id, round
-                    );
-                    if let Some(manager) = &self.nonce_manager {
-                        let mgr = manager.lock().await;
-                        if let Err(e) = mgr.handle_message(msg.clone()).await {
-                            warn!("⚠️ [SIGNING] Failed to handle nonce reveal: {}", e);
-                        }
-                    }
-                }
-            }
-            SigningMessage::RequestNonceGeneration { ref batch_id, round: _, ref coordinator_id, batch_size } => {
-                if self.has_dkg_share().await {
-                    info!(
-                        "📥 [SIGNING] Node {} received nonce generation request from {} for batch {} (size: {})",
-                        self.id, coordinator_id, batch_id, batch_size
-                    );
-                    if let Some(manager) = &self.nonce_manager {
-                        let mgr = manager.lock().await;
-                        if let Err(e) = mgr.handle_message(msg.clone()).await {
-                            warn!("⚠️ [SIGNING] Failed to handle nonce generation request: {}", e);
-                        }
-                    }
-                }
-            }
-            SigningMessage::NonceGenerationComplete { ref from, ref batch_id, round: _, tuples_count, success } => {
-                info!(
-                    "📥 [SIGNING] Node {} received nonce generation complete from {} for batch {} ({} tuples, success: {})",
-                    self.id, from, batch_id, tuples_count, success
+            // Secure MPC round messages (cggmp21 keygen, aux_info, signing rounds)
+            // Route into the active MpcSession for this session_id.
+            // The MpcSession is stored in a separate map keyed by session_id;
+            // gossipsub_handler wires it up before starting the protocol.
+            SigningMessage::MpcRoundMessage { ref from, ref session_id, ref phase, ref payload } => {
+                debug!(
+                    "📥 [MPC] Received round message from {} for session {} (phase: {})",
+                    from, session_id, phase
                 );
-                if let Some(manager) = &self.nonce_manager {
-                    let mgr = manager.lock().await;
-                    if let Err(e) = mgr.handle_message(msg.clone()).await {
-                        warn!("⚠️ [SIGNING] Failed to handle nonce generation complete: {}", e);
-                    }
-                }
+                // TODO (Phase 4): look up the active MpcSession by session_id and call
+                //   session.deliver(from, payload.clone())
+                // For now, log and ignore until the signing integration is complete.
+                let _ = (from, session_id, phase, payload);
             }
         }
         Ok(())

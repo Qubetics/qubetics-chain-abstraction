@@ -168,11 +168,8 @@ impl MpcNetworkLayer {
                                 from, slot_id, round, signatures.len()
                             );
                         }
-                        // Nonce protocol messages for random k generation
-                        SigningMessage::NonceCommitment { .. } => {}
-                        SigningMessage::NonceReveal { .. } => {}
-                        SigningMessage::RequestNonceGeneration { .. } => {}
-                        SigningMessage::NonceGenerationComplete { .. } => {}
+                        // MPC round messages are handled inside handle_message() above.
+                        SigningMessage::MpcRoundMessage { .. } => {}
                         _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;

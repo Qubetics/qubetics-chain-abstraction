@@ -85,6 +85,8 @@ ethabi = { version = "18.0.0", optional = true }
 serde-big-array = "0.5.1"
 chacha20poly1305 = "0.10"
 clap = { version = "4.4", features = ["derive"] }
+cggmp21 = { version = "0.6.3", features = ["all-curves"] }
+round-based = { version = "0.4" }
 
 [dev-dependencies]
 tempfile = "3.8"

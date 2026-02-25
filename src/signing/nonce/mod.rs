@@ -1131,67 +1131,21 @@ impl NonceManager {
         Ok(())
     }
 
-    /// Handle an incoming nonce protocol message
+    /// Handle an incoming nonce protocol message.
+    /// NOTE: This function is deprecated — the commit-reveal nonce protocol is being
+    /// replaced by cggmp21 MPC signing. The old variants have been removed from SigningMessage.
     pub async fn handle_message(&self, msg: SigningMessage) -> Result<()> {
         match msg {
-            SigningMessage::NonceCommitment {
-                from,
-                batch_id,
-                round,
-                batch_size,
-                commitments,
-                timestamp: _,
-            } => {
-                self.handle_commitment(&batch_id, &from, commitments, batch_size, round)
-                    .await?;
+            // All old nonce variants (NonceCommitment, NonceReveal, etc.) have been
+            // removed from SigningMessage as part of the cggmp21 MPC integration.
+            // New MPC round messages are routed directly to MpcSession, not here.
+            SigningMessage::MpcRoundMessage { .. } => {
+                // Intentionally ignored: handled by MpcSession in signing/mpc_net.rs
             }
-
-            SigningMessage::NonceReveal {
-                from,
-                batch_id,
-                round,
-                r_points,
-                k_shares,
-                timestamp: _,
-            } => {
-                self.handle_reveal(&batch_id, &from, &r_points, &k_shares, round)
-                    .await?;
-            }
-
-            SigningMessage::RequestNonceGeneration {
-                batch_id,
-                round,
-                coordinator_id,
-                batch_size,
-            } => {
-                // Another node is requesting nonce generation
-                info!(
-                    "📥 [NONCE] Received nonce generation request from {}: batch {} (size: {})",
-                    coordinator_id, batch_id, batch_size
-                );
-                // Join the coordinator's batch using THEIR batch_id
-                // This ensures all nodes create nonces with the same tuple_ids
-                self.join_generation(&batch_id, round, batch_size).await?;
-            }
-
-            SigningMessage::NonceGenerationComplete {
-                from,
-                batch_id,
-                round: _,
-                tuples_count,
-                success,
-            } => {
-                info!(
-                    "✅ [NONCE] Generation complete from {}: batch {} ({} tuples, success: {})",
-                    from, batch_id, tuples_count, success
-                );
-            }
-
             _ => {
-                // Not a nonce message, ignore
+                // All other SigningMessage variants are not nonce-related.
             }
         }
-
         Ok(())
     }
 
