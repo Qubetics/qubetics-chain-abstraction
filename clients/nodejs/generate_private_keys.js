@@ -66,7 +66,6 @@ async function generatePrivateKeys(count, outputFile) {
     });
 
     log(`[${i + 1}/${count}] ${address}`, 'cyan');
-    log(`       Private Key: ${privateKey}`, 'yellow');
   }
 
   log('', 'reset');
@@ -85,12 +84,7 @@ async function generatePrivateKeys(count, outputFile) {
   log('', 'reset');
 
   // Show array format for easy copy-paste
-  log('📋 Array format (for copy-paste into scripts):', 'blue');
-  log('', 'reset');
-  const keysArray = keys.map(k => `  "${k.privateKey}",`).join('\n');
-  console.log('[');
-  console.log(keysArray.slice(0, -1)); // Remove trailing comma
-  console.log(']');
+  log('📋 Keys have been safely saved to the output file.', 'blue');
   log('', 'reset');
 
   log('═══════════════════════════════════════════════════════════', 'bright');

@@ -9110,9 +9110,6 @@ mod tests {
         assert_eq!(sum_s, expected_sum, "Sum of partial signatures should match expected");
 
         println!("✅ Partial signature consistency test passed!");
-        println!("   s1 = 0x{}...", hex::encode(&s1.to_bytes()[..8]));
-        println!("   s2 = 0x{}...", hex::encode(&s2.to_bytes()[..8]));
-        println!("   s3 = 0x{}...", hex::encode(&s3.to_bytes()[..8]));
     }
 
     /// Test Lagrange interpolation for threshold signature aggregation
@@ -9176,8 +9173,6 @@ mod tests {
         assert_eq!(r_prime_scalar, r, "ECDSA verification should pass");
 
         println!("✅ Lagrange threshold signature aggregation test passed!");
-        println!("   Aggregated s = 0x{}", hex::encode(aggregated_s.to_bytes()));
-        println!("   r = 0x{}", hex::encode(r.to_bytes()));
     }
 
     /// Test that different nonces produce different signatures (security property)
@@ -9310,10 +9305,6 @@ mod tests {
         assert_eq!(r_prime_scalar, r, "ECDSA verification must pass");
 
         println!("✅ Full 3-of-3 signing with coordinated nonces PASSED!");
-        println!("   Transaction hash: 0x{}", hex::encode(tx_hash));
-        println!("   r = 0x{}", hex::encode(r.to_bytes()));
-        println!("   s = 0x{}", hex::encode(aggregated_s.to_bytes()));
-        println!("   Group pubkey: 0x{}", hex::encode(group_pubkey.to_encoded_point(true).as_bytes()));
     }
 
     /// Test that consumed nonces cannot be reused (security property)

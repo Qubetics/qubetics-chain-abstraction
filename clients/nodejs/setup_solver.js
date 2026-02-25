@@ -385,16 +385,7 @@ async function main() {
   console.log(`  Validator:   ${validatorWallet.address} (EIP-712 signer)`);
   console.log("=".repeat(60));
 
-  // Print generated solver details
-  // console.log("\n  Generated Solver Configs:");
-  // for (const s of SOLVERS) {
-  //   const w = new ethers.Wallet(s.privateKey);
-  //   console.log(`    ${s.solverName} (${s.solverId.slice(0, 20)}...)`);
-  //   console.log(`      EVM:  ${w.address}`);
-  //   console.log(`      BTC:  ${s.solverAddresses[0]}`);
-  //   console.log(`      Key:  ${s.privateKey}`);
-  // }
-  // console.log("");
+  // Generated solver details omitted from logs for security.
 
   // Verify validator matches on-chain validatorAddress
   // const onChainValidator = await contract.validatorAddress();
@@ -408,23 +399,23 @@ async function main() {
 
   for (let i = 0; i < SOLVERS.length; i++) {
     const config = SOLVERS[i];
-  //   // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
-  //   const solverWallet = new ethers.Wallet(config.privateKey, provider);
+    //   // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
+    //   const solverWallet = new ethers.Wallet(config.privateKey, provider);
 
-  //   console.log(`\n${"#".repeat(60)}`);
-  //   console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
-  //   console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
-  //   console.log(`  BTC address:                 ${config.solverAddresses[0]}`);
-  //   console.log(`${"#".repeat(60)}`);
+    //   console.log(`\n${"#".repeat(60)}`);
+    //   console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
+    //   console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
+    //   console.log(`  BTC address:                 ${config.solverAddresses[0]}`);
+    //   console.log(`${"#".repeat(60)}`);
 
-  //   // Step -1: Fund solver if needed
-  //   console.log(`\n  [Funding]`);
-  //   try {
-  //     await fundSolver(solverWallet.address, FUND_AMOUNT);
-  //   } catch (e) {
-  //     console.error(`    ERROR during funding: ${e.message}`);
-  //     // Continue even if funding fails, as balance might already be enough
-  //   }
+    //   // Step -1: Fund solver if needed
+    //   console.log(`\n  [Funding]`);
+    //   try {
+    //     await fundSolver(solverWallet.address, FUND_AMOUNT);
+    //   } catch (e) {
+    //     console.error(`    ERROR during funding: ${e.message}`);
+    //     // Continue even if funding fails, as balance might already be enough
+    //   }
 
     // Step 0: Check current status
     console.log(`\n  [Status]`);

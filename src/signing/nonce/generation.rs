@@ -38,7 +38,11 @@ impl NonceGenerator {
         &mut self,
         batch_id: &str,
         batch_size: usize,
-    ) -> Result<(Vec<[u8; 32]>, Vec<SerializableScalar>, Vec<SerializablePoint>)> {
+    ) -> Result<(
+        Vec<[u8; 32]>,
+        Vec<SerializableScalar>,
+        Vec<SerializablePoint>,
+    )> {
         let mut commitments = Vec::with_capacity(batch_size);
         let mut k_values = Vec::with_capacity(batch_size);
         let mut r_values = Vec::with_capacity(batch_size);
@@ -155,8 +159,9 @@ mod tests {
         let batch_id = "test_batch_123";
         let batch_size = 10;
 
-        let (commitments, k_values, r_values) =
-            gen.generate_batch_commitments(batch_id, batch_size).unwrap();
+        let (commitments, k_values, r_values) = gen
+            .generate_batch_commitments(batch_id, batch_size)
+            .unwrap();
 
         // Verify we got batch_size of each
         assert_eq!(commitments.len(), batch_size);
@@ -230,7 +235,8 @@ mod tests {
         let n = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
-        ).unwrap();
+        )
+        .unwrap();
 
         // ═══════════════════════════════════════════════════════════════════════════
         // STEP 1: Generate private key shares for each node (simulating DKG output)
@@ -248,10 +254,6 @@ mod tests {
         let pub1 = (ProjectivePoint::GENERATOR * x1).to_affine();
         let pub2 = (ProjectivePoint::GENERATOR * x2).to_affine();
         let pub3 = (ProjectivePoint::GENERATOR * x3).to_affine();
-
-        println!("✅ Node 1 private key share: {:?}", hex::encode(x1.to_bytes()));
-        println!("✅ Node 2 private key share: {:?}", hex::encode(x2.to_bytes()));
-        println!("✅ Node 3 private key share: {:?}", hex::encode(x3.to_bytes()));
 
         // ═══════════════════════════════════════════════════════════════════════════
         // STEP 2: Each node generates their nonce share k_i and R_i = k_i * G
@@ -273,10 +275,6 @@ mod tests {
         let r2 = r_values_2[0].0;
         let r3 = r_values_3[0].0;
 
-        println!("✅ Node 1 nonce k1: {:?}", hex::encode(k1.to_bytes()));
-        println!("✅ Node 2 nonce k2: {:?}", hex::encode(k2.to_bytes()));
-        println!("✅ Node 3 nonce k3: {:?}", hex::encode(k3.to_bytes()));
-
         // ═══════════════════════════════════════════════════════════════════════════
         // STEP 3: All nodes aggregate nonces: k = k1 + k2 + k3, R = R1 + R2 + R3
         // After reveal phase, every node computes the same k and R
@@ -286,12 +284,13 @@ mod tests {
 
         // Verify: R should equal k * G
         let expected_r = (ProjectivePoint::GENERATOR * aggregated_k).to_affine();
-        assert_eq!(aggregate_r, expected_r, "R = k*G must hold after aggregation");
-        println!("✅ Verified: R = Σ R_i = (Σ k_i) * G");
+        assert_eq!(
+            aggregate_r, expected_r,
+            "R = k*G must hold after aggregation"
+        );
 
         // Compute r = x(R) mod n
         let r_scalar = gen1.compute_r_value(&aggregate_r).unwrap();
-        println!("✅ r = x(R) mod n: {:?}", hex::encode(r_scalar.to_bytes()));
 
         // Compute k⁻¹
         let k_inv = aggregated_k.invert();
@@ -303,10 +302,9 @@ mod tests {
         // STEP 4: Create message to sign (simulated transaction hash)
         // ═══════════════════════════════════════════════════════════════════════════
         let message_hash: [u8; 32] = [
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-            0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98,
+            0x76, 0x54, 0x32, 0x10,
         ];
         let z = Scalar::from_repr(*k256::FieldBytes::from_slice(&message_hash)).unwrap();
         println!("✅ Message hash z: {:?}", hex::encode(message_hash));
@@ -318,10 +316,6 @@ mod tests {
         let s1 = k_inv * (z + r_scalar * x1);
         let s2 = k_inv * (z + r_scalar * x2);
         let s3 = k_inv * (z + r_scalar * x3);
-
-        println!("✅ Node 1 partial s1: {:?}", hex::encode(s1.to_bytes()));
-        println!("✅ Node 2 partial s2: {:?}", hex::encode(s2.to_bytes()));
-        println!("✅ Node 3 partial s3: {:?}", hex::encode(s3.to_bytes()));
 
         // ═══════════════════════════════════════════════════════════════════════════
         // STEP 6: Aggregate partial signatures via Lagrange interpolation
@@ -348,12 +342,8 @@ mod tests {
         // λ_2 = (0 - idx1) / (idx2 - idx1) = -idx1 / (idx2 - idx1)
         let lambda2 = (zero - idx1) * (idx2 - idx1).invert().unwrap();
 
-        println!("✅ Lagrange λ_1: {:?}", hex::encode(lambda1.to_bytes()));
-        println!("✅ Lagrange λ_2: {:?}", hex::encode(lambda2.to_bytes()));
-
         // Aggregated s = λ_1 * s_1 + λ_2 * s_2
         let aggregated_s = lambda1 * s1 + lambda2 * s2;
-        println!("✅ Aggregated s: {:?}", hex::encode(aggregated_s.to_bytes()));
 
         // ═══════════════════════════════════════════════════════════════════════════
         // STEP 7: Also compute what the full signature SHOULD be
@@ -362,9 +352,6 @@ mod tests {
         // ═══════════════════════════════════════════════════════════════════════════
         let aggregated_x = lambda1 * x1 + lambda2 * x2;
         let expected_s = k_inv * (z + r_scalar * aggregated_x);
-
-        println!("✅ Aggregated private key x: {:?}", hex::encode(aggregated_x.to_bytes()));
-        println!("✅ Expected s (using x directly): {:?}", hex::encode(expected_s.to_bytes()));
 
         // Verify: aggregated_s should equal expected_s
         assert_eq!(
@@ -377,7 +364,10 @@ mod tests {
         // STEP 8: Compute group public key and verify signature
         // ═══════════════════════════════════════════════════════════════════════════
         let group_pubkey = (ProjectivePoint::GENERATOR * aggregated_x).to_affine();
-        println!("✅ Group public key: {:?}", hex::encode(group_pubkey.to_encoded_point(true).as_bytes()));
+        println!(
+            "✅ Group public key: {:?}",
+            hex::encode(group_pubkey.to_encoded_point(true).as_bytes())
+        );
 
         // Build the signature (r, s)
         let r_bytes = r_scalar.to_bytes();
@@ -386,15 +376,13 @@ mod tests {
         // Verify ECDSA: check that R' = s⁻¹ * (z * G + r * P) has x-coordinate = r
         // Where P is the public key
         let s_inv = aggregated_s.invert().unwrap();
-        let u1 = s_inv * z;  // s⁻¹ * z
-        let u2 = s_inv * r_scalar;  // s⁻¹ * r
+        let u1 = s_inv * z; // s⁻¹ * z
+        let u2 = s_inv * r_scalar; // s⁻¹ * r
 
         // R' = u1 * G + u2 * P
-        let r_prime = (ProjectivePoint::GENERATOR * u1 + ProjectivePoint::from(group_pubkey) * u2).to_affine();
+        let r_prime = (ProjectivePoint::GENERATOR * u1 + ProjectivePoint::from(group_pubkey) * u2)
+            .to_affine();
         let r_prime_scalar = gen1.compute_r_value(&r_prime).unwrap();
-
-        println!("✅ Verification R' x-coord: {:?}", hex::encode(r_prime_scalar.to_bytes()));
-        println!("✅ Original r: {:?}", hex::encode(r_scalar.to_bytes()));
 
         assert_eq!(
             r_prime_scalar, r_scalar,

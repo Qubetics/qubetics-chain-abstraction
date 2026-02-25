@@ -189,8 +189,8 @@ function performDetailedThresholdCalculation() {
     const calculation = lagrangeInterpolationDetailed(combo);
 
     console.log(`\n🏆 FINAL RECONSTRUCTED SECRET FOR SET ${setName}:`);
-    console.log(`   Decimal: ${calculation.result}`);
-    console.log(`   Hex: 0x${BigInt(calculation.result).toString(16)}`);
+    console.log(`   Decimal: ***MASKED***`);
+    console.log(`   Hex: 0x***MASKED***`);
     console.log('═'.repeat(80));
 
     results.push({
@@ -221,15 +221,15 @@ results.forEach((result, i) => {
 console.log('\n🎯 Verification:');
 if (uniqueSecrets.length === 1) {
   console.log('✅ SUCCESS: All 3-node subsets produce IDENTICAL results!');
-  console.log(`✅ Consistent Secret (Decimal): ${uniqueSecrets[0]}`);
-  console.log(`✅ Consistent Secret (Hex): 0x${BigInt(uniqueSecrets).toString(16)}`);
+  console.log(`✅ Consistent Secret (Decimal): ***MASKED***`);
+  console.log(`✅ Consistent Secret (Hex): 0x***MASKED***`);
   console.log('✅ Your threshold shares are mathematically VALID!');
   console.log('✅ Perfect (3,4)-threshold cryptography implementation!');
 } else {
   console.log('❌ FAILURE: Different subsets produce different results!');
   console.log('❌ Your shares are NOT from the same polynomial!');
   uniqueSecrets.forEach((secret, i) => {
-    console.log(`   Result ${i + 1}: ${secret}`);
+    console.log(`   Result ${i + 1}: ***MASKED***`);
   });
 }
 
