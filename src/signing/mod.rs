@@ -2461,11 +2461,17 @@ impl SigningNode {
                     return Ok(());
                 }
             } else if let Some(nm) = &self.nonce_manager {
+                let intent_fingerprint = {
+                    let mut hasher = sha3::Keccak256::new();
+                    hasher.update(intent_hashes.join(",").as_bytes());
+                    hex::encode(&hasher.finalize()[..8])
+                };
                 let reservation_key = format!(
-                    "intent_contract_call:{}:{}:{}",
+                    "contract_call:{}:round:{}:batch:{}:intent_fp:{}",
                     target_chain.to_lowercase(),
+                    round,
                     batch_id,
-                    round
+                    intent_fingerprint
                 );
                 let nm_guard = nm.lock().await;
                 match nm_guard
@@ -2475,10 +2481,10 @@ impl SigningNode {
                     Ok(assignments) => {
                         if let Some(tuple_id) = assignments.get(&reservation_key) {
                             info!(
-                                "🔐 [CLOCK] Reserved nonce {} for {} intent batch using reservation key {}",
+                                "🔐 [CLOCK] Reserved nonce tuple assignment reservation_key={} tuple_id={} for {} intent batch",
+                                reservation_key,
                                 tuple_id,
-                                target_chain.to_uppercase(),
-                                reservation_key
+                                target_chain.to_uppercase()
                             );
                             vec![tuple_id.clone()]
                         } else {
@@ -3896,11 +3902,19 @@ impl SigningNode {
 
         // Create batch timestamp
         let batch_timestamp = chrono::Utc::now().to_rfc3339();
+        let intent_fingerprint = {
+            let mut hasher = sha3::Keccak256::new();
+            hasher.update(intent_hashes.join(",").as_bytes());
+            hex::encode(&hasher.finalize()[..8])
+        };
 
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
-            let reservation_key = format!("btc_contract_update:{}:{}", round, batch_timestamp);
+            let reservation_key = format!(
+                "btc_contract_update:round:{}:batch:{}:intent_fp:{}",
+                round, batch_timestamp, intent_fingerprint
+            );
             let nm_guard = nm.lock().await;
             match nm_guard
                 .reserve_nonces_for_batch(std::slice::from_ref(&reservation_key))
@@ -3908,7 +3922,11 @@ impl SigningNode {
             {
                 Ok(assignments) => {
                     if let Some(tuple_id) = assignments.get(&reservation_key) {
-                        info!("🔐 [BTC_CONTRACT_UPDATE] Reserved nonce {} for contract update batch with reservation key {}", tuple_id, reservation_key);
+                        info!(
+                            "🔐 [BTC_CONTRACT_UPDATE] Reserved nonce tuple assignment reservation_key={} tuple_id={}",
+                            reservation_key,
+                            tuple_id
+                        );
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [BTC_CONTRACT_UPDATE] No nonce assigned - aborting batch (will retry next cycle)");
@@ -4062,13 +4080,20 @@ impl SigningNode {
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
-            let request_fingerprint = batch_entries
-                .iter()
-                .map(|(request_id, _, _, _)| request_id.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
+            let request_fingerprint = {
+                let mut hasher = sha3::Keccak256::new();
+                hasher.update(
+                    batch_entries
+                        .iter()
+                        .map(|(request_id, _, _, _)| request_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                        .as_bytes(),
+                );
+                hex::encode(&hasher.finalize()[..8])
+            };
             let reservation_key = format!(
-                "add_liquidity_batch:{}:{}:{}",
+                "add_liquidity_batch:round:{}:batch:{}:request_fp:{}",
                 round,
                 batch_timestamp,
                 request_fingerprint
@@ -4080,7 +4105,11 @@ impl SigningNode {
             {
                 Ok(assignments) => {
                     if let Some(tuple_id) = assignments.get(&reservation_key) {
-                        info!("🔐 [ADD_LIQUIDITY] Reserved nonce {} for add_liquidity batch with reservation key {}", tuple_id, reservation_key);
+                        info!(
+                            "🔐 [ADD_LIQUIDITY] Reserved nonce tuple assignment reservation_key={} tuple_id={}",
+                            reservation_key,
+                            tuple_id
+                        );
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [ADD_LIQUIDITY] No nonce assigned - aborting batch (will retry next epoch)");
@@ -9446,10 +9475,15 @@ impl SigningNode {
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
-            let solver_fingerprint = solver_ids.join(",");
+            let batch_timestamp = chrono::Utc::now().to_rfc3339();
+            let solver_fingerprint = {
+                let mut hasher = sha3::Keccak256::new();
+                hasher.update(solver_ids.join(",").as_bytes());
+                hex::encode(&hasher.finalize()[..8])
+            };
             let reservation_key = format!(
-                "peer_invalidation_batch:{}:{}:{}",
-                round, self.id, solver_fingerprint
+                "peer_invalidation_batch:round:{}:node:{}:batch:{}:solver_fp:{}",
+                round, self.id, batch_timestamp, solver_fingerprint
             );
             let nm_guard = nm.lock().await;
             match nm_guard
@@ -9458,7 +9492,11 @@ impl SigningNode {
             {
                 Ok(assignments) => {
                     if let Some(tuple_id) = assignments.get(&reservation_key) {
-                        info!("🔐 [PEER_INVALIDATION] Reserved nonce {} for peer invalidation batch with reservation key {}", tuple_id, reservation_key);
+                        info!(
+                            "🔐 [PEER_INVALIDATION] Reserved nonce tuple assignment reservation_key={} tuple_id={}",
+                            reservation_key,
+                            tuple_id
+                        );
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [PEER_INVALIDATION] No nonce assigned - aborting batch (will retry next epoch)");
