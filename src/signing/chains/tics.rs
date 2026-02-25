@@ -1592,7 +1592,7 @@ impl SigningNode {
 
     #[deprecated(
         since = "0.1.0",
-        note = "Synchronous signing without an explicit nonce is disabled. Use create_ecdsa_signature_with_key_async."
+        note = "Synchronous signing is disabled. Use create_ecdsa_signature_with_key_async or create_ecdsa_signature_with_nonce with an explicit nonce tuple."
     )]
     pub fn create_ecdsa_signature_with_key(
         &self,
@@ -1602,7 +1602,7 @@ impl SigningNode {
     ) -> Result<RecoverableSignature> {
         let _ = message;
         Err(anyhow!(
-            "Synchronous signing API is disabled: use create_ecdsa_signature_with_key_async with coordinator-reserved nonces"
+            "Legacy sync signing API is disabled. Use create_ecdsa_signature_with_key_async() or create_ecdsa_signature_with_nonce() with an explicit nonce tuple."
         ))
     }
 
@@ -1610,7 +1610,7 @@ impl SigningNode {
     /// Use create_ecdsa_signature_with_key_contract_async instead.
     #[deprecated(
         since = "0.1.0",
-        note = "Fixed k is insecure. Use create_ecdsa_signature_with_key_contract_async instead."
+        note = "Synchronous contract signing is disabled. Use create_ecdsa_signature_with_key_contract_async or create_ecdsa_signature_with_nonce with an explicit nonce tuple."
     )]
     pub fn create_ecdsa_signature_with_key_contract(
         &self,
@@ -1622,7 +1622,7 @@ impl SigningNode {
         // SECURITY: This function now returns an error - nonces are mandatory
         error!("🔴 [SIGNING] create_ecdsa_signature_with_key_contract called - this uses fixed k which is INSECURE");
         Err(anyhow!(
-            "Synchronous contract signing API is disabled: use create_ecdsa_signature_with_key_contract_async"
+            "Legacy sync contract signing API is disabled. Use create_ecdsa_signature_with_key_contract_async() or create_ecdsa_signature_with_nonce() with an explicit nonce tuple."
         ))
     }
 
@@ -1711,25 +1711,18 @@ impl SigningNode {
     #[allow(dead_code)]
     fn create_partial_ecdsa_for_tics_slot_deprecated(
         &self,
-        tx_bytes: &[u8],
-        transaction: &TicsTransaction,
-        signing_key: &SecretKey,
-        user_tics_address: Option<String>,
+        _tx_bytes: &[u8],
+        _transaction: &TicsTransaction,
+        _signing_key: &SecretKey,
+        _user_tics_address: Option<String>,
     ) -> Result<ECDSASignature> {
-        // SECURITY: This function is deprecated - uses fixed k
-        error!("🔴 [SIGNING] create_partial_ecdsa_for_tics_slot_DEPRECATED called - this uses fixed k which is INSECURE");
-        let mut hasher = sha3::Keccak256::new();
-        hasher.update(tx_bytes);
-        let tx_hash = hasher.finalize();
-        let msg = Message::from_digest_slice(tx_hash.as_slice())?;
-        let signature = self.create_ecdsa_signature_with_key(&msg, transaction, signing_key)?;
-        let (recovery_id, signature_bytes) = signature.serialize_compact();
-        Ok(ECDSASignature {
-            signature: signature_bytes.to_vec(),
-            signer_id: self.id.clone(),
-            recovery_id: recovery_id.to_i32() as u8,
-            user_tics_address,
-        })
+        // SECURITY: This function is deprecated and intentionally disabled.
+        error!(
+            "🔴 [SIGNING] create_partial_ecdsa_for_tics_slot_DEPRECATED called - sync signing without explicit nonce is disabled"
+        );
+        Err(anyhow!(
+            "Legacy sync slot-signing API is disabled. Use create_partial_ecdsa_for_tics_slot_with_nonce() with a coordinator-assigned nonce tuple."
+        ))
     }
 
     /// Async version of create_partial_ecdsa_for_tics_slot that acquires a random nonce
@@ -1740,18 +1733,36 @@ impl SigningNode {
         signing_key: &SecretKey,
         user_tics_address: Option<String>,
     ) -> Result<ECDSASignature> {
-        let mut hasher = sha3::Keccak256::new();
-        hasher.update(tx_bytes);
-        let tx_hash = hasher.finalize();
-        let msg = Message::from_digest_slice(tx_hash.as_slice())?;
-        let signature = self.create_ecdsa_signature_with_key_async(&msg, transaction, signing_key).await?;
-        let (recovery_id, signature_bytes) = signature.serialize_compact();
-        Ok(ECDSASignature {
-            signature: signature_bytes.to_vec(),
-            signer_id: self.id.clone(),
-            recovery_id: recovery_id.to_i32() as u8,
+        let nonce_tuple = if let Some(nm) = &self.nonce_manager {
+            let nm_guard = nm.lock().await;
+            match nm_guard.acquire_nonce().await {
+                Ok(Some(tuple)) => tuple,
+                Ok(None) => {
+                    return Err(anyhow!(
+                        "Nonce is required for signing. Use create_partial_ecdsa_for_tics_slot_with_nonce() with an explicit nonce tuple."
+                    ));
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Failed to acquire nonce: {}. Use create_partial_ecdsa_for_tics_slot_with_nonce() with an explicit nonce tuple.",
+                        e
+                    ));
+                }
+            }
+        } else {
+            return Err(anyhow!(
+                "NonceManager not available. Use create_partial_ecdsa_for_tics_slot_with_nonce() with an explicit nonce tuple."
+            ));
+        };
+
+        self.create_partial_ecdsa_for_tics_slot_with_nonce(
+            tx_bytes,
+            transaction,
+            signing_key,
             user_tics_address,
-        })
+            &nonce_tuple,
+        )
+        .await
     }
 
     /// TICS UserToVault batch: one round, multiple slots. Store batch, create partial per slot, store in
