@@ -28,6 +28,7 @@ pub struct MessageId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CriticalMessageType {
     TransactionIdBroadcast,
+    FinalNodeIdBroadcast,
 }
 
 /// State of a message retry
@@ -67,6 +68,9 @@ impl RetryManager {
             GossipsubMessage::TransactionIdBroadcast { .. } => {
                 Some(CriticalMessageType::TransactionIdBroadcast)
             }
+            GossipsubMessage::FinalNodeIdBroadcast { .. } => {
+                Some(CriticalMessageType::FinalNodeIdBroadcast)
+            }
             _ => None,
         }
     }
@@ -79,6 +83,13 @@ impl RetryManager {
         let unique_id = match msg {
             GossipsubMessage::TransactionIdBroadcast { transaction_id, .. } => {
                 transaction_id.clone()
+            }
+            GossipsubMessage::FinalNodeIdBroadcast { intent_hashes, .. } => {
+                // Use the first intent hash combined with a prefix to ensure uniqueness
+                format!(
+                    "final_node_{}",
+                    intent_hashes.first().unwrap_or(&String::new())
+                )
             }
             _ => return Err(anyhow!("Not a critical message type")),
         };

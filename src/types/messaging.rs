@@ -211,6 +211,11 @@ pub enum ChannelMessage {
         solver_address: Option<String>,
         node_id: String,
     },
+    /// Separate broadcast for NetworkToTarget transactions to establish the final node ID
+    FinalNodeIdBroadcast {
+        intent_hashes: Vec<String>,
+        final_node_id: String,
+    },
     /// BTC withdraw-liquidity batch broadcast (definition only, no txid)
     /// Final node broadcasts selected BTC withdraw requests for distributed signing.
     /// All nodes already have the full records in RocksDB, so we only send IDs and solver addresses.
@@ -518,6 +523,11 @@ pub enum GossipsubMessage {
         solver_address: Option<String>,
         /// Node that broadcasted the transaction
         node_id: String,
+    },
+    /// Separate broadcast for NetworkToTarget transactions to establish the final node ID
+    FinalNodeIdBroadcast {
+        intent_hashes: Vec<String>,
+        final_node_id: String,
     },
     TransactionErrorBroadcast {
         /// Intent hashes that failed. Empty for reward/withdraw.

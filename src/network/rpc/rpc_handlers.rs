@@ -9,8 +9,8 @@ use tracing::{error, info, warn};
 use crate::database::key_utils::{self, peer_addr_key};
 use crate::database::keys;
 use crate::types::p2p::SerializablePeerId;
-use crate::types::{AdminRegistration, UserRegistration};
 use crate::types::signing::SigningMessage;
+use crate::types::{AdminRegistration, UserRegistration};
 use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
 
 use crate::database::VrfStorage;
@@ -826,36 +826,45 @@ impl MpcNetworkLayer {
             }
         };
 
-        let (from, tx_bytes, intent_hash, transaction_type, request_id, msg_round, chain_tx_json, user_tics_address, batch_identifiers) =
-            match signing_message {
-                SigningMessage::TransactionDataForFinalNode {
-                    from,
-                    round,
-                    tx_bytes,
-                    intent_hash,
-                    transaction_type,
-                    request_id,
-                    chain_tx_json,
-                    user_tics_address,
-                    batch_identifiers,
-                } => (
-                    from,
-                    tx_bytes,
-                    intent_hash,
-                    transaction_type,
-                    request_id,
-                    round,
-                    chain_tx_json,
-                    user_tics_address,
-                    batch_identifiers,
-                ),
-                _ => {
-                    warn!(
+        let (
+            from,
+            tx_bytes,
+            intent_hash,
+            transaction_type,
+            request_id,
+            msg_round,
+            chain_tx_json,
+            user_tics_address,
+            batch_identifiers,
+        ) = match signing_message {
+            SigningMessage::TransactionDataForFinalNode {
+                from,
+                round,
+                tx_bytes,
+                intent_hash,
+                transaction_type,
+                request_id,
+                chain_tx_json,
+                user_tics_address,
+                batch_identifiers,
+            } => (
+                from,
+                tx_bytes,
+                intent_hash,
+                transaction_type,
+                request_id,
+                round,
+                chain_tx_json,
+                user_tics_address,
+                batch_identifiers,
+            ),
+            _ => {
+                warn!(
                     "❌ [SIGNING-SECURE] Received signing message that is not a transaction data payload"
                 );
-                    return RPCResponse::Ack;
-                }
-            };
+                return RPCResponse::Ack;
+            }
+        };
 
         if msg_round != round {
             warn!(
@@ -1176,7 +1185,10 @@ impl MpcNetworkLayer {
                     RPCResponse::Error(format!("Failed to export admin batch: {e}"))
                 }
             }
-        } else if Self::state_sync_prefixes().iter().any(|p| *p == prefix.as_str()) {
+        } else if Self::state_sync_prefixes()
+            .iter()
+            .any(|p| *p == prefix.as_str())
+        {
             match self
                 .db
                 .export_batch_with_prefix_async(&prefix, start, batch_size)
@@ -1195,7 +1207,10 @@ impl MpcNetworkLayer {
                     }
                 }
                 Err(e) => {
-                    error!("❌ [STATE_SYNC] Failed to export batch for {}: {}", prefix, e);
+                    error!(
+                        "❌ [STATE_SYNC] Failed to export batch for {}: {}",
+                        prefix, e
+                    );
                     RPCResponse::Error(format!("Failed to export batch: {e}"))
                 }
             }
@@ -1227,7 +1242,10 @@ impl MpcNetworkLayer {
                             if let Err(e) = dkg_node.set_dkg_signer_count(count) {
                                 warn!("⚠️ [PEER_LIST] Failed to store DKG signer count: {}", e);
                             } else {
-                                info!("🔢 [PEER_LIST] Stored DKG signer count from peer: {}", count);
+                                info!(
+                                    "🔢 [PEER_LIST] Stored DKG signer count from peer: {}",
+                                    count
+                                );
                             }
                         }
                         // Mark initial DKG as complete for this observer node so that
@@ -1294,7 +1312,10 @@ impl MpcNetworkLayer {
                             // Derive and store liquidity operator ETH/BTC addresses
                             let vault_eth = crate::utils::get_eth_address_from_group_key(vault_pk);
                             let vault_btc = crate::utils::get_btc_address_from_group_key(vault_pk);
-                            if let Err(e) = dkg_node.set_liquidity_operator_addresses(&vault_eth, &vault_btc).await {
+                            if let Err(e) = dkg_node
+                                .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
+                                .await
+                            {
                                 warn!("⚠️ [PEER_LIST] Failed to store liquidity operator addresses: {}", e);
                             } else {
                                 info!("🏦 [PEER_LIST] Stored liquidity operator addresses (ETH: {}, BTC: {})", vault_eth, vault_btc);
@@ -1312,8 +1333,10 @@ impl MpcNetworkLayer {
                             if let Err(e) = dkg_node.set_final_public_key(network_pk).await {
                                 warn!("⚠️ [PEER_LIST] Failed to store final public key: {}", e);
                             } else {
-                                let net_eth = crate::utils::get_eth_address_from_group_key(network_pk);
-                                let net_btc = crate::utils::get_btc_address_from_group_key(network_pk);
+                                let net_eth =
+                                    crate::utils::get_eth_address_from_group_key(network_pk);
+                                let net_btc =
+                                    crate::utils::get_btc_address_from_group_key(network_pk);
                                 info!("🔑 [PEER_LIST] Stored network group key from peer (ETH: {}, BTC: {})", net_eth, net_btc);
                             }
                         }
@@ -1458,6 +1481,9 @@ impl MpcNetworkLayer {
                     "TransactionIdBroadcast" => {
                         crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast
                     }
+                    "FinalNodeIdBroadcast" => {
+                        crate::network::rpc::retry_manager::CriticalMessageType::FinalNodeIdBroadcast
+                    }
                     _ => {
                         warn!(
                             "⚠️ [CRITICAL-UNICAST] Unknown message type in ACK: {}",
@@ -1556,10 +1582,7 @@ impl MpcNetworkLayer {
                     }
                     new_peers_added = true;
                 } else {
-                    info!(
-                        "⏭️ [PEER_LIST] Skipping add for {} — not connected",
-                        p
-                    );
+                    info!("⏭️ [PEER_LIST] Skipping add for {} — not connected", p);
                 }
             }
 
@@ -1618,7 +1641,7 @@ impl MpcNetworkLayer {
         // 2️⃣ Update threshold **only if new peers were added** and initial DKG is not yet complete
         // After initial DKG, threshold is fixed based on initial DKG participants only
         if new_peers_added {
-          let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+            let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
                 dkg_node.is_initial_dkg_complete().await
             } else {
                 false
@@ -1779,15 +1802,13 @@ impl MpcNetworkLayer {
                                 .send_request(peer, RPCRequest::RequestNoncePoolSync);
                         }
 
-                        (
-                            sync_peer.is_some(),
-                            sync_peer,
-                            None,
-                            false,
-                        )
+                        (sync_peer.is_some(), sync_peer, None, false)
                     }
                     Err(e) => {
-                        warn!("⚠️ [RECONNECT] Failed to restore DKG state (corrupt data?): {:?}", e);
+                        warn!(
+                            "⚠️ [RECONNECT] Failed to restore DKG state (corrupt data?): {:?}",
+                            e
+                        );
                         (false, None, None, false)
                     }
                 }
@@ -1921,7 +1942,10 @@ mod tests {
         assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 0));
         assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 1));
         assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), 500));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(0), u64::MAX));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(0),
+            u64::MAX
+        ));
     }
 
     #[test]
@@ -1949,7 +1973,10 @@ mod tests {
             too_far,
             reference
         );
-        assert!(!MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 0));
+        assert!(!MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            0
+        ));
     }
 
     #[test]
@@ -1957,11 +1984,26 @@ mod tests {
         // This is the key fix: rounds AHEAD must always be accepted so that
         // a rejoining node can catch up to peers that advanced while it was offline.
         let reference = 100;
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 101));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 110));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 200));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 1000));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), u64::MAX));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            101
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            110
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            200
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            1000
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            u64::MAX
+        ));
     }
 
     #[test]
@@ -1981,8 +2023,17 @@ mod tests {
     fn saturating_sub_prevents_underflow() {
         // reference=5, skew=10 → saturating_sub gives 0, so any candidate >= 0 accepted.
         let reference = 5u64;
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 0));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 1));
-        assert!(MpcNetworkLayer::is_vrf_round_within_range(Some(reference), 5));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            0
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            1
+        ));
+        assert!(MpcNetworkLayer::is_vrf_round_within_range(
+            Some(reference),
+            5
+        ));
     }
 }

@@ -2737,6 +2737,92 @@ impl MpcNetworkLayer {
                     warn!("⚠️ [NETWORK] Transaction ID broadcast missing both intent hashes and solver address");
                 }
             }
+
+            ChannelMessage::FinalNodeIdBroadcast {
+                intent_hashes,
+                final_node_id,
+            } => {
+                info!(
+                    "📡 [NETWORK] Broadcasting final node ID {} for intents {:?}",
+                    final_node_id, intent_hashes
+                );
+
+                // Process locally first
+                {
+                    use libp2p::gossipsub::{IdentTopic, Message as GossipMessage};
+                    let topic_hash = IdentTopic::new("transaction-sync");
+                    let gossip_message = crate::types::GossipsubMessage::FinalNodeIdBroadcast {
+                        intent_hashes: intent_hashes.clone(),
+                        final_node_id: final_node_id.clone(),
+                    };
+                    let data = serde_json::to_vec(&gossip_message).unwrap_or_default();
+                    let local_msg = GossipMessage {
+                        source: Some(self.local_peer_id),
+                        data,
+                        sequence_number: None,
+                        topic: topic_hash.hash(),
+                    };
+                    if let Err(e) = self.handle_gossipsub_message(&local_msg).await {
+                        warn!("❌ [NETWORK] Failed to process FinalNodeIdBroadcast locally: {}", e);
+                    }
+                }
+
+                // Gossip the final node ID broadcast
+                let gossip_message = GossipsubMessage::FinalNodeIdBroadcast {
+                    intent_hashes: intent_hashes.clone(),
+                    final_node_id: final_node_id.clone(),
+                };
+
+                let msg_bytes = match serde_json::to_vec(&gossip_message) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("❌ [NETWORK] Failed to serialize final node ID broadcast: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let topic_str = "transaction-sync";
+                let topic = gossipsub::IdentTopic::new(topic_str);
+
+                // Register for retry tracking
+                if let Some(retry_mgr) = &self.retry_manager {
+                    if let Some(msg_type) = crate::network::rpc::retry_manager::RetryManager::is_critical_message(&gossip_message) {
+                        if let Ok(message_id) = crate::network::rpc::retry_manager::RetryManager::generate_message_id(msg_type, &gossip_message) {
+                            if !retry_mgr.is_message_tracked(&message_id).await {
+                                let expected_nodes: std::collections::HashSet<PeerId> = self
+                                    .node_manager
+                                    .get_active_nodes()
+                                    .into_iter()
+                                    .filter(|&pid| pid != self.local_peer_id)
+                                    .collect();
+
+                                if !expected_nodes.is_empty() {
+                                    if let Err(e) = retry_mgr.register_message(
+                                        message_id.clone(),
+                                        topic_str.to_string(),
+                                        msg_bytes.clone(),
+                                        expected_nodes.clone(),
+                                    ).await {
+                                        debug!("❌ [RETRY] Failed to register FinalNodeIdBroadcast: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_bytes) {
+                    error!(
+                        "❌ [NETWORK] Failed to gossip final node ID broadcast: {}",
+                        e
+                    );
+                } else {
+                    info!(
+                        "📡 [NETWORK] Gossiped final node ID {} for intents {:?}",
+                        final_node_id, intent_hashes
+                    );
+                }
+            }
             
             ChannelMessage::UserRegistration {
                 tics_address,

@@ -688,6 +688,81 @@ impl MpcNetworkLayer {
                     );
                 }
             }
+            GossipsubMessage::FinalNodeIdBroadcast {
+                intent_hashes,
+                final_node_id,
+            } => {
+                info!(
+                    "📡 [NETWORK] Received final node ID broadcast from node {}",
+                    final_node_id
+                );
+
+                // SECURITY FIX: Authenticate sender - verify final_node_id is a trusted/active node
+                // It should match the ID of the node sending the message.
+                let sender_peer_id = match final_node_id.parse::<libp2p::PeerId>() {
+                    Ok(pid) => pid,
+                    Err(e) => {
+                        warn!(
+                            "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: invalid final_node_id format '{}': {}",
+                            final_node_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let is_trusted_node = self
+                    .node_manager
+                    .get_active_nodes()
+                    .contains(&sender_peer_id);
+                if !is_trusted_node {
+                    warn!(
+                        "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: sender {} is not a trusted/active node",
+                        final_node_id
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "✅ [SECURITY] FinalNodeIdBroadcast authenticated from trusted node {}",
+                    final_node_id
+                );
+                if !intent_hashes.is_empty() {
+                    info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
+                } else {
+                    info!("ℹ️ [NETWORK] No intent hashes supplied with final node ID broadcast");
+                }
+
+                // Send acknowledgment for critical message
+                self.send_critical_message_ack(
+                    crate::network::rpc::retry_manager::CriticalMessageType::FinalNodeIdBroadcast,
+                    &GossipsubMessage::FinalNodeIdBroadcast {
+                        intent_hashes: intent_hashes.clone(),
+                        final_node_id: final_node_id.clone(),
+                    },
+                )
+                .await;
+
+                // Process storage using user intent manager
+                if let Some(user_intent_manager) = &self.user_intent_manager {
+                    for intent_hash in intent_hashes {
+                        info!(
+                            "💾 [NETWORK] Storing final_solver {} for intent {}",
+                            final_node_id, intent_hash
+                        );
+                        if let Err(e) = user_intent_manager
+                            .store_final_solver(&intent_hash, &final_node_id)
+                            .await
+                        {
+                            error!(
+                                "❌ [NETWORK] Failed to store final solver for intent {}: {}",
+                                intent_hash, e
+                            );
+                        }
+                    }
+                } else {
+                    warn!("⚠️ [NETWORK] User intent manager not available, could not store final node ID");
+                }
+            }
             GossipsubMessage::TransactionErrorBroadcast {
                 intent_hashes,
                 error_message,
@@ -6895,6 +6970,9 @@ impl MpcNetworkLayer {
 
         let topic = match msg_type {
             crate::network::rpc::retry_manager::CriticalMessageType::TransactionIdBroadcast => {
+                crate::network::transport::types::TOPIC_TRANSACTION_SYNC
+            }
+            crate::network::rpc::retry_manager::CriticalMessageType::FinalNodeIdBroadcast => {
                 crate::network::transport::types::TOPIC_TRANSACTION_SYNC
             }
         };

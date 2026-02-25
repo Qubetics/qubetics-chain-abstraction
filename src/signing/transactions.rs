@@ -345,8 +345,7 @@ impl SigningNode {
                         _original_request,
                     )) = claim_pf_pending_tics.get(&round)
                     {
-                        let first_id =
-                            identifiers.as_ref().and_then(|v| v.first().cloned());
+                        let first_id = identifiers.as_ref().and_then(|v| v.first().cloned());
                         (vec![], transaction_type.clone(), first_id)
                     } else {
                         (vec![], None, None)
@@ -393,8 +392,7 @@ impl SigningNode {
                     if let Some((_tx, _tx_bytes, identifiers, transaction_type, _extras)) =
                         claim_pf_pending_btc.get(&round)
                     {
-                        let first_id =
-                            identifiers.as_ref().and_then(|v| v.first().cloned());
+                        let first_id = identifiers.as_ref().and_then(|v| v.first().cloned());
                         (vec![], transaction_type.clone(), first_id)
                     } else {
                         (vec![], None, None)
@@ -495,7 +493,10 @@ impl SigningNode {
                             let current_status = user_intent_manager
                                 .get_intent_status(&user.tics_address, intent_hash)
                                 .await;
-                            if matches!(current_status, Some(crate::types::user_intent::IntentStatus::Solved)) {
+                            if matches!(
+                                current_status,
+                                Some(crate::types::user_intent::IntentStatus::Solved)
+                            ) {
                                 debug!(
                                     "⏭️ [SIGNING] Skipping revert for intent {} — already Solved",
                                     intent_hash
@@ -681,7 +682,11 @@ impl SigningNode {
                     // TICS UserToVault batch: use intent_hash_override when set
                     if let Some(ref intent_hash) = intent_hash_override {
                         info!("[store_transaction_id_for_round] [TICS][Non-Reward] Using intent_hash_override for round {}: intent_hash={}", round, intent_hash);
-                        (Some(intent_hash.clone()), Some(TransactionType::UserToVault), None)
+                        (
+                            Some(intent_hash.clone()),
+                            Some(TransactionType::UserToVault),
+                            None,
+                        )
                     } else {
                         let pending_transactions = self.pending.pending_transactions.read().await;
                         if let Some((
@@ -765,14 +770,19 @@ impl SigningNode {
                     // BTC UserToVault batch: use intent_hash_override when set (same pattern as TICS)
                     if let Some(ref intent_hash) = intent_hash_override {
                         info!("[store_transaction_id_for_round] [BTC][UserToVault] Using intent_hash_override for round {}: intent_hash={}", round, intent_hash);
-                        (Some(intent_hash.clone()), Some(TransactionType::UserToVault), None)
+                        (
+                            Some(intent_hash.clone()),
+                            Some(TransactionType::UserToVault),
+                            None,
+                        )
                     } else {
                         let pending_transactions_btc =
                             self.pending.pending_transactions_btc.read().await;
                         if let Some((_tx, _tx_bytes, intent_hashes, transaction_type, _extras)) =
                             pending_transactions_btc.get(&round)
                         {
-                            let intent_hash = intent_hashes.as_ref().and_then(|v| v.first().cloned());
+                            let intent_hash =
+                                intent_hashes.as_ref().and_then(|v| v.first().cloned());
                             info!("[store_transaction_id_for_round] [BTC][Non-Reward] Found pending_transactions_btc entry for round {}: intent_hash={:?}, transaction_type={:?}", round, intent_hash, transaction_type);
                             (intent_hash, transaction_type.clone(), None)
                         } else {
@@ -1116,12 +1126,12 @@ impl SigningNode {
                         );
                         let msg =
                             crate::types::ChannelMessage::ClaimPlatformFeeTxIdBroadcast {
-                                txid: tx_id.to_string(),
-                                network: network_label.to_string(),
-                                batch_id: format!("claim-platform-fee-round-{}", round),
-                                requests: batch_requests,
-                                node_id: self.id.clone(),
-                            };
+                            txid: tx_id.to_string(),
+                            network: network_label.to_string(),
+                            batch_id: format!("claim-platform-fee-round-{}", round),
+                            requests: batch_requests,
+                            node_id: self.id.clone(),
+                        };
                         if let Err(e) = self.message_tx.send(msg).await {
                             error!(
                                 "❌ [SIGNING] Failed to send ClaimPlatformFeeTxIdBroadcast for round {}: {}",
@@ -1318,6 +1328,26 @@ impl SigningNode {
                 warn!(
                     "⚠️ [SIGNING] Broadcasted transaction ID {} without intent hashes or solver address (type: {})",
                     tx_id, transaction_type
+                );
+            }
+        }
+
+        // Send a separate message to establish the final node ID for NetworkToTarget transactions
+        if transaction_type == "network_to_target" && !intent_hashes.is_empty() {
+            let final_node_id_broadcast = crate::types::ChannelMessage::FinalNodeIdBroadcast {
+                intent_hashes: intent_hashes.clone(),
+                final_node_id: self.id.clone(),
+            };
+
+            if let Err(e) = self.message_tx.send(final_node_id_broadcast).await {
+                error!(
+                    "❌ [SIGNING] Failed to broadcast final node ID to other nodes: {}",
+                    e
+                );
+            } else {
+                info!(
+                    "📡 [SIGNING] Broadcasted final node ID {} for intents {:?} to other nodes",
+                    self.id, intent_hashes
                 );
             }
         }
