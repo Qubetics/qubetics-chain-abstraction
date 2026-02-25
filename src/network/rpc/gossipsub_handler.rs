@@ -169,51 +169,10 @@ impl MpcNetworkLayer {
                             );
                         }
                         // Nonce protocol messages for random k generation
-                        SigningMessage::NonceCommitment {
-                            from,
-                            batch_id,
-                            round,
-                            ..
-                        } => {
-                            info!(
-                                "📥 [NONCE] Received commitment from {} for batch {} round {}",
-                                from, batch_id, round
-                            );
-                        }
-                        SigningMessage::NonceReveal {
-                            from,
-                            batch_id,
-                            round,
-                            ..
-                        } => {
-                            info!(
-                                "📥 [NONCE] Received reveal from {} for batch {} round {}",
-                                from, batch_id, round
-                            );
-                        }
-                        SigningMessage::RequestNonceGeneration {
-                            coordinator_id,
-                            batch_id,
-                            batch_size,
-                            ..
-                        } => {
-                            info!(
-                                "📥 [NONCE] Received generation request from {} for batch {} (size: {})",
-                                coordinator_id, batch_id, batch_size
-                            );
-                        }
-                        SigningMessage::NonceGenerationComplete {
-                            from,
-                            batch_id,
-                            tuples_count,
-                            success,
-                            ..
-                        } => {
-                            info!(
-                                "📥 [NONCE] Generation complete from {} for batch {} ({} tuples, success: {})",
-                                from, batch_id, tuples_count, success
-                            );
-                        }
+                        SigningMessage::NonceCommitment { .. } => {}
+                        SigningMessage::NonceReveal { .. } => {}
+                        SigningMessage::RequestNonceGeneration { .. } => {}
+                        SigningMessage::NonceGenerationComplete { .. } => {}
                         _ => {}
                     }
                     let signing_result = signing_node.handle_message(signing_msg).await;

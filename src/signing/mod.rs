@@ -775,11 +775,6 @@ impl SigningNode {
             }
         }
 
-        info!(
-            "🟢🟢🟢 [SIGNING-NONCE] Nonce {} INTEGRITY CHECK PASSED (k*k_inv=1, R=k*G, r=x(R)) 🟢🟢🟢",
-            nonce.tuple_id
-        );
-
         // 2) Convert to BigUint for computation
         let r = BigUint::from_bytes_be(&r_scalar.to_bytes());
         let k_inv = BigUint::from_bytes_be(&k_inv_scalar.to_bytes());
@@ -797,34 +792,9 @@ impl SigningNode {
             16,
         )
         .unwrap();
-
         // 6) s = k⁻¹ * (z + r * x) mod n
         // Note: With aggregated k, all nodes compute the same s for their key share
         let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
-
-        // Detailed debug logging for signature computation
-        // All nodes MUST have the same aggregated_k, k_inv, r, and z values
-        info!(
-            "🔵🔵🔵 [SIGNING-NONCE] Partial Signature Computation 🔵🔵🔵\n\
-             ╔════════════��═════════════════════════════════════════════════════════════════╗\n\
-             ║  tuple_id:                     {}                   ║\n\
-             ║  aggregated_k (first 8 bytes): 0x{}                             ║\n\
-             ║  k_inv (first 8 bytes):        0x{}                             ║\n\
-             ║  r_scalar:                     0x{}  ║\n\
-             ║  r_y_parity:                   {}                                              ║\n\
-             ║  z (message hash):             0x{}  ║\n\
-             ║  x (key share, first 8 bytes): 0x{}                             ║\n\
-             ║  s (partial signature):        0x{}  ║\n\
-             ╚══════════════════════════════════════════════════════════════════════════════╝",
-            nonce.tuple_id,
-            hex::encode(&k_scalar.to_bytes()[..8]), // Only first 8 bytes for security
-            hex::encode(&k_inv_scalar.to_bytes()[..8]), // Only first 8 bytes for security
-            hex::encode(&r_scalar.to_bytes()),
-            nonce.r_y_parity,
-            hex::encode(message.as_ref()),
-            hex::encode(&sk_bytes[..8]), // Only first 8 bytes for security
-            hex::encode(&s.to_bytes_be())
-        );
 
         // 7) Serialize r‖s into 64-byte array
         let mut sig_bytes = [0u8; 64];
