@@ -5,12 +5,14 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::artifacts::{DKGCompletionCallback, DKGStatus};
-use crate::NodeMembership;
 use crate::database::DkgStorage;
-use crate::types::{ChannelMessage, KeyShare, SerializablePoint, SerializableScalar, GossipsubMessage};
-use k256::AffinePoint;
-use crate::DKGMessage::*;
 use crate::types::dkg::MSG_TOPIC_DKG;
+use crate::types::{
+    ChannelMessage, GossipsubMessage, KeyShare, SerializablePoint, SerializableScalar,
+};
+use crate::DKGMessage::*;
+use crate::NodeMembership;
+use k256::AffinePoint;
 
 #[derive(Clone)]
 struct DKGState {
@@ -211,7 +213,9 @@ impl DKGNode {
         if !has_secret || !has_public || !has_index {
             return Err(anyhow!(
                 "Cannot restore DKG state: missing critical data (secret={}, public={}, index={})",
-                has_secret, has_public, has_index
+                has_secret,
+                has_public,
+                has_index
             ));
         }
 
@@ -287,8 +291,14 @@ impl DKGNode {
     }
 
     /// Store the liquidity operator ETH/BTC addresses (used by observer nodes receiving via PeerList)
-    pub async fn set_liquidity_operator_addresses(&self, eth_address: &str, btc_address: &str) -> Result<()> {
-        self.storage.set_liquidity_operator_addresses(eth_address, btc_address).await
+    pub async fn set_liquidity_operator_addresses(
+        &self,
+        eth_address: &str,
+        btc_address: &str,
+    ) -> Result<()> {
+        self.storage
+            .set_liquidity_operator_addresses(eth_address, btc_address)
+            .await
     }
 
     pub async fn is_completed(&self) -> bool {
@@ -408,8 +418,8 @@ impl DKGNode {
                 .add_validation(&self.id, &from_node_id, true)
                 .await?;
 
-
-            self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager).await?;
+            self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager)
+                .await?;
 
             // Broadcast validation message to network
             let round = self.current_round();
@@ -427,7 +437,6 @@ impl DKGNode {
                 "📡 [DKG-SECURE] Broadcasted ShareValidation (valid) for {} to network",
                 from_node_id
             );
-
 
             Ok(true)
         } else {
@@ -477,8 +486,8 @@ impl DKGNode {
                 } else {
                     for (sender, share) in shares.iter() {
                         debug!(
-                            "📊 [DKG] Share from {}: index={}, value={:?}",
-                            sender, share.index, share.value.0
+                            "📊 [DKG] Share from {}: index={} (value redacted)",
+                            sender, share.index
                         );
                     }
                 }
@@ -506,7 +515,9 @@ mod tests {
             path: temp_dir.path().to_str().unwrap().to_string(),
             create_if_missing: true,
             max_open_files: 100,
-            encryption_key: Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
+            encryption_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
         };
         let db = Database::new(config).unwrap();
         (db, temp_dir)
@@ -536,5 +547,4 @@ mod tests {
         assert_eq!(retrieved["node1"][0], commitment1);
         assert_eq!(retrieved["node1"][1], commitment2);
     }
-
 }

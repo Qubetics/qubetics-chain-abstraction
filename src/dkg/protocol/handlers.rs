@@ -197,8 +197,8 @@ impl DKGNode {
             info!("📊 [DKG] Total shares stored: {}", shares.len());
             for (sender, share) in shares.iter() {
                 info!(
-                    "📊 [DKG] Share from {}: index={}, value={:?}",
-                    sender, share.index, share.value.0
+                    "📊 [DKG] Share from {}: index={} (value redacted)",
+                    sender, share.index
                 );
             }
 

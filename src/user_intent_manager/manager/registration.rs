@@ -13,8 +13,7 @@ impl UserIntentManager {
             Some(s) => {
                 let share_bytes = s.to_bytes();
                 info!(
-                    "🔑 [DB_USER_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (used for tweaked share recomputation)",
-                    hex::encode(&share_bytes[..8])
+                    "🔐 [DB_USER_REGISTRY] DKG final_secret available for tweaked share recomputation"
                 );
                 s
             }
@@ -44,10 +43,8 @@ impl UserIntentManager {
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
             let tweaked_bytes = new_tweaked.0.to_bytes();
             info!(
-                "🔑 [DB_USER_REGISTRY] Recomputed tweaked share for {}: scalar_fingerprint=0x{}, hmac_constant=0x{}",
-                address,
-                hex::encode(&tweaked_bytes[..8]),
-                hex::encode(&user.hmac_constant[..8])
+                "🔐 [DB_USER_REGISTRY] Recomputed tweaked share for {}",
+                address
             );
             user.tweaked_secret_share = Some(new_tweaked);
 
@@ -87,8 +84,7 @@ impl UserIntentManager {
             Some(s) => {
                 let share_bytes = s.to_bytes();
                 info!(
-                    "🔑 [DB_USER_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (for new user share computation)",
-                    hex::encode(&share_bytes[..8])
+                    "🔐 [DB_USER_REGISTRY] DKG final_secret available for new user share computation"
                 );
                 s
             }
@@ -124,10 +120,8 @@ impl UserIntentManager {
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
             let tweaked_bytes = new_tweaked.0.to_bytes();
             info!(
-                "🔑 [DB_USER_REGISTRY] Computed tweaked share for {}: scalar_fingerprint=0x{}, hmac_constant=0x{}",
-                address,
-                hex::encode(&tweaked_bytes[..8]),
-                hex::encode(&user.hmac_constant[..8])
+                "🔐 [DB_USER_REGISTRY] Computed tweaked share for {}",
+                address
             );
             user.tweaked_secret_share = Some(new_tweaked);
 
@@ -153,15 +147,16 @@ impl UserIntentManager {
     /// touching existing admins that already have valid shares from the original DKG signing.
     /// Observer nodes (no DKG final secret) skip computation — they hold admin data for RPC queries only.
     pub async fn refresh_missing_admin_tweaked_shares(&self) -> Result<usize> {
-        info!("🔄 [DB_ADMIN_REGISTRY] Computing tweaked shares for admins with missing shares only");
+        info!(
+            "🔄 [DB_ADMIN_REGISTRY] Computing tweaked shares for admins with missing shares only"
+        );
 
         let dkg_storage = self.database_module.dkg_storage();
         let final_secret_share = match dkg_storage.get_final_secret().await? {
             Some(s) => {
                 let share_bytes = s.to_bytes();
                 info!(
-                    "🔑 [DB_ADMIN_REGISTRY] DKG final_secret scalar_fingerprint=0x{} (for admin share computation)",
-                    hex::encode(&share_bytes[..8])
+                    "🔐 [DB_ADMIN_REGISTRY] DKG final_secret available for admin share computation"
                 );
                 s
             }
@@ -192,8 +187,7 @@ impl UserIntentManager {
                 "🧮 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} (admin_id: {})",
                 address, admin.admin_id
             );
-            let new_tweaked =
-                self.compute_tweaked_share(&final_secret_share, &admin.hmac_constant);
+            let new_tweaked = self.compute_tweaked_share(&final_secret_share, &admin.hmac_constant);
             admin.tweaked_secret_share = Some(new_tweaked);
 
             if let Err(e) = self.user_storage.store_admin(&address, &admin).await {
@@ -238,11 +232,7 @@ impl UserIntentManager {
         // 1) Normalize to canonical EIP-55
         let addr_cs = match checksum_from_any(tics_address) {
             Ok(a) => a,
-            Err(e) => {
-                return Err(format!(
-                    "Invalid tics_address '{tics_address}': {e}"
-                ))
-            }
+            Err(e) => return Err(format!("Invalid tics_address '{tics_address}': {e}")),
         };
 
         // 2) Dedup on canonical key
@@ -277,17 +267,14 @@ impl UserIntentManager {
         if let Some(share) = dkg_secret_share {
             let share_bytes = share.to_bytes();
             info!(
-                "🔑 [DB_USER_REGISTRY] Computing tweaked share for {} at registration: dkg_share_fingerprint=0x{}, hmac_constant=0x{}",
-                addr_cs,
-                hex::encode(&share_bytes[..8]),
-                hex::encode(&registration.hmac_constant[..8])
+                "🔐 [DB_USER_REGISTRY] Computing tweaked share for {} at registration",
+                addr_cs
             );
             let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
-            let tweaked_bytes = tweaked_share.0.to_bytes();
+            // let tweaked_bytes = tweaked_share.0.to_bytes();
             info!(
-                "🔑 [DB_USER_REGISTRY] Initial tweaked share for {}: scalar_fingerprint=0x{}",
-                addr_cs,
-                hex::encode(&tweaked_bytes[..8])
+                "🔐 [DB_USER_REGISTRY] Initial tweaked share computed for {}",
+                addr_cs
             );
             registration.tweaked_secret_share = Some(tweaked_share);
         }
@@ -311,11 +298,14 @@ impl UserIntentManager {
                 info!("  📧 Final address: {}", addr_cs);
                 info!("  🆔 Final user ID: {}", user_id);
                 info!("  📅 Registration timestamp: {}", registration.created_at);
-                
+
                 // Compute and store user share pubkeys for all peers
                 let dkg_storage = self.database_module.dkg_storage();
                 if let Err(e) = dkg_storage
-                    .compute_and_store_user_share_pubkeys_for_user(&addr_cs, &registration.hmac_constant)
+                    .compute_and_store_user_share_pubkeys_for_user(
+                        &addr_cs,
+                        &registration.hmac_constant,
+                    )
                     .await
                 {
                     warn!(
@@ -327,7 +317,7 @@ impl UserIntentManager {
                         "✅ [DB_USER_REGISTRY] Successfully computed and stored user share pubkeys for {}",
                         addr_cs
                     );
-                    
+
                     // Log stored share pubkeys for this user for verification
                     if let Err(e) = dkg_storage.log_all_stored_share_pubkeys().await {
                         warn!(
@@ -336,7 +326,7 @@ impl UserIntentManager {
                         );
                     }
                 }
-                
+
                 info!("✅ User registration process COMPLETED for: {}", addr_cs);
                 Ok(registration)
             }
@@ -453,8 +443,7 @@ impl UserIntentManager {
     /// Generate HMAC constant for a user
     /// Uses hmac_scalar_mod_n to safely reduce modulo curve order
     fn generate_hmac_constant(&self, tics_address: &str) -> [u8; 32] {
-        hmac_scalar_mod_n(tics_address, &self.chain_code)
-            .expect("Failed to generate HMAC constant")
+        hmac_scalar_mod_n(tics_address, &self.chain_code).expect("Failed to generate HMAC constant")
     }
 
     /// Compute tweaked share from DKG share and HMAC constant
@@ -525,11 +514,7 @@ impl UserIntentManager {
         // 1) Normalize to canonical EIP-55
         let addr_cs = match checksum_from_any(tics_address) {
             Ok(a) => a,
-            Err(e) => {
-                return Err(format!(
-                    "Invalid tics_address '{tics_address}': {e}"
-                ))
-            }
+            Err(e) => return Err(format!("Invalid tics_address '{tics_address}': {e}")),
         };
 
         // 2) Check if admin already registered
@@ -563,10 +548,8 @@ impl UserIntentManager {
         if let Some(share) = dkg_secret_share {
             let share_bytes = share.to_bytes();
             info!(
-                "🔑 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} at registration: dkg_share_fingerprint=0x{}, hmac_constant=0x{}",
-                addr_cs,
-                hex::encode(&share_bytes[..8]),
-                hex::encode(&registration.hmac_constant[..8])
+                "🔐 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} at registration",
+                addr_cs
             );
             let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
             registration.tweaked_secret_share = Some(tweaked_share);
@@ -575,9 +558,7 @@ impl UserIntentManager {
         // 6) Store in database under "admin:" prefix
         match self.user_storage.store_admin(&addr_cs, &registration).await {
             Ok(()) => {
-                info!(
-                    "🎉 [DB_ADMIN_REGISTRY] Admin registration SUCCESSFULLY stored in database!"
-                );
+                info!("🎉 [DB_ADMIN_REGISTRY] Admin registration SUCCESSFULLY stored in database!");
                 info!("  📧 Final address: {}", addr_cs);
                 info!("  🆔 Final admin ID: {}", admin_id);
 
@@ -604,9 +585,7 @@ impl UserIntentManager {
                 Ok(registration)
             }
             Err(e) => {
-                error!(
-                    "💥 [DB_ADMIN_REGISTRY] FAILED to store admin registration in database!"
-                );
+                error!("💥 [DB_ADMIN_REGISTRY] FAILED to store admin registration in database!");
                 error!("  📧 Address: {}", addr_cs);
                 error!("  💥 Database error: {}", e);
                 Err(e.to_string())

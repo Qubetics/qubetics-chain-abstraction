@@ -637,7 +637,7 @@ impl SigningNode {
         // 3) R = k·G
         let r = PublicKey::from_secret_key(&secp, &sec_nonce);
         let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
-        info!("[SIGNING] R serialized: {:?}", rser);
+        // info!("[SIGNING] R serialized: {:?}", rser); // Redacted for security
         if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
             return Err(anyhow!("r is zero, need new nonce"));
         }
