@@ -14,7 +14,7 @@ use reqwest::Client;
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::Message;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -49,7 +49,7 @@ impl<'a> BitcoinSigner<'a> {
         user_tweaked_share: Option<Scalar>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     ) -> Result<()> {
         self.node
             .sign_bitcoin_transaction(
@@ -62,7 +62,7 @@ impl<'a> BitcoinSigner<'a> {
                 user_tweaked_share,
                 solver_address,
                 signing_key_override,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             )
             .await
     }
@@ -115,7 +115,7 @@ impl<'a> BitcoinSigner<'a> {
             Vec<u8>,          // tx_bytes
             Option<Scalar>,   // signing_key
         )>,
-        nonce_assignments: &HashMap<String, String>, // intent_hash -> nonce_tuple_id
+        nonce_assignments: &HashMap<String, Vec<String>>, // intent_hash -> nonce_tuple_ids per input
     ) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -267,57 +267,48 @@ impl<'a> BitcoinSigner<'a> {
                     }
                 };
 
-                // Get the assigned nonce for this intent - REQUIRED for security
-                let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
-                    info!(
-                        "🔍 [BTC_UTV_BATCH] Intent {} has nonce assignment: {}",
-                        intent_hash, tuple_id
-                    );
-                    // Acquire the specific nonce assigned by coordinator
-                    if let Some(nm) = &self.node.nonce_manager {
-                        let nm_guard = nm.lock().await;
-                        match nm_guard.acquire_specific_nonce(tuple_id).await {
-                            Ok(Some(tuple)) => {
-                                info!(
-                                    "🔐 [BTC_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
-                                    tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
-                                );
-                                tuple
-                            }
-                            Ok(None) => {
-                                error!(
-                                    "🔴 [BTC_UTV_BATCH] Nonce {} not found in local pool for intent {}, SKIPPING (fixed k removed for security)",
-                                    tuple_id, intent_hash
-                                );
-                                continue;
-                            }
-                            Err(e) => {
-                                error!(
-                                    "🔴 [BTC_UTV_BATCH] Failed to acquire nonce {} for intent {}: {}, SKIPPING (fixed k removed for security)",
-                                    tuple_id, intent_hash, e
-                                );
-                                continue;
-                            }
-                        }
-                    } else {
-                        error!(
-                            "🔴 [BTC_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
-                            intent_hash
-                        );
-                        continue;
-                    }
-                } else {
+                let Some(intent_nonce_ids) = nonce_assignments.get(&intent_hash) else {
                     error!(
                         "🔴 [BTC_UTV_BATCH] No nonce assignment for intent {}, SKIPPING (fixed k removed for security)",
                         intent_hash
                     );
                     continue;
                 };
+                if intent_nonce_ids.len() != btc_tx.inputs.len() {
+                    error!(
+                        "🔴 [BTC_UTV_BATCH] Nonce assignment/input mismatch for intent {}: nonce_count={}, input_count={}, SKIPPING",
+                        intent_hash,
+                        intent_nonce_ids.len(),
+                        btc_tx.inputs.len()
+                    );
+                    continue;
+                }
+                let unique_nonce_ids: HashSet<&String> = intent_nonce_ids.iter().collect();
+                if unique_nonce_ids.len() != intent_nonce_ids.len() {
+                    error!(
+                        "🔴 [BTC_UTV_BATCH] Duplicate nonce assignment for intent {}: total={}, unique={}, SKIPPING",
+                        intent_hash,
+                        intent_nonce_ids.len(),
+                        unique_nonce_ids.len()
+                    );
+                    continue;
+                }
 
                 // Build per-input digests and signatures (like N2T)
                 let mut btc_sigs: Vec<BtcIndexedSignature> =
                     Vec::with_capacity(btc_tx.inputs.len());
+                let mut seen_r_values: HashSet<[u8; 32]> =
+                    HashSet::with_capacity(btc_tx.inputs.len());
 
+                let Some(nm) = &self.node.nonce_manager else {
+                    error!(
+                        "🔴 [BTC_UTV_BATCH] NonceManager not available for intent {}, SKIPPING (fixed k removed for security)",
+                        intent_hash
+                    );
+                    continue;
+                };
+
+                let nm_guard = nm.lock().await;
                 for (idx, inp) in btc_tx.inputs.iter().enumerate() {
                     let prev_spk = inp.witness_utxo.as_ref().unwrap().script_pubkey.clone();
 
@@ -327,12 +318,44 @@ impl<'a> BitcoinSigner<'a> {
 
                     let msg = Message::from_digest_slice(&digest)?;
 
+                    let tuple_id = &intent_nonce_ids[idx];
+                    let nonce_tuple = match nm_guard.acquire_specific_nonce(tuple_id).await {
+                        Ok(Some(tuple)) => tuple,
+                        Ok(None) => {
+                            error!(
+                                "🔴 [BTC_UTV_BATCH] Nonce {} not found in local pool for intent {} input {}, SKIPPING",
+                                tuple_id, intent_hash, idx
+                            );
+                            btc_sigs.clear();
+                            break;
+                        }
+                        Err(e) => {
+                            error!(
+                                "🔴 [BTC_UTV_BATCH] Failed to acquire nonce {} for intent {} input {}: {}, SKIPPING",
+                                tuple_id, intent_hash, idx, e
+                            );
+                            btc_sigs.clear();
+                            break;
+                        }
+                    };
+
                     // Sign using coordinated random nonce (fixed k removed for security)
                     let sig = self.node.create_ecdsa_signature_with_nonce(
                         &msg,
                         &signing_key,
                         &nonce_tuple,
                     )?;
+                    let (_rid, compact_sig) = sig.serialize_compact();
+                    let mut r = [0u8; 32];
+                    r.copy_from_slice(&compact_sig[0..32]);
+                    if !seen_r_values.insert(r) {
+                        error!(
+                            "🔴 [BTC_UTV_BATCH] Repeated ECDSA r detected for intent {} at input {}, skipping",
+                            intent_hash, idx
+                        );
+                        btc_sigs.clear();
+                        break;
+                    }
                     let (recovery_id, sig_bytes) = sig.serialize_compact();
 
                     let ecdsa_sig = ECDSASignature {
@@ -346,6 +369,9 @@ impl<'a> BitcoinSigner<'a> {
                         input_index: idx,
                         signature: ecdsa_sig,
                     });
+                }
+                if btc_sigs.is_empty() {
+                    continue;
                 }
 
                 // Store signatures in btc_utv_state: (round, slot_id) → input_index → peer → sig
@@ -436,7 +462,7 @@ impl SigningNode {
         user_tweaked_share: Option<Scalar>,
         _solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
 
@@ -662,49 +688,69 @@ impl SigningNode {
 
             let mut per_input_sigs: Vec<(usize, RecoverableSignature)> =
                 Vec::with_capacity(digests.len());
+            let mut seen_r_values: HashSet<[u8; 32]> = HashSet::with_capacity(digests.len());
 
-            // Acquire the coordinated nonce by tuple_id (all nodes use the same k value)
-            let nonce = if let Some(ref tuple_id) = nonce_tuple_id {
-                if let Some(nm) = &self.nonce_manager {
-                    let nm_guard = nm.lock().await;
-                    match nm_guard.acquire_specific_nonce(tuple_id).await {
-                        Ok(Some(tuple)) => {
-                            info!(
-                                "🔐 [BTC-SIGNING] Using coordinated nonce {} for signing (r_scalar: 0x{})",
-                                tuple.tuple_id,
-                                hex::encode(tuple.r_scalar.0.to_bytes())
-                            );
-                            tuple
-                        }
-                        Ok(None) => {
-                            return Err(anyhow!(
-                                "Coordinated nonce {} not found or already consumed - cannot sign",
-                                tuple_id
-                            ));
-                        }
-                        Err(e) => {
-                            return Err(anyhow!(
-                                "Failed to acquire coordinated nonce {}: {} - cannot sign",
-                                tuple_id,
-                                e
-                            ));
-                        }
-                    }
-                } else {
-                    return Err(anyhow!("NonceManager not available - cannot sign"));
-                }
-            } else {
-                error!("🔴 [BTC-SIGNING] No nonce_tuple_id provided for BTC signing - this is a coordination bug!");
+            let nonce_ids = nonce_tuple_ids.as_ref().ok_or_else(|| {
+                error!("🔴 [BTC-SIGNING] No nonce_tuple_ids provided for BTC signing - this is a coordination bug!");
+                anyhow!(
+                    "No nonce_tuple_ids provided. All BTC signing operations must use coordinated nonces per input."
+                )
+            })?;
+            if nonce_ids.len() != digests.len() {
                 return Err(anyhow!(
-                    "No nonce_tuple_id provided. All BTC signing operations must use coordinated nonces."
+                    "nonce_tuple_ids length mismatch: got {}, expected {} (per input)",
+                    nonce_ids.len(),
+                    digests.len()
                 ));
-            };
+            }
+            let unique_nonce_ids: HashSet<&String> = nonce_ids.iter().collect();
+            if unique_nonce_ids.len() != nonce_ids.len() {
+                return Err(anyhow!(
+                    "nonce_tuple_ids contains duplicates: {} provided, {} unique",
+                    nonce_ids.len(),
+                    unique_nonce_ids.len()
+                ));
+            }
+            let nm = self
+                .nonce_manager
+                .as_ref()
+                .ok_or_else(|| anyhow!("NonceManager not available - cannot sign"))?;
+            let nm_guard = nm.lock().await;
 
             for (i, digest) in digests.iter().enumerate() {
                 let msg = Message::from_digest_slice(digest)?;
 
+                let tuple_id = &nonce_ids[i];
+                let nonce = match nm_guard.acquire_specific_nonce(tuple_id).await {
+                    Ok(Some(tuple)) => tuple,
+                    Ok(None) => {
+                        return Err(anyhow!(
+                            "Coordinated nonce {} (input {}) not found or already consumed - cannot sign",
+                            tuple_id,
+                            i
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(anyhow!(
+                            "Failed to acquire coordinated nonce {} (input {}): {} - cannot sign",
+                            tuple_id,
+                            i,
+                            e
+                        ));
+                    }
+                };
+
                 // Sign using the coordinated random nonce (fixed k removed for security)
                 let sig = self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce)?;
+                let (_rid, compact_sig) = sig.serialize_compact();
+                let mut r = [0u8; 32];
+                r.copy_from_slice(&compact_sig[0..32]);
+                if !seen_r_values.insert(r) {
+                    return Err(anyhow!(
+                        "Detected repeated ECDSA r value across BTC inputs in one signing session (input {})",
+                        i
+                    ));
+                }
                 per_input_sigs.push((i, sig));
 
                 // Log the digest that this node signs with its share for debugging transaction failures

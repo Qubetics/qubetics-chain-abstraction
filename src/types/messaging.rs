@@ -143,8 +143,8 @@ pub enum ChannelMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
-        nonce_tuple_id: Option<String>,
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS UserToVault intent batch: final node picks pending intents with source_chain TICS
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
@@ -153,9 +153,9 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
-        nonce_assignments: std::collections::HashMap<String, String>,
+        /// Nonce assignments: intent_hash -> per-input nonce tuple IDs
+        /// All nodes must use the same nonce tuple ID per input index to ensure signature aggregation
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// BTC UserToVault intent batch: final node picks pending intents with source_chain bitcoin
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
@@ -164,9 +164,9 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
-        nonce_assignments: std::collections::HashMap<String, String>,
+        /// Nonce assignments: intent_hash -> per-input nonce tuple IDs
+        /// All nodes must use the same nonce tuple ID per input index to ensure signature aggregation
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// BTC Intent Manager contract update batch
     /// Used to update network-to-target tx-id on contract for BTC intents
@@ -183,8 +183,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
-        nonce_tuple_id: Option<String>,
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Solver add-liquidity batch broadcast
     /// Final node broadcasts selected requests for distributed signing
@@ -230,8 +230,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (index -> input)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     /// Final node broadcasts selected pending BTC claim-reward requests for distributed signing.
@@ -241,8 +241,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (index -> input)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -259,8 +259,8 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
-        nonce_tuple_id: Option<String>,
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS claim-reward batch broadcast (same flow as TicsWithdrawBatch).
     /// Picks TICS claim requests (pending) and BTC claim requests (pending + have tx_id) for contract.
@@ -272,7 +272,7 @@ pub enum ChannelMessage {
         timestamp: String,
         node_id: String,
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Peer invalidation batch broadcast (same flow as BtcWithdrawBatch / BtcClaimRewardBatch).
     /// Final node broadcasts selected disconnected solver IDs for distributed signing.
@@ -350,8 +350,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (index -> input)
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Claim-platform-fee transaction ID broadcast (same pattern as ClaimRewardTxIdBroadcast).
     ClaimPlatformFeeTxIdBroadcast {
@@ -508,7 +508,7 @@ pub enum GossipsubMessage {
         node_id: String,
         /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     UserRegistration {
         tics_address: String,
@@ -555,7 +555,7 @@ pub enum GossipsubMessage {
         timestamp: String,
         node_id: String,
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     BtcClaimRewardBatch {
@@ -565,7 +565,7 @@ pub enum GossipsubMessage {
         timestamp: String,
         node_id: String,
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -577,9 +577,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS claim-reward batch broadcast (same flow as TicsWithdrawBatch).
     TicsClaimRewardBatch {
@@ -588,9 +588,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Unified claim-reward transaction ID broadcast for both TICS and BTC (same shape as WithdrawTxIdBroadcast).
     ClaimRewardTxIdBroadcast {
@@ -633,7 +633,7 @@ pub enum GossipsubMessage {
         timestamp: String,
         node_id: String,
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Claim-platform-fee transaction ID broadcast.
     ClaimPlatformFeeTxIdBroadcast {
@@ -684,9 +684,9 @@ pub enum GossipsubMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// TICS UserToVault intent batch: intents with source_chain TICS to be signed individually (one tx per intent).
     TicsUserToVaultIntentBatch {
@@ -694,10 +694,10 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        /// Nonce assignments: intent_hash -> per-input nonce tuple IDs
+        /// All nodes must use the same nonce tuple ID per input index to ensure signature aggregation
         #[serde(default)]
-        nonce_assignments: std::collections::HashMap<String, String>,
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// BTC UserToVault intent batch: intents with source_chain bitcoin to be signed individually (one tx per intent).
     BtcUserToVaultIntentBatch {
@@ -705,10 +705,10 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        /// Nonce assignments: intent_hash -> per-input nonce tuple IDs
+        /// All nodes must use the same nonce tuple ID per input index to ensure signature aggregation
         #[serde(default)]
-        nonce_assignments: std::collections::HashMap<String, String>,
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
     TransactionFailure {
@@ -736,9 +736,9 @@ pub enum GossipsubMessage {
         timestamp: String,
         /// Node ID broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Broadcast finalized nonce tuples to all nodes (including observers).
     /// Observer nodes store these locally so they can reserve nonce tuple IDs
@@ -785,9 +785,9 @@ pub enum GossipsubMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Nonce tuple IDs aligned to transaction inputs (index -> nonce tuple_id)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Option<Vec<String>>,
     },
     /// Broadcast when a peer invalidation request is safely deleted because the solver
     /// was already invalidated on the smart contract.

@@ -134,7 +134,7 @@ impl<'a> TicsSigner<'a> {
             Vec<u8>,
             Option<Scalar>,
         )>,
-        nonce_assignments: std::collections::HashMap<String, String>,
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     ) -> Result<()> {
         self.node
             .sign_tics_user_to_vault_batch_with_nonces(round, batch, nonce_assignments)
@@ -1897,7 +1897,7 @@ impl SigningNode {
             Vec<u8>,
             Option<Scalar>,
         )>,
-        nonce_assignments: std::collections::HashMap<String, String>,
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     ) -> Result<()> {
         use crate::signing::state::RoundSlotKey;
         if batch.is_empty() {
@@ -1991,7 +1991,11 @@ impl SigningNode {
                 };
 
                 // Get the assigned nonce for this intent - REQUIRED for security
-                let nonce_tuple = if let Some(tuple_id) = nonce_assignments.get(&intent_hash) {
+                let nonce_tuple = if let Some(tuple_ids) = nonce_assignments.get(&intent_hash) {
+                    let Some(tuple_id) = tuple_ids.first() else {
+                        error!("🔴 [TICS_UTV_BATCH] Empty nonce assignment list for intent {}, SKIPPING", intent_hash);
+                        continue;
+                    };
                     info!(
                         "🔍 [TICS_UTV_BATCH] Intent {} has nonce assignment: {}",
                         intent_hash, tuple_id

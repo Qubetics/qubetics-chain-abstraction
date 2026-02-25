@@ -28,6 +28,8 @@ grpc = [
     "dep:tonic-build",
 ]
 
+nonce_audit = []
+
 [dependencies]
 libp2p = { version = "0.55", features = ["request-response", "cbor", "tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "identify", "kad", "serde"] }
 tokio = { version = "1", features = ["full"] }

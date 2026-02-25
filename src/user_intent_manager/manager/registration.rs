@@ -11,7 +11,6 @@ impl UserIntentManager {
         let dkg_storage = self.database_module.dkg_storage();
         let final_secret_share = match dkg_storage.get_final_secret().await? {
             Some(s) => {
-                let share_bytes = s.to_bytes();
                 info!(
                     "🔐 [DB_USER_REGISTRY] DKG final_secret available for tweaked share recomputation"
                 );
@@ -41,7 +40,6 @@ impl UserIntentManager {
                 address, user.user_id
             );
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
-            let tweaked_bytes = new_tweaked.0.to_bytes();
             info!(
                 "🔐 [DB_USER_REGISTRY] Recomputed tweaked share for {}",
                 address
@@ -82,7 +80,6 @@ impl UserIntentManager {
         let dkg_storage = self.database_module.dkg_storage();
         let final_secret_share = match dkg_storage.get_final_secret().await? {
             Some(s) => {
-                let share_bytes = s.to_bytes();
                 info!(
                     "🔐 [DB_USER_REGISTRY] DKG final_secret available for new user share computation"
                 );
@@ -118,7 +115,6 @@ impl UserIntentManager {
                 address, user.user_id
             );
             let new_tweaked = self.compute_tweaked_share(&final_secret_share, &user.hmac_constant);
-            let tweaked_bytes = new_tweaked.0.to_bytes();
             info!(
                 "🔐 [DB_USER_REGISTRY] Computed tweaked share for {}",
                 address
@@ -154,7 +150,6 @@ impl UserIntentManager {
         let dkg_storage = self.database_module.dkg_storage();
         let final_secret_share = match dkg_storage.get_final_secret().await? {
             Some(s) => {
-                let share_bytes = s.to_bytes();
                 info!(
                     "🔐 [DB_ADMIN_REGISTRY] DKG final_secret available for admin share computation"
                 );
@@ -265,13 +260,11 @@ impl UserIntentManager {
 
         // 5) Process DKG share if provided
         if let Some(share) = dkg_secret_share {
-            let share_bytes = share.to_bytes();
             info!(
                 "🔐 [DB_USER_REGISTRY] Computing tweaked share for {} at registration",
                 addr_cs
             );
             let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
-            // let tweaked_bytes = tweaked_share.0.to_bytes();
             info!(
                 "🔐 [DB_USER_REGISTRY] Initial tweaked share computed for {}",
                 addr_cs
@@ -546,7 +539,6 @@ impl UserIntentManager {
 
         // 5) Process DKG share if provided
         if let Some(share) = dkg_secret_share {
-            let share_bytes = share.to_bytes();
             info!(
                 "🔐 [DB_ADMIN_REGISTRY] Computing tweaked share for admin {} at registration",
                 addr_cs
