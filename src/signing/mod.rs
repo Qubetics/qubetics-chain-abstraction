@@ -709,6 +709,9 @@ impl SigningNode {
         nonce_tuple_id: &str,
         digest: &[u8],
     ) -> Result<()> {
+        let compressed_pubkey_hex =
+            hex::encode(PublicKey::from_secret_key(&Secp256k1::new(), signing_key).serialize());
+
         if digest.len() != 32 {
             return Err(anyhow!(
                 "invalid digest length for nonce audit: expected 32 bytes, got {}",
@@ -716,8 +719,6 @@ impl SigningNode {
             ));
         }
 
-        let compressed_pubkey_hex =
-            hex::encode(PublicKey::from_secret_key(&Secp256k1::new(), signing_key).serialize());
         let mut digest_arr = [0u8; 32];
         digest_arr.copy_from_slice(digest);
         let key = (compressed_pubkey_hex, nonce_tuple_id.to_owned());
@@ -9896,6 +9897,31 @@ mod tests {
 
         let err = SigningNode::enforce_nonce_digest_uniqueness(&signing_key, &nonce_tuple_id, &digest2)
             .expect_err("second distinct digest for same nonce tuple should fail");
+        assert!(
+            err.to_string()
+                .contains("nonce tuple reuse with different digest detected"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_create_signature_rejects_nonce_tuple_digest_conflicts() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let signing_node = SigningNode::new("nonce-audit-node".to_string(), 2, tx);
+        let signing_key = SecretKey::from_slice(&[2u8; 32]).expect("valid signing key");
+
+        let mut nonce = create_test_nonce_tuple(&format!("nonce_conflict_{}", uuid::Uuid::new_v4()));
+        let msg1 = Message::from_digest_slice(&[0x33u8; 32]).expect("valid digest");
+        let msg2 = Message::from_digest_slice(&[0x44u8; 32]).expect("valid digest");
+
+        signing_node
+            .create_ecdsa_signature_with_nonce(&msg1, &signing_key, &nonce)
+            .expect("first signature should be accepted");
+
+        nonce.consumed = false;
+        let err = signing_node
+            .create_ecdsa_signature_with_nonce(&msg2, &signing_key, &nonce)
+            .expect_err("same nonce tuple with conflicting digest should fail");
         assert!(
             err.to_string()
                 .contains("nonce tuple reuse with different digest detected"),
