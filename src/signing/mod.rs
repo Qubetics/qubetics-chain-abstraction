@@ -8,7 +8,6 @@ use k256::Scalar;
 use libp2p::PeerId;
 use num_bigint::BigUint;
 use num_traits::identities::One;
-#[cfg(any(debug_assertions, feature = "nonce_audit"))]
 use once_cell::sync::Lazy;
 use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
@@ -19,7 +18,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
-#[cfg(any(debug_assertions, feature = "nonce_audit"))]
 static NONCE_DIGEST_AUDIT_REGISTRY: Lazy<RwLock<HashMap<(String, String), [u8; 32]>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
@@ -718,28 +716,25 @@ impl SigningNode {
             ));
         }
 
-        #[cfg(any(debug_assertions, feature = "nonce_audit"))]
-        {
-            let compressed_pubkey_hex =
-                hex::encode(PublicKey::from_secret_key(&Secp256k1::new(), signing_key).serialize());
-            let mut digest_arr = [0u8; 32];
-            digest_arr.copy_from_slice(digest);
-            let key = (compressed_pubkey_hex, nonce_tuple_id.to_owned());
+        let compressed_pubkey_hex =
+            hex::encode(PublicKey::from_secret_key(&Secp256k1::new(), signing_key).serialize());
+        let mut digest_arr = [0u8; 32];
+        digest_arr.copy_from_slice(digest);
+        let key = (compressed_pubkey_hex, nonce_tuple_id.to_owned());
 
-            let mut registry = NONCE_DIGEST_AUDIT_REGISTRY
-                .write()
-                .map_err(|e| anyhow!("nonce digest audit registry poisoned: {e}"))?;
+        let mut registry = NONCE_DIGEST_AUDIT_REGISTRY
+            .write()
+            .map_err(|e| anyhow!("nonce digest audit registry poisoned: {e}"))?;
 
-            if let Some(first_digest) = registry.get(&key) {
-                if first_digest != &digest_arr {
-                    return Err(anyhow!(
-                        "nonce tuple reuse with different digest detected for tuple {}",
-                        nonce_tuple_id
-                    ));
-                }
-            } else {
-                registry.insert(key, digest_arr);
+        if let Some(first_digest) = registry.get(&key) {
+            if first_digest != &digest_arr {
+                return Err(anyhow!(
+                    "nonce tuple reuse with different digest detected for tuple {}",
+                    nonce_tuple_id
+                ));
             }
+        } else {
+            registry.insert(key, digest_arr);
         }
 
         Ok(())
@@ -859,39 +854,6 @@ impl SigningNode {
             .map_err(|e| anyhow!("invalid compact signature: {}", e))?;
 
         Ok(rec_sig)
-    }
-
-    /// Create ECDSA signature using a random nonce tuple (REQUIRED for security)
-    ///
-    /// This is the recommended entry point for signing. It requires a NonceTuple
-    /// for secure random nonce signing. Fixed-k signing has been removed for security.
-    ///
-    /// # Errors
-    /// Returns an error if no nonce is provided - nonces are mandatory for security.
-    pub fn create_ecdsa_signature_with_optional_nonce(
-        &self,
-        message: &Message,
-        signing_key: &SecretKey,
-        nonce: Option<&crate::types::nonce::NonceTuple>,
-    ) -> Result<RecoverableSignature> {
-        match nonce {
-            Some(n) => {
-                info!(
-                    "🟢 [SIGNING] Using random nonce tuple: {} for secure signing 🟢",
-                    n.tuple_id
-                );
-                self.create_ecdsa_signature_with_nonce(message, signing_key, n)
-            }
-            None => {
-                // SECURITY: Fixed-k signing removed - nonces are mandatory
-                error!(
-                    "🔴 [SIGNING] ERROR: No nonce provided! Nonces are MANDATORY for secure signing 🔴"
-                );
-                Err(anyhow::anyhow!(
-                    "Nonce is required for signing - fixed-k fallback has been removed for security"
-                ))
-            }
-        }
     }
 
     pub async fn handle_message(&mut self, msg: SigningMessage) -> Result<()> {
@@ -2499,14 +2461,24 @@ impl SigningNode {
                     return Ok(());
                 }
             } else if let Some(nm) = &self.nonce_manager {
+                let reservation_key = format!(
+                    "intent_contract_call:{}:{}:{}",
+                    target_chain.to_lowercase(),
+                    batch_id,
+                    round
+                );
                 let nm_guard = nm.lock().await;
-                match nm_guard.reserve_nonces_for_batch(&["contract_call".to_string()]).await {
+                match nm_guard
+                    .reserve_nonces_for_batch(std::slice::from_ref(&reservation_key))
+                    .await
+                {
                     Ok(assignments) => {
-                        if let Some(tuple_id) = assignments.get("contract_call") {
+                        if let Some(tuple_id) = assignments.get(&reservation_key) {
                             info!(
-                                "🔐 [CLOCK] Reserved nonce {} for {} intent batch",
+                                "🔐 [CLOCK] Reserved nonce {} for {} intent batch using reservation key {}",
                                 tuple_id,
-                                target_chain.to_uppercase()
+                                target_chain.to_uppercase(),
+                                reservation_key
                             );
                             vec![tuple_id.clone()]
                         } else {
@@ -3928,11 +3900,15 @@ impl SigningNode {
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let reservation_key = format!("btc_contract_update:{}:{}", round, batch_timestamp);
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&["btc_contract_update".to_string()]).await {
+            match nm_guard
+                .reserve_nonces_for_batch(std::slice::from_ref(&reservation_key))
+                .await
+            {
                 Ok(assignments) => {
-                    if let Some(tuple_id) = assignments.get("btc_contract_update") {
-                        info!("🔐 [BTC_CONTRACT_UPDATE] Reserved nonce {} for contract update batch", tuple_id);
+                    if let Some(tuple_id) = assignments.get(&reservation_key) {
+                        info!("🔐 [BTC_CONTRACT_UPDATE] Reserved nonce {} for contract update batch with reservation key {}", tuple_id, reservation_key);
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [BTC_CONTRACT_UPDATE] No nonce assigned - aborting batch (will retry next cycle)");
@@ -4086,11 +4062,25 @@ impl SigningNode {
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let request_fingerprint = batch_entries
+                .iter()
+                .map(|(request_id, _, _, _)| request_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let reservation_key = format!(
+                "add_liquidity_batch:{}:{}:{}",
+                round,
+                batch_timestamp,
+                request_fingerprint
+            );
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&["add_liquidity_batch".to_string()]).await {
+            match nm_guard
+                .reserve_nonces_for_batch(std::slice::from_ref(&reservation_key))
+                .await
+            {
                 Ok(assignments) => {
-                    if let Some(tuple_id) = assignments.get("add_liquidity_batch") {
-                        info!("🔐 [ADD_LIQUIDITY] Reserved nonce {} for add_liquidity batch", tuple_id);
+                    if let Some(tuple_id) = assignments.get(&reservation_key) {
+                        info!("🔐 [ADD_LIQUIDITY] Reserved nonce {} for add_liquidity batch with reservation key {}", tuple_id, reservation_key);
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [ADD_LIQUIDITY] No nonce assigned - aborting batch (will retry next epoch)");
@@ -9456,11 +9446,19 @@ impl SigningNode {
         // Reserve a nonce for this batch BEFORE broadcasting (coordinator responsibility)
         // SECURITY: Nonces are REQUIRED - abort batch if unavailable
         let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            let solver_fingerprint = solver_ids.join(",");
+            let reservation_key = format!(
+                "peer_invalidation_batch:{}:{}:{}",
+                round, self.id, solver_fingerprint
+            );
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&["peer_invalidation_batch".to_string()]).await {
+            match nm_guard
+                .reserve_nonces_for_batch(std::slice::from_ref(&reservation_key))
+                .await
+            {
                 Ok(assignments) => {
-                    if let Some(tuple_id) = assignments.get("peer_invalidation_batch") {
-                        info!("🔐 [PEER_INVALIDATION] Reserved nonce {} for peer invalidation batch", tuple_id);
+                    if let Some(tuple_id) = assignments.get(&reservation_key) {
+                        info!("🔐 [PEER_INVALIDATION] Reserved nonce {} for peer invalidation batch with reservation key {}", tuple_id, reservation_key);
                         tuple_id.clone()
                     } else {
                         tracing::error!("🔴 [PEER_INVALIDATION] No nonce assigned - aborting batch (will retry next epoch)");

@@ -1590,15 +1590,20 @@ impl SigningNode {
         Ok(Some(signed_tx_hex))
     }
 
+    #[deprecated(
+        since = "0.1.0",
+        note = "Synchronous signing without an explicit nonce is disabled. Use create_ecdsa_signature_with_key_async."
+    )]
     pub fn create_ecdsa_signature_with_key(
         &self,
         message: &Message,
         _transaction: &TicsTransaction,
-        signing_key: &SecretKey,
+        _signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
-        // Synchronous version - uses fixed k (for backward compatibility)
-        // Prefer create_ecdsa_signature_with_key_async for random nonces
-        self.create_ecdsa_signature_with_optional_nonce(message, signing_key, None)
+        let _ = message;
+        Err(anyhow!(
+            "Synchronous signing API is disabled: use create_ecdsa_signature_with_key_async with coordinator-reserved nonces"
+        ))
     }
 
     /// DEPRECATED: Synchronous version uses fixed k which is a SECURITY VULNERABILITY.
@@ -1611,11 +1616,14 @@ impl SigningNode {
         &self,
         message: &Message,
         _transaction: &ContractTransaction,
-        signing_key: &SecretKey,
+        _signing_key: &SecretKey,
     ) -> Result<RecoverableSignature> {
+        let _ = message;
         // SECURITY: This function now returns an error - nonces are mandatory
         error!("🔴 [SIGNING] create_ecdsa_signature_with_key_contract called - this uses fixed k which is INSECURE");
-        self.create_ecdsa_signature_with_optional_nonce(message, signing_key, None)
+        Err(anyhow!(
+            "Synchronous contract signing API is disabled: use create_ecdsa_signature_with_key_contract_async"
+        ))
     }
 
     /// Async version of create_ecdsa_signature_with_key that acquires a random nonce.
@@ -2106,8 +2114,7 @@ impl SigningNode {
     }
 
     /// Create partial ECDSA signature for a TICS UserToVault slot using a specific nonce tuple.
-    /// Uses the existing create_ecdsa_signature_with_optional_nonce which handles both
-    /// random nonces and fallback to fixed-k.
+    /// Uses an explicit, coordinator-provided nonce tuple.
     async fn create_partial_ecdsa_for_tics_slot_with_nonce(
         &self,
         tx_bytes: &[u8],
@@ -2123,13 +2130,7 @@ impl SigningNode {
         let tx_hash = hasher.finalize();
         let msg = Message::from_digest_slice(tx_hash.as_slice())?;
 
-        // Use the existing signing function with the nonce tuple
-        // This function handles the signature creation correctly with random nonces
-        let signature = self.create_ecdsa_signature_with_optional_nonce(
-            &msg,
-            signing_key,
-            Some(nonce_tuple),
-        )?;
+        let signature = self.create_ecdsa_signature_with_nonce(&msg, signing_key, nonce_tuple)?;
 
         let (recovery_id, signature_bytes) = signature.serialize_compact();
         Ok(ECDSASignature {
