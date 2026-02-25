@@ -7260,15 +7260,7 @@ impl SigningNode {
         }
     }
 
-    /// Get private key as hex string (for debugging only)
-    pub fn get_private_key_hex(&self) -> Option<String> {
-        if let Some(private_key) = self.key_store.private_key() {
-            let secret_key_bytes = private_key.secret_bytes();
-            Some(format!("0x{}", hex::encode(secret_key_bytes)))
-        } else {
-            None
-        }
-    }
+
 
     /// Verify PARTIAL signature for a round based on transaction type and peer-id
     ///

@@ -266,7 +266,10 @@ impl NonceManager {
 
         self.generation_in_progress.store(true, Ordering::SeqCst);
         if let Err(e) = self.start_generation(round).await {
-            warn!("⚠️ [NONCE] Failed to start regeneration after node join: {}", e);
+            warn!(
+                "⚠️ [NONCE] Failed to start regeneration after node join: {}",
+                e
+            );
             self.generation_in_progress.store(false, Ordering::SeqCst);
         }
 
@@ -368,7 +371,8 @@ impl NonceManager {
             });
             debug!(
                 "📋 [NONCE] Request #{} queued (queue size: {})",
-                request_id, pending.len()
+                request_id,
+                pending.len()
             );
         }
 
@@ -386,13 +390,17 @@ impl NonceManager {
                 Ok(nonce)
             }
             Ok(Err(_)) => {
-                error!("❌ [NONCE] Request #{} channel closed unexpectedly", request_id);
+                error!(
+                    "❌ [NONCE] Request #{} channel closed unexpectedly",
+                    request_id
+                );
                 Err(anyhow::anyhow!("Nonce request channel closed"))
             }
             Err(_) => {
                 error!(
                     "❌ [NONCE] Request #{} timed out after {}ms",
-                    request_id, timeout.as_millis()
+                    request_id,
+                    timeout.as_millis()
                 );
                 // Remove from pending queue on timeout
                 let mut pending = self.pending_requests.write().await;
@@ -510,7 +518,10 @@ impl NonceManager {
             .unwrap()
             .as_secs();
 
-        debug!("🔄 [NONCE] Triggering background nonce generation (round: {})", round);
+        debug!(
+            "🔄 [NONCE] Triggering background nonce generation (round: {})",
+            round
+        );
 
         if let Err(e) = self.start_generation(round).await {
             error!("❌ [NONCE] Failed to start generation: {}", e);
@@ -636,7 +647,10 @@ impl NonceManager {
             return Ok(Some(tuple));
         }
 
-        warn!("⚠️ [NONCE] No valid nonces available in pool! (all {} checked were stale or consumed)", max_to_check);
+        warn!(
+            "⚠️ [NONCE] No valid nonces available in pool! (all {} checked were stale or consumed)",
+            max_to_check
+        );
         Ok(None)
     }
 
@@ -659,10 +673,13 @@ impl NonceManager {
                 // Broadcast invalidation to all nodes so no future coordinator
                 // can select this nonce again (covers cross-node race where the
                 // gossipsub pool-removal arrived too late).
-                if let Err(e) = self.broadcast_nonce_invalidation(
-                    vec![tuple_id.to_string()],
-                    "already consumed during coordinated signing (nonce conflict)",
-                ).await {
+                if let Err(e) = self
+                    .broadcast_nonce_invalidation(
+                        vec![tuple_id.to_string()],
+                        "already consumed during coordinated signing (nonce conflict)",
+                    )
+                    .await
+                {
                     warn!(
                         "⚠️ [NONCE] Failed to broadcast invalidation for consumed nonce {}: {}",
                         tuple_id, e
@@ -691,10 +708,13 @@ impl NonceManager {
                 "🚫 [NONCE] Nonce {} not found in local pool — broadcasting invalidation to all nodes",
                 tuple_id
             );
-            if let Err(e) = self.broadcast_nonce_invalidation(
-                vec![tuple_id.to_string()],
-                "not found in local pool during signing",
-            ).await {
+            if let Err(e) = self
+                .broadcast_nonce_invalidation(
+                    vec![tuple_id.to_string()],
+                    "not found in local pool during signing",
+                )
+                .await
+            {
                 warn!(
                     "⚠️ [NONCE] Failed to broadcast invalidation for missing nonce {}: {}",
                     tuple_id, e
@@ -722,10 +742,7 @@ impl NonceManager {
                         continue;
                     }
                     if let Err(e) = self.storage.consume_nonce_tuple(tuple_id).await {
-                        warn!(
-                            "⚠️ [NONCE] Failed to invalidate nonce {}: {}",
-                            tuple_id, e
-                        );
+                        warn!("⚠️ [NONCE] Failed to invalidate nonce {}: {}", tuple_id, e);
                     } else {
                         info!(
                             "🚫 [NONCE] Invalidated nonce {} (reason: {})",
@@ -799,7 +816,10 @@ impl NonceManager {
     /// IMPORTANT: Only nonces with num_contributors >= total_nodes are used.
     /// Nonces created when fewer nodes were connected are stale and will fail
     /// because some nodes won't have them in their pool.
-    pub async fn reserve_nonces_for_batch(&self, operation_ids: &[String]) -> Result<HashMap<String, String>> {
+    pub async fn reserve_nonces_for_batch(
+        &self,
+        operation_ids: &[String],
+    ) -> Result<HashMap<String, String>> {
         let mut assignments = HashMap::new();
         let min_contributors = self.dkg_signer_count.load(Ordering::SeqCst);
         let needed = operation_ids.len();
@@ -873,7 +893,11 @@ impl NonceManager {
             // select the SAME nonce. We only remove from the available list — we do NOT
             // mark it as consumed yet, because all nodes still need to look it up by ID
             // via acquire_specific_nonce() when they receive the batch broadcast.
-            if let Err(e) = self.storage.remove_from_available_ids_public(&tuple.tuple_id).await {
+            if let Err(e) = self
+                .storage
+                .remove_from_available_ids_public(&tuple.tuple_id)
+                .await
+            {
                 warn!(
                     "⚠️ [NONCE] Failed to remove reserved nonce {} from available pool for operation {}: {} — skipping",
                     tuple.tuple_id, op_id, e
@@ -912,7 +936,11 @@ impl NonceManager {
     /// available-IDs list so it won't be picked by future reservation calls.
     pub async fn remove_nonces_from_pool(&self, tuple_ids: &[String]) {
         for tuple_id in tuple_ids {
-            if let Err(e) = self.storage.remove_from_available_ids_public(tuple_id).await {
+            if let Err(e) = self
+                .storage
+                .remove_from_available_ids_public(tuple_id)
+                .await
+            {
                 warn!(
                     "⚠️ [NONCE] Failed to remove nonce {} from available pool: {}",
                     tuple_id, e
@@ -932,9 +960,10 @@ impl NonceManager {
     ///
     /// Generates batch_size nonces in a single commit-reveal cycle
     pub async fn start_generation(&self, round: u64) -> Result<String> {
-
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("Observer node cannot start nonce generation"));
+            return Err(anyhow::anyhow!(
+                "Observer node cannot start nonce generation"
+            ));
         }
 
         // Don't start nonce generation if the node hasn't discovered peers yet.
@@ -967,7 +996,10 @@ impl NonceManager {
 
         // Generate batch_size random (k_i, R_i) pairs and commitments
         let (commitments, local_k_values, local_r_values) = {
-            let mut gen = self.generator.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let mut gen = self
+                .generator
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             gen.generate_batch_commitments(&batch_id, batch_size)?
         };
 
@@ -1007,7 +1039,12 @@ impl NonceManager {
     ///
     /// This is called when we receive a RequestNonceGeneration from another node.
     /// We use THEIR batch_id so all nodes create nonces with the same tuple_ids.
-    pub async fn join_generation(&self, batch_id: &str, round: u64, batch_size: usize) -> Result<()> {
+    pub async fn join_generation(
+        &self,
+        batch_id: &str,
+        round: u64,
+        batch_size: usize,
+    ) -> Result<()> {
         if !self.is_dkg_signer.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -1055,7 +1092,10 @@ impl NonceManager {
 
         // Generate batch_size random (k_i, R_i) pairs and commitments
         let (commitments, local_k_values, local_r_values) = {
-            let mut gen = self.generator.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let mut gen = self
+                .generator
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             gen.generate_batch_commitments(batch_id, batch_size)?
         };
 
@@ -1114,7 +1154,8 @@ impl NonceManager {
                 k_shares,
                 timestamp: _,
             } => {
-                self.handle_reveal(&batch_id, &from, &r_points, &k_shares, round).await?;
+                self.handle_reveal(&batch_id, &from, &r_points, &k_shares, round)
+                    .await?;
             }
 
             SigningMessage::RequestNonceGeneration {
@@ -1167,7 +1208,9 @@ impl NonceManager {
     ) -> Result<()> {
         info!(
             "📥 [NONCE] Received {} commitments from {} for batch {}",
-            commitments.len(), from, batch_id
+            commitments.len(),
+            from,
+            batch_id
         );
 
         // Check if we have an active batch state, if not, join the batch
@@ -1203,7 +1246,10 @@ impl NonceManager {
 
             // Generate batch_size random (k_i, R_i) pairs
             let (our_commitments, local_k_values, local_r_values) = {
-                let mut gen = self.generator.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+                let mut gen = self
+                    .generator
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
                 gen.generate_batch_commitments(batch_id, batch_size)?
             };
 
@@ -1256,7 +1302,9 @@ impl NonceManager {
             }
 
             // Check if we have threshold commitments
-            if state.commitments.len() >= state.threshold && state.status == NonceGenStatus::CommitmentPhase {
+            if state.commitments.len() >= state.threshold
+                && state.status == NonceGenStatus::CommitmentPhase
+            {
                 info!(
                     "✅ [NONCE] Reached threshold commitments for batch {} ({}/{}), moving to reveal phase",
                     batch_id, state.commitments.len(), self.threshold
@@ -1265,11 +1313,15 @@ impl NonceManager {
 
                 // Broadcast our reveal with all R_i and k_i values
                 if !state.local_r_values.is_empty() && !state.local_k_values.is_empty() {
-                    let r_points: Vec<Vec<u8>> = state.local_r_values.iter()
+                    let r_points: Vec<Vec<u8>> = state
+                        .local_r_values
+                        .iter()
                         .map(|r| self.serialize_point(&r.0))
                         .collect::<Result<Vec<_>>>()?;
 
-                    let k_shares: Vec<[u8; 32]> = state.local_k_values.iter()
+                    let k_shares: Vec<[u8; 32]> = state
+                        .local_k_values
+                        .iter()
                         .map(|k| k.0.to_bytes().into())
                         .collect();
 
@@ -1287,7 +1339,10 @@ impl NonceManager {
                     drop(batches); // Release lock before async call
                     self.broadcast_signing_message(msg).await?;
                 } else {
-                    warn!("⚠️ [NONCE] Local k/R values not set for batch {}, cannot reveal", batch_id);
+                    warn!(
+                        "⚠️ [NONCE] Local k/R values not set for batch {}, cannot reveal",
+                        batch_id
+                    );
                 }
             }
         }
@@ -1309,13 +1364,16 @@ impl NonceManager {
     ) -> Result<()> {
         info!(
             "📥 [NONCE] Received {} reveals from {} for batch {}",
-            r_points_bytes.len(), from, batch_id
+            r_points_bytes.len(),
+            from,
+            batch_id
         );
 
         if r_points_bytes.len() != k_shares_bytes.len() {
             return Err(anyhow::anyhow!(
                 "Mismatched r_points ({}) and k_shares ({}) count",
-                r_points_bytes.len(), k_shares_bytes.len()
+                r_points_bytes.len(),
+                k_shares_bytes.len()
             ));
         }
 
@@ -1325,7 +1383,9 @@ impl NonceManager {
         let mut r_points_decoded = Vec::with_capacity(batch_size);
         let mut k_shares_decoded = Vec::with_capacity(batch_size);
 
-        for (idx, (r_bytes, k_bytes)) in r_points_bytes.iter().zip(k_shares_bytes.iter()).enumerate() {
+        for (idx, (r_bytes, k_bytes)) in
+            r_points_bytes.iter().zip(k_shares_bytes.iter()).enumerate()
+        {
             let r_point = self.deserialize_point(r_bytes)?;
             let k_share = self.deserialize_scalar(k_bytes)?;
 
@@ -1336,7 +1396,10 @@ impl NonceManager {
                     "❌ [NONCE] k_share[{}] doesn't match R point for {} in batch {}",
                     idx, from, batch_id
                 );
-                return Err(anyhow::anyhow!("k_share verification failed at index {}: R_i != k_i * G", idx));
+                return Err(anyhow::anyhow!(
+                    "k_share verification failed at index {}: R_i != k_i * G",
+                    idx
+                ));
             }
 
             r_points_decoded.push(SerializablePoint(r_point));
@@ -1391,7 +1454,8 @@ impl NonceManager {
                 batch_id, state.r_points.len(), expected_reveals, effective_total, dkg_signers, committed_peers
             );
 
-            if state.r_points.len() >= expected_reveals && state.k_shares.len() >= expected_reveals {
+            if state.r_points.len() >= expected_reveals && state.k_shares.len() >= expected_reveals
+            {
                 info!(
                     "✅ [NONCE] Received ALL reveals for batch {} ({}/{} peers), creating {} nonce tuples",
                     batch_id, state.r_points.len(), expected_reveals, state.batch_size
@@ -1490,24 +1554,6 @@ impl NonceManager {
                         continue; // Skip this corrupted nonce
                     }
 
-                    // Log the aggregated k and r_scalar for debugging nonce coordination
-                    // All nodes MUST have the same aggregated_k and r_scalar values
-                    info!(
-                        "🟣🟣🟣 [NONCE-CREATE] Tuple {}_{} CREATED 🟣🟣🟣\n\
-                         ╔══════════════════════════════════════════════════════════════════╗\n\
-                         ║  aggregated_k (first 8 bytes): 0x{}                ║\n\
-                         ║  k_inv (first 8 bytes):        0x{}                ║\n\
-                         ║  r_scalar:                     0x{}  ║\n\
-                         ║  r_y_parity:                   {}                                   ║\n\
-                         ║  R=k*G verification:           ✓                                   ║\n\
-                         ╚══════════════════════════════════════════════════════════════════╝",
-                        batch_id, idx,
-                        hex::encode(&aggregated_k.to_bytes()[..8]),
-                        hex::encode(&k_inv.to_bytes()[..8]),
-                        hex::encode(r_scalar.to_bytes()),
-                        self.get_y_parity(&aggregate_r)
-                    );
-
                     // Count includes other peers + our own local values
                     let num_contributors = state.k_shares.len() + 1;
 
@@ -1538,7 +1584,10 @@ impl NonceManager {
 
                 // Broadcast finalized tuples to all nodes (including observers)
                 // so they can reserve nonce IDs when acting as final node.
-                if let Err(e) = self.broadcast_nonce_tuples(batch_id, tuples_for_broadcast).await {
+                if let Err(e) = self
+                    .broadcast_nonce_tuples(batch_id, tuples_for_broadcast)
+                    .await
+                {
                     warn!(
                         "⚠️ [NONCE] Failed to broadcast nonce tuples for batch {}: {}",
                         batch_id, e
@@ -1584,7 +1633,9 @@ impl NonceManager {
         use k256::elliptic_curve::sec1::ToEncodedPoint;
 
         let encoded = r_point.to_encoded_point(false);
-        let x_bytes = encoded.x().ok_or_else(|| anyhow::anyhow!("Point at infinity"))?;
+        let x_bytes = encoded
+            .x()
+            .ok_or_else(|| anyhow::anyhow!("Point at infinity"))?;
 
         // Convert x coordinate to scalar (mod n)
         // Use Reduce (not ReduceNonZero) to get proper r = x(R) mod n without the +1 adjustment
@@ -1614,13 +1665,15 @@ impl NonceManager {
         let p = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F",
             16,
-        ).unwrap();
+        )
+        .unwrap();
 
         // secp256k1 group order
         let n = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
-        ).unwrap();
+        )
+        .unwrap();
 
         let r = BigUint::from_bytes_be(&r_scalar.to_bytes());
 
@@ -1743,7 +1796,12 @@ impl NonceManager {
     /// DKG nodes may also receive these (harmless duplicate — already stored during generation).
     pub async fn store_received_nonce_tuple(&self, tuple: NonceTuple) -> Result<()> {
         // Skip if already stored (DKG nodes store during generation)
-        if self.storage.get_nonce_tuple(&tuple.tuple_id).await?.is_some() {
+        if self
+            .storage
+            .get_nonce_tuple(&tuple.tuple_id)
+            .await?
+            .is_some()
+        {
             return Ok(());
         }
         self.storage.store_nonce_tuple(&tuple).await?;
@@ -1871,7 +1929,9 @@ mod tests {
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -1883,9 +1943,9 @@ mod tests {
         // Create manager with 3 total nodes
         let manager = NonceManager::new(
             "test_node".to_string(),
-            2,  // threshold
-            3,  // total_nodes
-            3,  // dkg_signer_count
+            2, // threshold
+            3, // total_nodes
+            3, // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -1903,7 +1963,7 @@ mod tests {
                 consumed: false,
                 created_at: chrono::Utc::now().timestamp(),
                 batch_id: "stale_batch".to_string(),
-                num_contributors: 2,  // Only 2 nodes contributed - stale!
+                num_contributors: 2, // Only 2 nodes contributed - stale!
             };
             storage.store_nonce_tuple(&stale_tuple).await.unwrap();
         }
@@ -1920,17 +1980,13 @@ mod tests {
                 consumed: false,
                 created_at: chrono::Utc::now().timestamp(),
                 batch_id: "valid_batch".to_string(),
-                num_contributors: 3,  // 3 nodes contributed - valid!
+                num_contributors: 3, // 3 nodes contributed - valid!
             };
             storage.store_nonce_tuple(&valid_tuple).await.unwrap();
         }
 
         // Now try to reserve 3 nonces
-        let op_ids = vec![
-            "op1".to_string(),
-            "op2".to_string(),
-            "op3".to_string(),
-        ];
+        let op_ids = vec!["op1".to_string(), "op2".to_string(), "op3".to_string()];
 
         let assignments = manager.reserve_nonces_for_batch(&op_ids).await.unwrap();
 
@@ -1960,7 +2016,9 @@ mod tests {
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -1974,7 +2032,7 @@ mod tests {
             "test_node".to_string(),
             2,
             3,
-            3,  // dkg_signer_count
+            3, // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -2009,7 +2067,7 @@ mod tests {
                 consumed: false,
                 created_at: chrono::Utc::now().timestamp(),
                 batch_id: "stale_batch".to_string(),
-                num_contributors: 2,  // Only 2 nodes - stale
+                num_contributors: 2, // Only 2 nodes - stale
             };
             storage.store_nonce_tuple(&stale_tuple).await.unwrap();
         }
@@ -2028,14 +2086,16 @@ mod tests {
     /// Test that update_total_nodes works correctly
     #[test]
     fn test_update_total_nodes() {
-        use tempfile::tempdir;
         use crate::database::{Database, DatabaseConfig};
+        use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -2046,8 +2106,8 @@ mod tests {
         let manager = NonceManager::new(
             "test_node".to_string(),
             2,
-            2,  // Start with 2 nodes
-            2,  // dkg_signer_count
+            2, // Start with 2 nodes
+            2, // dkg_signer_count
             storage,
             tx,
             NoncePoolConfig::default(),
@@ -2069,14 +2129,16 @@ mod tests {
     /// Test that is_valid_r_for_recovery correctly identifies invalid r values
     #[test]
     fn test_is_valid_r_for_recovery() {
-        use tempfile::tempdir;
         use crate::database::{Database, DatabaseConfig};
+        use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -2088,7 +2150,7 @@ mod tests {
             "test_node".to_string(),
             2,
             3,
-            3,  // dkg_signer_count
+            3, // dkg_signer_count
             storage,
             tx,
             NoncePoolConfig::default(),
@@ -2097,10 +2159,9 @@ mod tests {
         // Test 1: Known invalid r_scalar from the bug report
         // 0x464fcda34c052d332405c932baa2daed2366d9dd42770023bdbb829bf5ab6605
         let invalid_r_bytes: [u8; 32] = [
-            0x46, 0x4f, 0xcd, 0xa3, 0x4c, 0x05, 0x2d, 0x33,
-            0x24, 0x05, 0xc9, 0x32, 0xba, 0xa2, 0xda, 0xed,
-            0x23, 0x66, 0xd9, 0xdd, 0x42, 0x77, 0x00, 0x23,
-            0xbd, 0xbb, 0x82, 0x9b, 0xf5, 0xab, 0x66, 0x05,
+            0x46, 0x4f, 0xcd, 0xa3, 0x4c, 0x05, 0x2d, 0x33, 0x24, 0x05, 0xc9, 0x32, 0xba, 0xa2,
+            0xda, 0xed, 0x23, 0x66, 0xd9, 0xdd, 0x42, 0x77, 0x00, 0x23, 0xbd, 0xbb, 0x82, 0x9b,
+            0xf5, 0xab, 0x66, 0x05,
         ];
         let invalid_r = Scalar::from_repr(*FieldBytes::from_slice(&invalid_r_bytes)).unwrap();
         assert!(
@@ -2112,10 +2173,9 @@ mod tests {
         // Test 2: The generator point's x-coordinate should be valid
         // G = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
         let g_x_bytes: [u8; 32] = [
-            0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac,
-            0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07,
-            0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9,
-            0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98,
+            0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+            0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b,
+            0x16, 0xf8, 0x17, 0x98,
         ];
         let g_x = Scalar::from_repr(*FieldBytes::from_slice(&g_x_bytes)).unwrap();
         assert!(
@@ -2126,8 +2186,8 @@ mod tests {
 
         // Test 3: Random nonces from k * G should produce valid r values
         // (since R = k*G is always on the curve, and with Reduce the r_scalar matches x(R))
-        use k256::ProjectivePoint;
         use k256::elliptic_curve::sec1::ToEncodedPoint;
+        use k256::ProjectivePoint;
         use num_bigint::BigUint;
 
         for i in 1..10u64 {
@@ -2145,13 +2205,11 @@ mod tests {
             let n = BigUint::parse_bytes(
                 b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
                 16,
-            ).unwrap();
+            )
+            .unwrap();
 
             if x_coord < n {
-                assert_eq!(
-                    x_coord, r_value,
-                    "r_scalar should equal x(R) when x(R) < n"
-                );
+                assert_eq!(x_coord, r_value, "r_scalar should equal x(R) when x(R) < n");
             }
 
             // Verify that R = k*G points produce valid r values for recovery
@@ -2172,14 +2230,16 @@ mod tests {
     /// Test that delete_stale_nonces removes nonces with fewer contributors
     #[tokio::test]
     async fn test_delete_stale_nonces() {
-        use tempfile::tempdir;
         use crate::database::{Database, DatabaseConfig};
+        use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -2234,8 +2294,14 @@ mod tests {
         // Verify the remaining nonces are the 3-contributor ones
         let remaining = storage.get_available_tuples(10).await.unwrap();
         for tuple in remaining {
-            assert_eq!(tuple.num_contributors, 3, "Remaining nonces should have 3 contributors");
-            assert!(tuple.tuple_id.starts_with("three_node_nonce_"), "Remaining should be 3-node nonces");
+            assert_eq!(
+                tuple.num_contributors, 3,
+                "Remaining nonces should have 3 contributors"
+            );
+            assert!(
+                tuple.tuple_id.starts_with("three_node_nonce_"),
+                "Remaining should be 3-node nonces"
+            );
         }
 
         println!("✅ test_delete_stale_nonces passed!");
@@ -2244,14 +2310,16 @@ mod tests {
     /// Test that handle_node_joined deletes stale nonces and updates total
     #[tokio::test]
     async fn test_handle_node_joined() {
-        use tempfile::tempdir;
         use crate::database::{Database, DatabaseConfig};
+        use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -2262,9 +2330,9 @@ mod tests {
         // Create manager with 2 nodes initially
         let manager = NonceManager::new(
             "test_node".to_string(),
-            2,  // threshold
-            2,  // total_nodes - start with 2
-            2,  // dkg_signer_count
+            2, // threshold
+            2, // total_nodes - start with 2
+            2, // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -2302,7 +2370,10 @@ mod tests {
 
         // Verify all old nonces were deleted (they had only 2 contributors)
         let count_after = storage.available_nonce_count().await.unwrap();
-        assert_eq!(count_after, 0, "All old nonces should be deleted after node join");
+        assert_eq!(
+            count_after, 0,
+            "All old nonces should be deleted after node join"
+        );
 
         println!("✅ test_handle_node_joined passed!");
     }
@@ -2310,14 +2381,16 @@ mod tests {
     /// Test that handle_node_joined does NOT delete nonces when node count decreases
     #[tokio::test]
     async fn test_handle_node_joined_no_op_on_decrease() {
-        use tempfile::tempdir;
         use crate::database::{Database, DatabaseConfig};
+        use tempfile::tempdir;
 
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test_db");
         let config = DatabaseConfig {
             path: db_path.to_string_lossy().to_string(),
-            encryption_key: Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string()),
+            encryption_key: Some(
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string(),
+            ),
             ..Default::default()
         };
         let db = Database::new(config).unwrap();
@@ -2329,8 +2402,8 @@ mod tests {
         let manager = NonceManager::new(
             "test_node".to_string(),
             2,
-            3,  // Start with 3 nodes
-            3,  // dkg_signer_count
+            3, // Start with 3 nodes
+            3, // dkg_signer_count
             storage.clone(),
             tx,
             NoncePoolConfig::default(),
@@ -2358,7 +2431,10 @@ mod tests {
 
         // Should NOT delete any nonces (only delete on increase)
         let count = storage.available_nonce_count().await.unwrap();
-        assert_eq!(count, 5, "Nonces should NOT be deleted when node count decreases");
+        assert_eq!(
+            count, 5,
+            "Nonces should NOT be deleted when node count decreases"
+        );
 
         // total_nodes should still be updated
         assert_eq!(manager.get_total_nodes(), 2);
