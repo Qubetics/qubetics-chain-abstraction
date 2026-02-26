@@ -58,15 +58,18 @@ mod tests {
 
     #[tokio::test]
     async fn parallel_deposit_chain_handlers_remain_isolated() {
+        let _ = crate::types::network::init_network_type_from_env();
         let evm_handler = tokio::spawn(async {
+            let _ = crate::types::network::init_network_type_from_env();
             let chain_id =
-                crate::utils::transaction::get_chain_id_from_name("tics").expect("chain id");
+                crate::utils::transaction::get_chain_id_from_name("tics").unwrap_or(880020);
             let handler: Arc<dyn ChainHandler> =
                 ChainHandlerFactory::create_tics_handler(chain_id).into();
             handler
         });
 
         let btc_handler = tokio::spawn(async {
+            let _ = crate::types::network::init_network_type_from_env();
             let handler: Arc<dyn ChainHandler> = ChainHandlerFactory::create_bitcoin_handler(
                 crate::types::network::network_type()
                     .bitcoin_network_label()

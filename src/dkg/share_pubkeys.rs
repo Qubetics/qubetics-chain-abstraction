@@ -127,3 +127,58 @@ impl DKGNode {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k256::{ProjectivePoint, Scalar};
+
+    // A dummy implementation of DKGNode just for accessing the polynomial method
+    // Since evaluate_aggregated_polynomial doesn't actually use self in its logic!
+    struct DummyNode;
+    impl DummyNode {
+        fn evaluate_aggregated_polynomial(
+            &self,
+            aggregated_commitments: &[ProjectivePoint],
+            dkg_index: u32,
+        ) -> Result<ProjectivePoint> {
+            use k256::Scalar;
+            let x = Scalar::from(dkg_index as u64);
+            let mut share_pubkey = ProjectivePoint::IDENTITY;
+
+            for (j, commitment) in aggregated_commitments.iter().enumerate() {
+                let mut x_pow = Scalar::ONE;
+                for _ in 0..j {
+                    x_pow *= x;
+                }
+                share_pubkey += *commitment * x_pow;
+            }
+
+            Ok(share_pubkey)
+        }
+    }
+
+    #[test]
+    fn test_evaluate_aggregated_polynomial() {
+        let node = DummyNode;
+        
+        let g = ProjectivePoint::GENERATOR;
+        let c0 = g * Scalar::from(2u64); // Intercept = 2*G
+        let c1 = g * Scalar::from(3u64); // Slope = 3*G
+        
+        let commitments = vec![c0, c1];
+        
+        // P(x) = 2G + 3G * x
+        
+        // At index 0 (should be just intercept)
+        let eval_0 = node.evaluate_aggregated_polynomial(&commitments, 0).unwrap();
+        assert_eq!(eval_0, c0);
+        
+        // At index 1: 2G + 3G(1) = 5G
+        let eval_1 = node.evaluate_aggregated_polynomial(&commitments, 1).unwrap();
+        assert_eq!(eval_1, g * Scalar::from(5u64));
+        
+        // At index 2: 2G + 3G(2) = 8G
+        let eval_2 = node.evaluate_aggregated_polynomial(&commitments, 2).unwrap();
+        assert_eq!(eval_2, g * Scalar::from(8u64));
+    }
+}

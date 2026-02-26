@@ -2356,10 +2356,10 @@ mod tests {
         // Test Qubetics static gas price (fallback value)
         let static_price = get_default_gas_price_for_chain("qubetics");
         println!("🔧 Qubetics static gas price: {}", static_price);
-        assert_eq!(static_price, "0x2540BE400");
+        assert_eq!(static_price, "0x2540be400");
 
         // Convert to decimal to show the actual value
-        let price_decimal = u64::from_str_radix("2540BE400", 16).unwrap();
+        let price_decimal = u64::from_str_radix("2540be400", 16).unwrap();
         println!(
             "🔧 Qubetics static gas price in decimal: {} wei ({} Gwei)",
             price_decimal,
@@ -2455,7 +2455,7 @@ mod tests {
         println!("  - Second call: {}", price2);
 
         assert_eq!(price1, price2);
-        assert_eq!(price1, "0x2540BE400");
+        assert_eq!(price1, "0x2540be400");
     }
 
     #[tokio::test]

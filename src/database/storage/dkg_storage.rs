@@ -883,3 +883,56 @@ impl DkgStorage {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::core::config::DatabaseConfig;
+    use crate::database::Database;
+
+    fn create_test_db(name: &str) -> Database {
+        let tmp_dir = tempfile::tempdir().unwrap().into_path();
+        let mut config = DatabaseConfig::default();
+        config.path = tmp_dir.join(name).to_str().unwrap().to_string();
+        config.encryption_key = Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+        Database::new(config.validate().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_dkg_validations_crud() {
+        let db = create_test_db("test_dkg_validations_crud");
+        let storage = DkgStorage::new(db);
+        let to = "node_a";
+        let from = "node_b";
+
+        assert!(storage.add_validation(to, from, true).await.is_ok());
+        
+        let validations = storage.get_all_validations().await.unwrap();
+        assert!(validations.contains_key(to));
+        assert_eq!(validations.get(to).unwrap().get(from), Some(&true));
+
+        assert!(storage.clear_validations().await.is_ok());
+        assert!(storage.get_all_validations().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_share_tracking() {
+        let db = create_test_db("test_share_tracking");
+        let storage = DkgStorage::new(db);
+        let peer_ids = vec!["node1".to_string(), "node2".to_string()];
+
+        assert!(storage.set_expected_shares(&peer_ids).await.is_ok());
+        assert_eq!(storage.get_expected_shares().await.unwrap(), peer_ids);
+
+        assert!(storage.mark_share_received("node1").await.unwrap());
+        // Marking again should return false (duplicate)
+        assert!(!storage.mark_share_received("node1").await.unwrap());
+
+        let pending = storage.get_pending_shares().await.unwrap();
+        assert_eq!(pending, vec!["node2".to_string()]);
+
+        assert!(storage.clear_share_tracking().await.is_ok());
+        assert!(storage.get_expected_shares().await.unwrap().is_empty());
+        assert!(storage.get_received_shares().await.unwrap().is_empty());
+    }
+}

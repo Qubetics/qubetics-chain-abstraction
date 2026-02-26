@@ -224,3 +224,38 @@ pub fn sign_unsigned_preimage_to_raw_with_secp(
 
     Ok((Bytes::from(out), sighash, r32, s32, v_parity))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ethers::types::U256;
+
+    #[test]
+    fn test_encode_unsigned_payload_missing_fields_fail() {
+        // Empty request
+        let req = Eip1559TransactionRequest::new();
+        let res = encode_unsigned_payload_eip1559(&req);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().to_string(), "missing chain_id");
+
+        // Request with missing fields progressively
+        let req2 = Eip1559TransactionRequest::new().chain_id(1);
+        let res2 = encode_unsigned_payload_eip1559(&req2);
+        assert!(res2.is_err());
+        assert_eq!(res2.unwrap_err().to_string(), "missing nonce");
+
+        let req3 = Eip1559TransactionRequest::new().chain_id(1).nonce(0);
+        let res3 = encode_unsigned_payload_eip1559(&req3);
+        assert!(res3.is_err());
+        assert_eq!(res3.unwrap_err().to_string(), "missing max_priority_fee_per_gas");
+        
+        let req4 = Eip1559TransactionRequest::new()
+            .chain_id(1)
+            .nonce(0)
+            .max_priority_fee_per_gas(U256::from(1))
+            .max_fee_per_gas(U256::from(2));
+        let res4 = encode_unsigned_payload_eip1559(&req4);
+        assert!(res4.is_err());
+        assert_eq!(res4.unwrap_err().to_string(), "missing gas");
+    }
+}

@@ -107,14 +107,71 @@ pub fn bytes_to_scalar_mod_n(bytes: &[u8; 32]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const VALID_ADDR: &str = "0x000000000000000000000000000000000000dead";
+    const VALID_ADDR_NO_PREFIX: &str = "000000000000000000000000000000000000dead";
+    const INVALID_ADDR_LENGTH: &str = "0x000000000000000000000000000000000000dea"; // Missing 1 char
+    const INVALID_ADDR_HEX: &str = "0x000000000000000000000000000000000000deag"; // 'g' is not hex
+    const KEY: &[u8] = b"vanijya-v1";
+
     #[test]
-    fn tv() {
-        let key = b"vanijya-v1";
-        let addr = "0x000000000000000000000000000000000000dead";
-        let h = hmac256_from_addr(addr, key).unwrap();
+    fn test_hmac256_from_addr_valid() {
+        // Test with 0x prefix
+        let h1 = hmac256_from_addr(VALID_ADDR, KEY).unwrap();
         assert_eq!(
-            hex::encode(h),
+            hex::encode(h1),
             "1708cce8ea41e6a5d09878ae91d1a1206725eb90bffec0d5aa402245978cfb7a"
         );
+
+        // Test without 0x prefix
+        let h2 = hmac256_from_addr(VALID_ADDR_NO_PREFIX, KEY).unwrap();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_hmac256_from_addr_invalid_length() {
+        let res = hmac256_from_addr(INVALID_ADDR_LENGTH, KEY);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "not a 20-byte hex address");
+    }
+
+    #[test]
+    fn test_hmac256_from_addr_invalid_hex() {
+        let res = hmac256_from_addr(INVALID_ADDR_HEX, KEY);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "invalid hex");
+    }
+
+    #[test]
+    fn test_hmac64_from_addr() {
+        let h_u64 = hmac64_from_addr(VALID_ADDR, KEY).unwrap();
+        // The first 8 bytes of "1708cce8ea41e6a5..."
+        // hex: 1708cce8ea41e6a5 -> decimal: 1659801763420694181
+        assert_eq!(h_u64, 1659801763420694181);
+    }
+
+    #[test]
+    fn test_hmac_scalar_mod_n() {
+        let scalar_bytes = hmac_scalar_mod_n(VALID_ADDR, KEY).unwrap();
+        assert_eq!(scalar_bytes.len(), 32);
+        
+        // Ensure not zero
+        assert_ne!(scalar_bytes, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_bytes_to_scalar_mod_n() {
+        // Test with bytes less than order n
+        let small_bytes = [1u8; 32];
+        let reduced = bytes_to_scalar_mod_n(&small_bytes);
+        assert_eq!(small_bytes, reduced);
+
+        // Test with bytes greater than order n (e.g., all 0xFF)
+        let large_bytes = [0xFF; 32];
+        let reduced_large = bytes_to_scalar_mod_n(&large_bytes);
+        assert_ne!(large_bytes, reduced_large);
+        
+        // Ensure result is still 32 bytes
+        assert_eq!(reduced_large.len(), 32);
     }
 }

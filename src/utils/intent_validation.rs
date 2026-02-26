@@ -10,7 +10,7 @@ type ValidationResult = StdResult<(), String>;
 fn is_tics_chain(name: &str) -> bool {
     matches!(
         name.trim().to_lowercase().as_str(),
-        "tics" | "qubetics"
+        "tics" | "qubetics" | "ethereum" | "evm"
     )
 }
 

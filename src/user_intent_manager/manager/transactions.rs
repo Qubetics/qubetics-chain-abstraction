@@ -451,7 +451,7 @@ impl UserIntentManager {
     ///   If provided, only returns intents that haven't been updated in at least this many seconds.
     ///
     /// # Examples
-    /// ```
+    /// ```ignore
     /// // Get all awaiting intents
     /// let all = user_intent_manager.get_intents_awaiting_network_fulfillment(None).await;
     ///

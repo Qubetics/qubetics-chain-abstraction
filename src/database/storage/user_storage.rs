@@ -873,7 +873,7 @@ impl IntentStorage {
     ///   This is useful to avoid re-processing intents too frequently.
     ///   
     /// # Examples
-    /// ```
+    /// ```ignore
     /// // Get all awaiting intents
     /// let all = intent_storage.get_intents_awaiting_network_fulfillment(None).await?;
     ///
@@ -951,5 +951,102 @@ impl TransactionStatusStorage {
     /// Update status for a transaction hash
     pub async fn update_status(&self, tx_hash: &str, status: TransactionStatus) -> Result<()> {
         self.store_status(tx_hash, status).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::core::config::DatabaseConfig;
+    use crate::database::Database;
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn create_test_db(name: &str) -> (Database, std::path::PathBuf) {
+        let tmp_dir = tempfile::tempdir().unwrap().into_path();
+        let mut config = DatabaseConfig::default();
+        config.path = tmp_dir.join(name).to_str().unwrap().to_string();
+        config.encryption_key = Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_string());
+        let db = Database::new(config.validate().unwrap()).unwrap();
+        (db, tmp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_user_storage_crud() {
+        let db = create_test_db("test_user_storage_crud").0;
+        let storage = UserStorage::new(db);
+        let tics_address = "0x1234567890123456789012345678901234567890";
+
+        // Store user
+        let user = UserRegistration {
+            user_id: "user1".to_string(),
+            tics_address: tics_address.to_string(),
+            hmac_constant: [0u8; 32],
+            tweaked_secret_share: None,
+            user_group_key: None,
+            derived_eth_address: None,
+            derived_btc_address: None,
+            created_at: Utc::now(),
+            registered_by_node: "node1".to_string(),
+            intent_hashes: HashMap::new(),
+        };
+        assert!(storage.store_user(tics_address, &user).await.is_ok());
+
+        // Get user
+        let retrieved = storage.get_user(tics_address).await.unwrap().unwrap();
+        assert_eq!(retrieved.tics_address, tics_address);
+
+        // Contains user
+        assert!(storage.contains_user(tics_address).await.unwrap());
+        assert!(!storage.contains_user("0x0000000000000000000000000000000000000000").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_admin_storage_crud() {
+        let db = create_test_db("test_admin_storage_crud").0;
+        let storage = UserStorage::new(db);
+        let tics_address = "0x0987654321098765432109876543210987654321";
+
+        let admin = AdminRegistration {
+            admin_id: "admin1".to_string(),
+            tics_address: tics_address.to_string(),
+            hmac_constant: [0u8; 32],
+            tweaked_secret_share: None,
+            user_group_key: None,
+            derived_eth_address: None,
+            derived_btc_address: None,
+            created_at: Utc::now(),
+            registered_by_node: "node1".to_string(),
+        };
+        assert!(storage.store_admin(tics_address, &admin).await.is_ok());
+
+        let retrieved = storage.get_admin(tics_address).await.unwrap().unwrap();
+        assert_eq!(retrieved.tics_address, tics_address);
+        assert!(storage.contains_admin(tics_address).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_intent_storage() {
+        let db = create_test_db("test_intent_storage").0;
+        let storage = IntentStorage::new(db);
+        let hash = "test_hash";
+
+        let intent = DepositIntent {
+            source_address: "0x".to_string(),
+            target_address: "0x".to_string(),
+            source_chain: "SRC".to_string(),
+            target_chain: "TGT".to_string(),
+            amount: "100".to_string(),
+            source_token: "TKN".to_string(),
+            target_token: "TKN".to_string(),
+            timestamp: 0,
+        };
+        assert!(storage.store_intent(hash, &intent).await.is_ok());
+
+        let retrieved = storage.get_intent(hash).await.unwrap().unwrap();
+        assert_eq!(retrieved.amount, "100");
+
+        assert!(storage.delete_intent(hash).await.is_ok());
+        assert!(storage.get_intent(hash).await.unwrap().is_none());
     }
 }

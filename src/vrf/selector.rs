@@ -578,4 +578,47 @@ mod tests {
 
         assert_eq!(result1.selected_nodes, result2.selected_nodes);
     }
+
+    #[test]
+    fn test_vrf_verification_invalid() {
+        let keypair = Keypair::generate_ed25519();
+        let node_id = PeerId::from(keypair.public());
+        let selector = VrfNodeSelector::new(node_id);
+
+        let input = b"valid input";
+        let output = selector.generate_vrf_proof(input);
+        let public_key = selector.get_public_key();
+
+        // 1. Invalid input
+        let wrong_input = b"wrong input";
+        let is_valid_input = selector.verify_vrf_proof(&public_key, wrong_input, &output);
+        assert!(!is_valid_input, "Verification should fail on wrong input");
+
+        // 2. Corrupted proof
+        let mut corrupted_output = output.clone();
+        corrupted_output.proof[0] ^= 1;
+        let is_valid_proof = selector.verify_vrf_proof(&public_key, input, &corrupted_output);
+        assert!(!is_valid_proof, "Verification should fail on corrupted proof");
+    }
+
+    #[test]
+    fn test_select_mpc_nodes_negative() {
+        let keypair = Keypair::generate_ed25519();
+        let node_id = PeerId::from(keypair.public());
+        let mut selector = VrfNodeSelector::new(node_id);
+        
+        // 1. Empty available nodes array
+        let empty_nodes: Vec<PeerId> = vec![];
+        let res_empty = selector.select_mpc_nodes(&empty_nodes, 1, 1, true);
+        assert!(res_empty.is_err());
+        assert_eq!(res_empty.unwrap_err().to_string(), "Selection requested without available nodes");
+
+        // 2. Threshold zero
+        let nodes: Vec<PeerId> = (0..5)
+            .map(|_| PeerId::from(Keypair::generate_ed25519().public()))
+            .collect();
+        let res_thresh = selector.select_mpc_nodes(&nodes, 0, 1, true);
+        assert!(res_thresh.is_err());
+        assert_eq!(res_thresh.unwrap_err().to_string(), "Selection threshold must be greater than zero");
+    }
 }

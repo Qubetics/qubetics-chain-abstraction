@@ -211,3 +211,45 @@ impl KeyStore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k256::Scalar;
+
+    #[test]
+    fn test_keystore_generation() {
+        let mut store = KeyStore::new();
+        assert!(!store.has_private_key());
+
+        assert!(store.generate_key_pair("node1").is_ok());
+        assert!(store.has_private_key());
+        assert!(store.private_key().is_some());
+        assert!(store.public_key().is_some());
+    }
+
+    #[test]
+    fn test_keystore_scalar_import() {
+        let mut store = KeyStore::new();
+        // A valid secp256k1 scalar (must be < curve order, 1 is valid)
+        let scalar = Scalar::ONE;
+        assert!(store.set_private_key_from_scalar(scalar, "node2").is_ok());
+        
+        assert!(store.has_private_key());
+        assert!(store.private_key().is_some());
+    }
+
+    #[test]
+    fn test_keystore_group_key_management() {
+        let mut store = KeyStore::new();
+        let point = ProjectivePoint::GENERATOR;
+
+        assert!(store.get_group_public_key().is_none());
+        store.set_group_public_key(point, "node3");
+        assert_eq!(store.get_group_public_key().unwrap(), point);
+
+        assert!(store.get_vault_group_key().is_none());
+        store.set_vault_group_key(point, "node3");
+        assert_eq!(store.get_vault_group_key().unwrap(), point);
+    }
+}

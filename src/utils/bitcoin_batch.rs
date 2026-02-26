@@ -534,7 +534,12 @@ mod tests {
         // Use bytes to bridge versions
         let compressed =
             CompressedPublicKey::from_slice(&pubkey.serialize()).expect("compressed pubkey");
-        let address = Address::p2pkh(compressed, bitcoin::Network::Testnet);
+        
+        let network = match crate::types::network::network_type() {
+            crate::types::network::NetworkType::Testnet => bitcoin::Network::Testnet,
+            crate::types::network::NetworkType::Mainnet => bitcoin::Network::Bitcoin, // Or bitcoin::Network::Bitcoin
+        };
+        let address = Address::p2pkh(compressed, network);
         (address.to_string(), pubkey.serialize().to_vec())
     }
 

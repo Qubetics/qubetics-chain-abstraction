@@ -142,3 +142,24 @@ pub async fn validate_solver_onboarded(solver_id: &str, log_prefix: &str) -> Res
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[tokio::test]
+    async fn test_validate_solver_development_mode() {
+        // Set the env var to trigger the unconfigured / dev mode skip
+        env::set_var("SOLVER_CONTRACT_ADDRESS", "0x0000000000000000000000000000000000000000");
+
+        let is_active = validate_solver_active("solver_123", "TEST").await.unwrap();
+        assert!(is_active, "Should allow solver in unconfigured / development mode");
+
+        let is_onboarded = validate_solver_onboarded("solver_123", "TEST").await.unwrap();
+        assert!(is_onboarded, "Should allow onboarded check in development mode");
+        
+        let is_strict_ok = validate_solver_active_strict("solver_123", "TEST").await.is_ok();
+        assert!(is_strict_ok, "Strict mode should also pass in development mode");
+    }
+}

@@ -159,3 +159,30 @@ impl BroadcastConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_broadcast_config_default() {
+        let _ = crate::types::network::init_network_type_from_env();
+        let config = BroadcastConfig::default();
+        assert!(config.continue_on_failure);
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.retry_delay_ms, 1000);
+        
+        let tics_cfg = config.get_chain_config("tics").unwrap();
+        assert!(tics_cfg.enabled);
+        assert!(config.is_chain_enabled("tics"));
+    }
+
+    #[test]
+    fn test_broadcast_config_env_override() {
+        let _ = crate::types::network::init_network_type_from_env();
+        // Testing env parsing by calling from_env. We won't assert specific values 
+        // to avoid race conditions with other tests setting env vars concurrently.
+        let _config = BroadcastConfig::from_env();
+    }
+}

@@ -13,11 +13,16 @@ const RPC_PORT: u16 = 8081;
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
+    if std::env::var("TEST_PRIVATE_KEY_ETH_1").is_err() || std::env::var("TEST_PRIVATE_KEY_ETH_2").is_err() {
+        println!("Skipping integration tests: TEST_PRIVATE_KEY_ETH_1 or TEST_PRIVATE_KEY_ETH_2 environment variable not set");
+        return Ok(());
+    }
+    
     let test_private_key =
-        std::env::var("TEST_PRIVATE_KEY_ETH_1").expect("TEST_PRIVATE_KEY_ETH_1 not set");
+        std::env::var("TEST_PRIVATE_KEY_ETH_1").unwrap();
 
     let test_private_key_1 =
-        std::env::var("TEST_PRIVATE_KEY_ETH_2").expect("TEST_PRIVATE_KEY_ETH_2 not set");
+        std::env::var("TEST_PRIVATE_KEY_ETH_2").unwrap();
 
     let client = Client::new();
 
