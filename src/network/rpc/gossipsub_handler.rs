@@ -1757,25 +1757,26 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 info!(
                     "📦 [INTENT_BATCH] Received intent batch broadcast from node {} (round {})",
                     node_id, round
                 );
                 info!(
-                    "📦 [INTENT_BATCH] Batch type: {}, timestamp: {}, {} intent hashes",
+                    "📦 [INTENT_BATCH] Batch type: {}, timestamp: {}, {} intent hashes, {} nonces",
                     batch_type,
                     timestamp,
-                    intent_hashes.len()
+                    intent_hashes.len(),
+                    nonce_tuple_ids.len()
                 );
 
-                // Remove coordinator-assigned nonce from local available pool so no
-                // other coordinator picks the same nonce for a different operation.
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                // Remove coordinator-assigned nonces from local available pool so no
+                // other coordinator picks the same nonces for a different operation.
+                if !nonce_tuple_ids.is_empty() {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                        node.remove_nonces_from_available_pool(&nonce_tuple_ids)
                             .await;
                     }
                 }
@@ -2219,7 +2220,7 @@ impl MpcNetworkLayer {
                                     signing_key,
                                     None,
                                     signing_key,
-                                    nonce_tuple_id.clone(),
+                                    Some(nonce_tuple_ids.clone()),
                                 )
                                 .await
                             {
@@ -2505,7 +2506,7 @@ impl MpcNetworkLayer {
                                         None, // tics_withdraw_identifiers (not applicable)
                                         None, // tics_claim_reward_identifiers (not applicable)
                                         None, // tics_claim_platform_fee_identifiers (not applicable)
-                                        nonce_tuple_id.clone(), // COORDINATED nonce from coordinator
+                                        nonce_tuple_ids.first().cloned(), // COORDINATED nonce from coordinator (TICS uses first nonce)
                                     )
                                     .await
                                 {
@@ -2558,7 +2559,7 @@ impl MpcNetworkLayer {
                                     info!(
                                         "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, nonce: {:?})",
                                         intent_hashes.len(),
-                                        nonce_tuple_id
+                                        nonce_tuple_ids.first()
                                     );
                                     info!(
                                         "ℹ️  [TICS_BATCH] Signatures will be sent to final node: {}",
@@ -2985,7 +2986,11 @@ impl MpcNetworkLayer {
                     node.record_btc_user_to_vault_batch(&intent_hashes);
                     // Remove coordinator-assigned nonces from local available pool
                     if !nonce_assignments.is_empty() {
-                        let nonce_ids: Vec<String> = nonce_assignments.values().cloned().collect();
+                        // Flatten per-intent nonce vectors into a single list of tuple IDs.
+                        let mut nonce_ids: Vec<String> = Vec::new();
+                        for ids in nonce_assignments.values() {
+                            nonce_ids.extend(ids.iter().cloned());
+                        }
                         node.remove_nonces_from_available_pool(&nonce_ids).await;
                     }
                 }
@@ -3401,7 +3406,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::signing::chains::bitcoin_batch::{
                     build_batch_unsigned_tx, select_utxos_for_batch,
@@ -3414,11 +3419,11 @@ impl MpcNetworkLayer {
                     batch_id, node_id, round, timestamp
                 );
 
-                // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                // Remove coordinator-assigned nonces from local available pool
+                if !nonce_tuple_ids.is_empty() {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                        node.remove_nonces_from_available_pool(&nonce_tuple_ids)
                             .await;
                     }
                 }
@@ -3786,7 +3791,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None, // No per-withdraw solver address; encoded in identifiers
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            Some(nonce_tuple_ids.clone()),
                         )
                         .await
                     {
@@ -3852,7 +3857,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::signing::chains::bitcoin_batch::{
@@ -3867,11 +3872,11 @@ impl MpcNetworkLayer {
                     batch_id, node_id, timestamp
                 );
 
-                // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                // Remove coordinator-assigned nonces from local available pool
+                if !nonce_tuple_ids.is_empty() {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                        node.remove_nonces_from_available_pool(&nonce_tuple_ids)
                             .await;
                     }
                 }
@@ -4207,7 +4212,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None,
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            Some(nonce_tuple_ids.clone()),
                         )
                         .await
                     {
@@ -6306,7 +6311,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::signing::chains::bitcoin_batch::{
                     build_batch_unsigned_tx, select_utxos_for_batch,
@@ -6319,11 +6324,11 @@ impl MpcNetworkLayer {
                     batch_id, node_id, round, timestamp
                 );
 
-                // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                // Remove coordinator-assigned nonces from local available pool
+                if !nonce_tuple_ids.is_empty() {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                        node.remove_nonces_from_available_pool(&nonce_tuple_ids)
                             .await;
                     }
                 }
@@ -6627,7 +6632,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None,
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            Some(nonce_tuple_ids.clone()),
                         )
                         .await
                     {

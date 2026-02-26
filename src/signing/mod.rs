@@ -637,7 +637,7 @@ impl SigningNode {
         // 3) R = k·G
         let r = PublicKey::from_secret_key(&secp, &sec_nonce);
         let rser = r.serialize_uncompressed(); // [0x04 || X(32) || Y(32)]
-        // info!("[SIGNING] R serialized: {:?}", rser); // Redacted for security
+        info!("[SIGNING] R serialized: {:?}", rser);
         if BigUint::from_bytes_be(&rser) == BigUint::from(0u32) {
             return Err(anyhow!("r is zero, need new nonce"));
         }
@@ -775,6 +775,11 @@ impl SigningNode {
             }
         }
 
+        info!(
+            "🟢🟢🟢 [SIGNING-NONCE] Nonce {} INTEGRITY CHECK PASSED (k*k_inv=1, R=k*G, r=x(R)) 🟢🟢🟢",
+            nonce.tuple_id
+        );
+
         // 2) Convert to BigUint for computation
         let r = BigUint::from_bytes_be(&r_scalar.to_bytes());
         let k_inv = BigUint::from_bytes_be(&k_inv_scalar.to_bytes());
@@ -792,9 +797,34 @@ impl SigningNode {
             16,
         )
         .unwrap();
+
         // 6) s = k⁻¹ * (z + r * x) mod n
         // Note: With aggregated k, all nodes compute the same s for their key share
         let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
+
+        // Detailed debug logging for signature computation
+        // All nodes MUST have the same aggregated_k, k_inv, r, and z values
+        info!(
+            "🔵🔵🔵 [SIGNING-NONCE] Partial Signature Computation 🔵🔵🔵\n\
+             ╔════════════��═════════════════════════════════════════════════════════════════╗\n\
+             ║  tuple_id:                     {}                   ║\n\
+             ║  aggregated_k (first 8 bytes): 0x{}                             ║\n\
+             ║  k_inv (first 8 bytes):        0x{}                             ║\n\
+             ║  r_scalar:                     0x{}  ║\n\
+             ║  r_y_parity:                   {}                                              ║\n\
+             ║  z (message hash):             0x{}  ║\n\
+             ║  x (key share, first 8 bytes): 0x{}                             ║\n\
+             ║  s (partial signature):        0x{}  ║\n\
+             ╚══════════════════════════════════════════════════════════════════════════════╝",
+            nonce.tuple_id,
+            hex::encode(&k_scalar.to_bytes()[..8]), // Only first 8 bytes for security
+            hex::encode(&k_inv_scalar.to_bytes()[..8]), // Only first 8 bytes for security
+            hex::encode(&r_scalar.to_bytes()),
+            nonce.r_y_parity,
+            hex::encode(message.as_ref()),
+            hex::encode(&sk_bytes[..8]), // Only first 8 bytes for security
+            hex::encode(&s.to_bytes_be())
+        );
 
         // 7) Serialize r‖s into 64-byte array
         let mut sig_bytes = [0u8; 64];
@@ -1946,7 +1976,8 @@ impl SigningNode {
             let internal_op_type = if op_type == "global_clock" {
                 let clock_interval_secs = crate::env_defaults::global_clock_interval_seconds()
                     .parse::<u64>()
-                    .unwrap_or(crate::env_defaults::DEFAULT_GLOBAL_CLOCK_INTERVAL_SECONDS.parse().unwrap());
+                    .ok()
+                    .unwrap_or(60);
 
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -2320,7 +2351,8 @@ impl SigningNode {
         // Read max intents per cycle from environment (configurable)
         let max_intents_per_cycle = crate::env_defaults::max_intents_per_cycle()
             .parse::<usize>()
-            .unwrap_or(crate::env_defaults::DEFAULT_MAX_INTENTS_PER_CYCLE.parse().unwrap());
+            .ok()
+            .unwrap_or(10);
         
         // Get user intent manager
         let user_intent_manager = self.user_intent_manager
@@ -2386,11 +2418,52 @@ impl SigningNode {
             // Create timestamp for the batch
             let batch_timestamp = chrono::Utc::now().to_rfc3339();
 
-            // Reserve a nonce for this batch BEFORE broadcasting
+            // Reserve nonces for this batch BEFORE broadcasting
             // SECURITY: Nonces are REQUIRED - abort batch if unavailable
-            let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+            // For BTC batches: reserve multiple nonces (one per potential input)
+            // For TICS batches: reserve one nonce (single contract call)
+            let nonce_tuple_ids: Vec<String> = if let Some(nm) = &self.nonce_manager {
                 let nm_guard = nm.lock().await;
-                // Reserve one nonce for the entire batch (it's a single contract call)
+                
+                if batch_type == crate::types::BatchType::BTC {
+                    // For BTC batches, estimate max inputs and reserve that many nonces
+                    let max_inputs_per_batch: usize =
+                        std::env::var("BTC_NETWORK_TO_TARGET_MAX_INPUTS_PER_BATCH")
+                            .ok()
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(10);
+                    
+                    let batch_id = format!("intent_batch:{}:{}", round, chrono::Utc::now().timestamp_millis());
+                    let op_ids: Vec<String> = (0..max_inputs_per_batch)
+                        .map(|idx| format!("{}#{}", batch_id, idx))
+                        .collect();
+                    
+                    match nm_guard.reserve_nonces_for_batch(&op_ids).await {
+                        Ok(assignments) => {
+                            let mut ids: Vec<String> = Vec::new();
+                            for op_id in &op_ids {
+                                if let Some(tuple_id) = assignments.get(op_id) {
+                                    ids.push(tuple_id.clone());
+                                } else {
+                                    tracing::error!("🔴 [CLOCK] No nonce available for op {} in {} intent batch - aborting (will retry next cycle)", op_id, target_chain.to_uppercase());
+                                    return Ok(());
+                                }
+                            }
+                            info!(
+                                "🔐 [CLOCK] Reserved {} nonces for {} intent batch (max inputs: {})",
+                                ids.len(),
+                                target_chain.to_uppercase(),
+                                max_inputs_per_batch
+                            );
+                            ids
+                        }
+                        Err(e) => {
+                            tracing::error!("🔴 [CLOCK] Failed to reserve nonces for {} intent batch: {} - aborting (will retry next cycle)", target_chain.to_uppercase(), e);
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    // For TICS batches, reserve one nonce (single contract call)
                 match nm_guard.reserve_nonces_for_batch(&["contract_call".to_string()]).await {
                     Ok(assignments) => {
                         if let Some(tuple_id) = assignments.get("contract_call") {
@@ -2399,7 +2472,7 @@ impl SigningNode {
                                 tuple_id,
                                 target_chain.to_uppercase()
                             );
-                            tuple_id.clone()
+                                vec![tuple_id.clone()]
                         } else {
                             tracing::error!("🔴 [CLOCK] No nonce available for {} intent batch - aborting (will retry next cycle)", target_chain.to_uppercase());
                             return Ok(());
@@ -2408,6 +2481,7 @@ impl SigningNode {
                     Err(e) => {
                         tracing::error!("🔴 [CLOCK] Failed to reserve nonce for {} intent batch: {} - aborting (will retry next cycle)", target_chain.to_uppercase(), e);
                         return Ok(());
+                        }
                     }
                 }
             } else {
@@ -2424,7 +2498,7 @@ impl SigningNode {
                     timestamp: batch_timestamp.clone(),
                     round,
                     node_id: self.id.clone(),
-                    nonce_tuple_id: Some(nonce_tuple_id), // Coordinated nonce reserved above
+                    nonce_tuple_ids: nonce_tuple_ids.clone(), // Coordinated nonces reserved above
                 })
                 .await?;
             
@@ -2462,6 +2536,7 @@ impl SigningNode {
         if target_chain.eq_ignore_ascii_case("bitcoin") {
             use crate::types::rpc_server::PendingWithdrawRequest;
 
+            // Limit number of BTC withdraw requests per cycle from env
             let max_btc_withdraw_per_cycle = crate::env_defaults::max_btc_withdraw_per_cycle()
                 .parse::<usize>()
                 .ok()
@@ -2543,22 +2618,48 @@ impl SigningNode {
                     let batch_timestamp = chrono::Utc::now().to_rfc3339();
                     let batch_id = format!("btc_withdraw_batch:{}:{}", round, chrono::Utc::now().timestamp_millis());
 
-                    // Reserve a coordinated nonce for this BTC withdraw batch
-                    // SECURITY: Nonces are REQUIRED - abort batch if unavailable
-                    let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+                    // Reserve coordinated nonces for this BTC withdraw batch.
+                    // SECURITY: To avoid nonce re-use across inputs, we reserve a vector
+                    // of nonce IDs for this batch. The receiver will consume as many as
+                    // needed based on the actual input count of the constructed tx.
+                    let max_inputs_per_batch: usize =
+                        std::env::var("BTC_WITHDRAW_MAX_INPUTS_PER_BATCH")
+                            .ok()
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(10);
+
+                    let op_ids: Vec<String> = (0..max_inputs_per_batch)
+                        .map(|idx| format!("{}#{}", batch_id, idx))
+                        .collect();
+
+                    let nonce_tuple_ids: Vec<String> = if let Some(nm) = &self.nonce_manager {
                         let nm_guard = nm.lock().await;
-                        match nm_guard.reserve_nonces_for_batch(&[batch_id.clone()]).await {
+                        match nm_guard.reserve_nonces_for_batch(&op_ids).await {
                             Ok(assignments) => {
-                                if let Some(tuple_id) = assignments.get(&batch_id) {
-                                    info!("🔐 [BTC_WITHDRAW] Reserved nonce {} for batch {}", tuple_id, batch_id);
-                                    tuple_id.clone()
-                                } else {
-                                    tracing::error!("🔴 [BTC_WITHDRAW] No nonce assignment returned for batch {} - aborting (will retry next epoch)", batch_id);
+                                let mut ids: Vec<String> = Vec::new();
+                                for op_id in &op_ids {
+                                    if let Some(tuple_id) = assignments.get(op_id) {
+                                        ids.push(tuple_id.clone());
+                                    }
+                                }
+                                if ids.is_empty() {
+                                    tracing::error!("🔴 [BTC_WITHDRAW] No nonce assignments returned for batch {} - aborting (will retry next epoch)", batch_id);
                                     return Ok(());
                                 }
+                                info!(
+                                    "🔐 [BTC_WITHDRAW] Reserved {} nonces for batch {} (max_inputs_per_batch={})",
+                                    ids.len(),
+                                    batch_id,
+                                    max_inputs_per_batch
+                                );
+                                ids
                             }
                             Err(e) => {
-                                tracing::error!("🔴 [BTC_WITHDRAW] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", batch_id, e);
+                                tracing::error!(
+                                    "🔴 [BTC_WITHDRAW] Failed to reserve nonces for batch {}: {} - aborting (will retry next epoch)",
+                                    batch_id,
+                                    e
+                                );
                                 return Ok(());
                             }
                         }
@@ -2568,10 +2669,10 @@ impl SigningNode {
                     };
 
                     info!(
-                        "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests (nonce: {})",
+                        "📤 [CLOCK][BTC_WITHDRAW] Broadcasting BTC withdraw batch {} with {} requests (nonces: {})",
                         batch_id,
                         requests.len(),
-                        nonce_tuple_id
+                        nonce_tuple_ids.len()
                     );
 
                     self.message_tx
@@ -2581,7 +2682,7 @@ impl SigningNode {
                             round,
                             timestamp: batch_timestamp.clone(),
                             node_id: self.id.clone(),
-                            nonce_tuple_id: Some(nonce_tuple_id),
+                            nonce_tuple_ids,
                         })
                         .await?;
                 }
@@ -2624,60 +2725,7 @@ impl SigningNode {
             )
             .await;
 
-        let mut valid_pending = Vec::new();
-        for (hash, intent, user) in pending {
-            let source_amount = match intent.amount.trim().parse::<u128>() {
-                Ok(a) if a > 0 => a,
-                _ => {
-                    tracing::warn!("⚠️ [CLOCK][TICS_UTV_BATCH] Invalid amount for intent {}", hash);
-                    continue;
-                }
-            };
-            
-            let five_percent_buffer = source_amount / 20;
-            let estimated_tx_fee: u128 = 300_000_000_000_000;
-            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
-            
-            match crate::rpc_server::utils::fetch_network_balance(&intent.source_address, "eth").await {
-                Ok(user_balance) => {
-                    if user_balance < required_balance {
-                        tracing::warn!(
-                            "⚠️ [CLOCK][TICS_UTV_BATCH] Insufficient balance for intent {}: has {}, needs {}",
-                            hash, user_balance, required_balance
-                        );
-                        if let Err(e) = user_intent_manager.update_intent_status(&user, &hash, crate::types::IntentStatus::Rejected).await {
-                             tracing::error!("Failed to update intent status to Rejected for {}: {}", hash, e);
-                        }
-                        let error_msg = crate::types::GossipsubMessage::TransactionErrorBroadcast {
-                            intent_hashes: vec![hash.clone()],
-                            error_message: format!("Insufficient balance: has {}, needs {}", user_balance, required_balance),
-                            transaction_type: "intent_rejected".to_string(),
-                            solver_address: None,
-                            node_id: self.id.clone(),
-                        };
-                        if let Ok(data) = serde_json::to_vec(&error_msg) {
-                            let _ = self.broadcast("signing", &data).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("⚠️ [CLOCK][TICS_UTV_BATCH] Failed to fetch balance for intent {}: {}", hash, e);
-                    continue;
-                }
-            }
-            valid_pending.push((hash, intent, user));
-        }
-        let pending = valid_pending;
-
         if pending.is_empty() {
-            if !exclusion_set.is_empty() {
-                let mut guard = self.last_tics_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
-                guard.push_back(HashSet::new());
-                while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
-                    guard.pop_front();
-                }
-            }
             info!(
                 "ℹ️  [CLOCK][TICS_UTV_BATCH] No pending TICS-source intents (UserToVault not done) for round {}",
                 round
@@ -2794,69 +2842,7 @@ impl SigningNode {
             )
             .await;
 
-        let mut valid_pending = Vec::new();
-        for (hash, intent, user) in pending {
-            let source_amount = match intent.amount.trim().parse::<u128>() {
-                Ok(a) if a > 0 => a,
-                _ => {
-                    tracing::warn!("⚠️ [CLOCK][BTC_UTV_BATCH] Invalid amount for intent {}", hash);
-                    continue;
-                }
-            };
-            
-            let five_percent_buffer = source_amount / 20;
-            let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
-                .ok()
-                .and_then(|v| v.parse::<u128>().ok())
-                .unwrap_or(2);
-            let estimated_tx_fee: u128 = 208 * fee_rate;
-            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
-            
-            match crate::utils::transaction::fetch_bitcoin_utxos(&intent.source_address, false).await {
-                Ok(utxos) => {
-                    let confirmed_balance: u128 = utxos
-                        .iter()
-                        .filter(|u| u.status.confirmed)
-                        .map(|u| u.value as u128)
-                        .sum();
-                    if confirmed_balance < required_balance {
-                        tracing::warn!(
-                            "⚠️ [CLOCK][BTC_UTV_BATCH] Insufficient confirmed UTXOs for intent {}: has {}, needs {}",
-                            hash, confirmed_balance, required_balance
-                        );
-                        if let Err(e) = user_intent_manager.update_intent_status(&user, &hash, crate::types::IntentStatus::Rejected).await {
-                             tracing::error!("Failed to update intent status to Rejected for {}: {}", hash, e);
-                        }
-                        let error_msg = crate::types::GossipsubMessage::TransactionErrorBroadcast {
-                            intent_hashes: vec![hash.clone()],
-                            error_message: format!("Insufficient confirmed UTXOs: has {}, needs {}", confirmed_balance, required_balance),
-                            transaction_type: "intent_rejected".to_string(),
-                            solver_address: None,
-                            node_id: self.id.clone(),
-                        };
-                        if let Ok(data) = serde_json::to_vec(&error_msg) {
-                            let _ = self.broadcast("signing", &data).await;
-                        }
-                        continue;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("⚠️ [CLOCK][BTC_UTV_BATCH] Failed to fetch utxos for intent {}: {}", hash, e);
-                    continue; 
-                }
-            }
-            valid_pending.push((hash, intent, user));
-        }
-        let pending = valid_pending;
-
         if pending.is_empty() {
-            if !exclusion_set.is_empty() {
-                let mut guard = self.last_btc_user_to_vault_batch_hashes.write().map_err(|e| anyhow!("lock poisoned: {}", e))?;
-                guard.push_back(HashSet::new());
-                while guard.len() > LAST_N_USER_TO_VAULT_BATCHES {
-                    guard.pop_front();
-                }
-            }
             info!(
                 "ℹ️  [CLOCK][BTC_UTV_BATCH] No pending BTC-source intents (UserToVault not done) for round {}",
                 round
@@ -2884,29 +2870,85 @@ impl SigningNode {
             intent_hashes.len()
         );
 
-        // Reserve nonces for each intent in the batch (coordinator assigns nonces)
+        // Reserve nonces for each *input* of each intent in the batch (coordinator assigns nonces).
+        //
+        // SECURITY: To avoid nonce re-use across inputs, we provision a vector of nonce IDs
+        // per intent. Since the exact number of inputs for each intent's Bitcoin transaction
+        // is determined later during UTXO selection, we reserve an upper bound of nonces per
+        // intent and let signing nodes consume as many as needed (up to this bound).
+        //
+        // The bound can be tuned via BTC_UTV_MAX_INPUTS_PER_INTENT; default is 4.
+        let max_inputs_per_intent: usize = std::env::var("BTC_UTV_MAX_INPUTS_PER_INTENT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(4);
+
+        // Build synthetic operation IDs of the form "<intent_hash>#<idx>" so we can reuse
+        // reserve_nonces_for_batch while still getting one nonce per potential input index.
+        use std::collections::HashMap;
+        let mut op_ids: Vec<String> = Vec::new();
+        let mut per_intent_ops: HashMap<String, Vec<String>> = HashMap::new();
+
+        for hash in &intent_hashes {
+            let mut ids_for_intent = Vec::with_capacity(max_inputs_per_intent);
+            for idx in 0..max_inputs_per_intent {
+                let op_id = format!("{}#{}", hash, idx);
+                ids_for_intent.push(op_id.clone());
+                op_ids.push(op_id);
+            }
+            per_intent_ops.insert(hash.clone(), ids_for_intent);
+        }
+
         // SECURITY: Nonces are REQUIRED - abort batch if none available
         let nonce_assignments = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&intent_hashes).await {
-                Ok(assignments) => {
-                    if assignments.is_empty() {
-                        tracing::error!("🔴 [BTC_UTV_BATCH] No nonces available - aborting batch (will retry next cycle)");
+            match nm_guard.reserve_nonces_for_batch(&op_ids).await {
+                Ok(flat_assignments) => {
+                    if flat_assignments.is_empty() {
+                        tracing::error!(
+                            "🔴 [BTC_UTV_BATCH] No nonces available - aborting batch (will retry next cycle)"
+                        );
                         return Ok(());
                     }
-                    if assignments.len() == intent_hashes.len() {
+
+                    // Reconstruct per-intent nonce vectors from the flat op_id -> tuple_id map.
+                    let mut per_intent_nonces: HashMap<String, Vec<String>> = HashMap::new();
+                    let mut intents_with_any = 0usize;
+
+                    for (intent, ops) in per_intent_ops {
+                        let mut ids: Vec<String> = Vec::new();
+                        for op_id in ops {
+                            if let Some(tuple_id) = flat_assignments.get(&op_id) {
+                                ids.push(tuple_id.clone());
+                            }
+                        }
+                        if !ids.is_empty() {
+                            intents_with_any += 1;
+                            per_intent_nonces.insert(intent, ids);
+                        }
+                    }
+
+                    if intents_with_any == 0 {
+                        tracing::error!(
+                            "🔴 [BTC_UTV_BATCH] Failed to allocate any per-intent nonces - aborting batch (will retry next cycle)"
+                        );
+                        return Ok(());
+                    }
+                    if intents_with_any == intent_hashes.len() {
                         info!(
-                            "🔐 [BTC_UTV_BATCH] Reserved {} nonces for batch",
-                            assignments.len()
+                            "🔐 [BTC_UTV_BATCH] Reserved per-input nonces for all {} intents (max_inputs_per_intent={})",
+                            intents_with_any,
+                            max_inputs_per_intent
                         );
                     } else {
                         tracing::error!(
-                            "🔴 [BTC_UTV_BATCH] Partial nonce reservation: {}/{} - intents without nonces will be SKIPPED",
-                            assignments.len(),
+                            "🔴 [BTC_UTV_BATCH] Partial nonce reservation for per-input nonces: {}/{} intents have at least one nonce vector",
+                            intents_with_any,
                             intent_hashes.len()
                         );
                     }
-                    assignments
+
+                    per_intent_nonces
                 }
                 Err(e) => {
                     tracing::error!(
@@ -2917,7 +2959,9 @@ impl SigningNode {
                 }
             }
         } else {
-            tracing::error!("🔴 [BTC_UTV_BATCH] NonceManager not available - aborting batch (will retry next cycle)");
+            tracing::error!(
+                "🔴 [BTC_UTV_BATCH] NonceManager not available - aborting batch (will retry next cycle)"
+            );
             return Ok(());
         };
 
@@ -3019,35 +3063,64 @@ impl SigningNode {
             chrono::Utc::now().timestamp_millis()
         );
 
-        // Reserve a coordinated nonce for this BTC claim-reward batch
-        // SECURITY: Nonces are REQUIRED - abort batch if unavailable
-        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+        // Reserve coordinated nonces for this BTC claim-reward batch
+        // SECURITY: Use per-input nonces to avoid nonce re-use.
+        let max_inputs_per_batch: usize =
+            std::env::var("BTC_CLAIM_REWARD_MAX_INPUTS_PER_BATCH")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(10);
+
+        let op_ids: Vec<String> = (0..max_inputs_per_batch)
+            .map(|idx| format!("{}#{}", claim_batch_id, idx))
+            .collect();
+
+        let nonce_tuple_ids: Vec<String> = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&[claim_batch_id.clone()]).await {
+            match nm_guard.reserve_nonces_for_batch(&op_ids).await {
                 Ok(assignments) => {
-                    if let Some(tuple_id) = assignments.get(&claim_batch_id) {
-                        info!("🔐 [BTC_CLAIM_REWARD] Reserved nonce {} for batch {}", tuple_id, claim_batch_id);
-                        tuple_id.clone()
-                    } else {
-                        tracing::error!("🔴 [BTC_CLAIM_REWARD] No nonce assignment returned for batch {} - aborting (will retry next epoch)", claim_batch_id);
+                    let mut ids: Vec<String> = Vec::new();
+                    for op_id in &op_ids {
+                        if let Some(tuple_id) = assignments.get(op_id) {
+                            ids.push(tuple_id.clone());
+                        }
+                    }
+                    if ids.is_empty() {
+                        tracing::error!(
+                            "🔴 [BTC_CLAIM_REWARD] No nonce assignments returned for batch {} - aborting (will retry next epoch)",
+                            claim_batch_id
+                        );
                         return Ok(());
                     }
+                    info!(
+                        "🔐 [BTC_CLAIM_REWARD] Reserved {} nonces for batch {} (max_inputs_per_batch={})",
+                        ids.len(),
+                        claim_batch_id,
+                        max_inputs_per_batch
+                    );
+                    ids
                 }
                 Err(e) => {
-                    tracing::error!("🔴 [BTC_CLAIM_REWARD] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", claim_batch_id, e);
+                    tracing::error!(
+                        "🔴 [BTC_CLAIM_REWARD] Failed to reserve nonces for batch {}: {} - aborting (will retry next epoch)",
+                        claim_batch_id,
+                        e
+                    );
                     return Ok(());
                 }
             }
         } else {
-            tracing::error!("🔴 [BTC_CLAIM_REWARD] NonceManager not available - aborting batch (will retry next epoch)");
+            tracing::error!(
+                "🔴 [BTC_CLAIM_REWARD] NonceManager not available - aborting batch (will retry next epoch)"
+            );
             return Ok(());
         };
 
         info!(
-            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (nonce: {})",
+            "📤 [CLOCK][BTC_CLAIM_REWARD] Broadcasting BTC claim-reward batch {} with {} requests (nonces: {})",
             claim_batch_id,
             claim_requests.len(),
-            nonce_tuple_id
+            nonce_tuple_ids.len()
         );
         self.message_tx
             .send(crate::types::ChannelMessage::BtcClaimRewardBatch {
@@ -3056,7 +3129,7 @@ impl SigningNode {
                 round,
                 timestamp: claim_batch_timestamp,
                 node_id: self.id.clone(),
-                nonce_tuple_id: Some(nonce_tuple_id),
+                nonce_tuple_ids,
             })
             .await
             .map_err(|e| anyhow!("Failed to send BtcClaimRewardBatch: {}", e))?;
@@ -3127,34 +3200,63 @@ impl SigningNode {
             chrono::Utc::now().timestamp_millis()
         );
 
-        // Reserve a coordinated nonce for this BTC claim-platform-fee batch
-        let nonce_tuple_id = if let Some(nm) = &self.nonce_manager {
+        // Reserve coordinated nonces for this BTC claim-platform-fee batch
+        let max_inputs_per_batch: usize =
+            std::env::var("BTC_CLAIM_PLATFORM_FEE_MAX_INPUTS_PER_BATCH")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(10);
+
+        let op_ids: Vec<String> = (0..max_inputs_per_batch)
+            .map(|idx| format!("{}#{}", claim_batch_id, idx))
+            .collect();
+
+        let nonce_tuple_ids: Vec<String> = if let Some(nm) = &self.nonce_manager {
             let nm_guard = nm.lock().await;
-            match nm_guard.reserve_nonces_for_batch(&[claim_batch_id.clone()]).await {
+            match nm_guard.reserve_nonces_for_batch(&op_ids).await {
                 Ok(assignments) => {
-                    if let Some(tuple_id) = assignments.get(&claim_batch_id) {
-                        info!("🔐 [BTC_CLAIM_PLATFORM_FEE] Reserved nonce {} for batch {}", tuple_id, claim_batch_id);
-                        tuple_id.clone()
-                    } else {
-                        tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] No nonce assignment returned for batch {} - aborting (will retry next epoch)", claim_batch_id);
+                    let mut ids: Vec<String> = Vec::new();
+                    for op_id in &op_ids {
+                        if let Some(tuple_id) = assignments.get(op_id) {
+                            ids.push(tuple_id.clone());
+                        }
+                    }
+                    if ids.is_empty() {
+                        tracing::error!(
+                            "🔴 [BTC_CLAIM_PLATFORM_FEE] No nonce assignments returned for batch {} - aborting (will retry next epoch)",
+                            claim_batch_id
+                        );
                         return Ok(());
                     }
+                    info!(
+                        "🔐 [BTC_CLAIM_PLATFORM_FEE] Reserved {} nonces for batch {} (max_inputs_per_batch={})",
+                        ids.len(),
+                        claim_batch_id,
+                        max_inputs_per_batch
+                    );
+                    ids
                 }
                 Err(e) => {
-                    tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] Failed to reserve nonce for batch {}: {} - aborting (will retry next epoch)", claim_batch_id, e);
+                    tracing::error!(
+                        "🔴 [BTC_CLAIM_PLATFORM_FEE] Failed to reserve nonces for batch {}: {} - aborting (will retry next epoch)",
+                        claim_batch_id,
+                        e
+                    );
                     return Ok(());
                 }
             }
         } else {
-            tracing::error!("🔴 [BTC_CLAIM_PLATFORM_FEE] NonceManager not available - aborting batch (will retry next epoch)");
+            tracing::error!(
+                "🔴 [BTC_CLAIM_PLATFORM_FEE] NonceManager not available - aborting batch (will retry next epoch)"
+            );
             return Ok(());
         };
 
         info!(
-            "📤 [CLOCK][BTC_CLAIM_PLATFORM_FEE] Broadcasting BTC claim-platform-fee batch {} with {} requests (nonce: {})",
+            "📤 [CLOCK][BTC_CLAIM_PLATFORM_FEE] Broadcasting BTC claim-platform-fee batch {} with {} requests (nonces: {})",
             claim_batch_id,
             claim_requests.len(),
-            nonce_tuple_id
+            nonce_tuple_ids.len()
         );
         self.message_tx
             .send(crate::types::ChannelMessage::BtcClaimPlatformFeeBatch {
@@ -3163,7 +3265,7 @@ impl SigningNode {
                 round,
                 timestamp: claim_batch_timestamp,
                 node_id: self.id.clone(),
-                nonce_tuple_id: Some(nonce_tuple_id),
+                nonce_tuple_ids,
             })
             .await
             .map_err(|e| anyhow!("Failed to send BtcClaimPlatformFeeBatch: {}", e))?;
@@ -3376,7 +3478,11 @@ impl SigningNode {
         let database = self.database.as_ref()
             .ok_or_else(|| anyhow!("Database not available"))?;
 
-        let max_batch_size = crate::env_defaults::max_add_liquidity_batch();
+        // Read configuration
+        let max_batch_size = std::env::var("MAX_ADD_LIQUIDITY_BATCH")
+            .ok()
+            .and_then(|val| val.parse::<usize>().ok())
+            .unwrap_or(10);
 
         let min_age_seconds = 10; // Minimum age in seconds before batching
 
@@ -3603,18 +3709,18 @@ impl SigningNode {
                     solver_address: req.solver_address.clone(),
                     asset: req.asset.clone(),
                     amount: req.amount.clone(),
-                    // TICS withdraws are executed on the main TICS EVM chain (chain ID from SOLVER_CONTRACT_CHAIN_ID env var).
-                    chain_id: crate::env_defaults::solver_contract_chain_id()
+                    // TICS withdraws are executed on the main TICS EVM chain (e.g. 9029).
+                        chain_id: crate::env_defaults::solver_contract_chain_id()
                         .parse::<u64>()
-                        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id()),
+                        .unwrap_or(9029),
                     tx_id: req.tx_id.clone(),
                 });
 
                 req.status = "Batched".to_string();
-                if let Err(e) = db.put_string(&key, &req) {
+                    if let Err(e) = db.put_string(&key, &req) {
                     warn!(
                         "⚠️ [CLOCK][WITHDRAW_SETTLE] Failed to mark TICS withdraw {} as Batched: {}",
-                        req.request_id, e
+                            req.request_id, e
                     );
                 } else {
                     tics_batched += 1;
@@ -3764,7 +3870,7 @@ impl SigningNode {
 
         let tics_chain_id = crate::env_defaults::solver_contract_chain_id()
             .parse::<u64>()
-            .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
+            .unwrap_or(9029);
 
         let mut tics_batched = 0usize;
         let mut btc_updated = 0usize;
@@ -4744,7 +4850,7 @@ impl SigningNode {
                 let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
                     .ok()
                     .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id()); // Default: Qubetics chain ID from MPC_TICS_CHAIN_ID env var
+                    .unwrap_or(9029); // Default: Qubetics chain ID
 
                 // Perform aggregation
                 match self
@@ -4918,12 +5024,11 @@ impl SigningNode {
                             let chain_id = match maybe_chain_id {
                                 Some(id) => id,
                                 None => {
-                                    let default_chain_id = crate::env_defaults::mpc_tics_chain_id();
                                     warn!(
-                                        "⚠️ [SIGNING] Unable to determine chain_id for round {}, defaulting to {}",
-                                        round, default_chain_id
+                                        "⚠️ [SIGNING] Unable to determine chain_id for round {}, defaulting to 9029",
+                                        round
                                     );
-                                    default_chain_id
+                                    9029
                                 }
                             };
 
@@ -5322,7 +5427,7 @@ impl SigningNode {
         let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
             .ok()
             .and_then(|id| id.parse::<u64>().ok())
-            .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
+            .unwrap_or(9029);
 
         let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
@@ -7260,7 +7365,15 @@ impl SigningNode {
         }
     }
 
-
+    /// Get private key as hex string (for debugging only)
+    pub fn get_private_key_hex(&self) -> Option<String> {
+        if let Some(private_key) = self.key_store.private_key() {
+            let secret_key_bytes = private_key.secret_bytes();
+            Some(format!("0x{}", hex::encode(secret_key_bytes)))
+        } else {
+            None
+        }
+    }
 
     /// Verify PARTIAL signature for a round based on transaction type and peer-id
     ///
@@ -8798,13 +8911,6 @@ impl SigningNode {
                                 );
                                 let pending_key = format!("{}{}", prefix, sid);
                                 let _ = database.delete_string(&pending_key);
-
-                                // Broadcast deletion so other peers wipe it
-                                let del_msg = crate::types::ChannelMessage::PeerInvalidationDeleted {
-                                    solver_id: sid.clone(),
-                                    node_id: self.id.clone(),
-                                };
-                                let _ = self.message_tx.send(del_msg).await;
                             }
                             Err(e) => {
                                 warn!(
@@ -9072,6 +9178,9 @@ mod tests {
         assert_eq!(sum_s, expected_sum, "Sum of partial signatures should match expected");
 
         println!("✅ Partial signature consistency test passed!");
+        println!("   s1 = 0x{}...", hex::encode(&s1.to_bytes()[..8]));
+        println!("   s2 = 0x{}...", hex::encode(&s2.to_bytes()[..8]));
+        println!("   s3 = 0x{}...", hex::encode(&s3.to_bytes()[..8]));
     }
 
     /// Test Lagrange interpolation for threshold signature aggregation
@@ -9135,6 +9244,8 @@ mod tests {
         assert_eq!(r_prime_scalar, r, "ECDSA verification should pass");
 
         println!("✅ Lagrange threshold signature aggregation test passed!");
+        println!("   Aggregated s = 0x{}", hex::encode(aggregated_s.to_bytes()));
+        println!("   r = 0x{}", hex::encode(r.to_bytes()));
     }
 
     /// Test that different nonces produce different signatures (security property)
@@ -9267,6 +9378,10 @@ mod tests {
         assert_eq!(r_prime_scalar, r, "ECDSA verification must pass");
 
         println!("✅ Full 3-of-3 signing with coordinated nonces PASSED!");
+        println!("   Transaction hash: 0x{}", hex::encode(tx_hash));
+        println!("   r = 0x{}", hex::encode(r.to_bytes()));
+        println!("   s = 0x{}", hex::encode(aggregated_s.to_bytes()));
+        println!("   Group pubkey: 0x{}", hex::encode(group_pubkey.to_encoded_point(true).as_bytes()));
     }
 
     /// Test that consumed nonces cannot be reused (security property)

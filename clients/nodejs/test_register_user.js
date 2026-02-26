@@ -45,7 +45,7 @@ const colors = {
   green: '\x1b[32m'
 };
 
-const oooo = 2323232
+const oooo = 1772054424
 function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
@@ -205,12 +205,12 @@ async function testUserMpcDeposit({ wallet, amount, idempotencyKey }) {
     // Construct DepositIntent (amount as string to match server DepositIntent.amount)
     const depositIntent = {
       source_address: userInfo.data.derived_eth_address,
-      target_address: userInfo.data.derived_eth_address,
+      target_address: userInfo.data.derived_btc_address,
       source_chain: 'qubetics',
-      target_chain: 'qubetics',
+      target_chain: 'bitcoin',
       amount: String(amount),
       source_token: 'TICS',
-      target_token: 'TICS',
+      target_token: 'BTC',
       timestamp: oooo,
     };
     // const depositIntent = {
@@ -342,7 +342,7 @@ async function runTests() {
   log(`\n🔑 Derived signer address from TEST_PRIVKEY: ${signerAddr}`, 'blue');
 
   // 1) DKG status
-  await testDKGStatus();
+  // await testDKGStatus();
 
   // // 2) Register ONLY the derived address 
   // const reg = await testRegisterUser(signerAddr, wallet);
@@ -357,8 +357,8 @@ async function runTests() {
 
   // // 3) MPC deposit test WITHOUT tx_id (should pass Some(signer) to handle_deposit_intent)
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
-  const amount = "25000000000000000000"
-  await testUserMpcDeposit({ wallet, amount });
+  // const amount = "44000000000000000000"
+  // await testUserMpcDeposit({ wallet, amount });
   // log(`\n🧪 Test 1: Normal deposit amount WITHOUT tx_id`, 'blue');
   // const amount = "2511"
   // await testUserMpcDeposit({ wallet, amount });

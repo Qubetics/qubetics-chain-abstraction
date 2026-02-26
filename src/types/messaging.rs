@@ -143,8 +143,9 @@ pub enum ChannelMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input for BTC, one for TICS)
+        /// SECURITY: To avoid nonce re-use across inputs, BTC batches require multiple nonces.
+        nonce_tuple_ids: Vec<String>,
     },
     /// TICS UserToVault intent batch: final node picks pending intents with source_chain TICS
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
@@ -159,14 +160,19 @@ pub enum ChannelMessage {
     },
     /// BTC UserToVault intent batch: final node picks pending intents with source_chain bitcoin
     /// (UserToVault not yet done) and broadcasts for all nodes to sign each with the respective user key.
+    ///
+    /// For security with multi-input transactions, each input MUST use a distinct nonce.
+    /// Therefore nonce_assignments now maps each intent_hash to a vector of nonce tuple_ids,
+    /// one per potential input of the constructed Bitcoin transaction.
     BtcUserToVaultIntentBatch {
         intent_hashes: Vec<String>,
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
-        nonce_assignments: std::collections::HashMap<String, String>,
+        /// Nonce assignments: intent_hash -> [nonce_tuple_id_0, nonce_tuple_id_1, ...]
+        /// All nodes must use the same nonce tuple for each input index to ensure
+        /// threshold signature aggregation with unique nonces per input.
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// BTC Intent Manager contract update batch
     /// Used to update network-to-target tx-id on contract for BTC intents
@@ -219,6 +225,10 @@ pub enum ChannelMessage {
     /// BTC withdraw-liquidity batch broadcast (definition only, no txid)
     /// Final node broadcasts selected BTC withdraw requests for distributed signing.
     /// All nodes already have the full records in RocksDB, so we only send IDs and solver addresses.
+    ///
+    /// SECURITY: To avoid nonce re-use across inputs, this message carries a vector of
+    /// coordinated nonce tuple IDs. Each input of the constructed Bitcoin transaction
+    /// will consume one nonce from this vector (up to its length).
     BtcWithdrawBatch {
         /// Unique batch identifier (e.g. derived from round + timestamp)
         batch_id: String,
@@ -230,19 +240,21 @@ pub enum ChannelMessage {
         timestamp: String,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
+        nonce_tuple_ids: Vec<String>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     /// Final node broadcasts selected pending BTC claim-reward requests for distributed signing.
+    ///
+    /// SECURITY: Uses a vector of coordinated nonces so each input can use a distinct nonce.
     BtcClaimRewardBatch {
         batch_id: String,
         requests: Vec<(String, String)>,
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
+        nonce_tuple_ids: Vec<String>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -343,6 +355,8 @@ pub enum ChannelMessage {
     },
     /// BTC claim-platform-fee batch broadcast (same flow as BtcWithdrawBatch).
     /// Final node broadcasts selected pending BTC platform fee claims for distributed signing.
+    ///
+    /// SECURITY: Uses per-input coordinated nonces for the underlying Bitcoin transaction.
     BtcClaimPlatformFeeBatch {
         batch_id: String,
         /// (request_id, btc_target_address) pairs
@@ -350,8 +364,8 @@ pub enum ChannelMessage {
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Coordinated nonce tuple ID for threshold signing
-        nonce_tuple_id: Option<String>,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
+        nonce_tuple_ids: Vec<String>,
     },
     /// Claim-platform-fee transaction ID broadcast (same pattern as ClaimRewardTxIdBroadcast).
     ClaimPlatformFeeTxIdBroadcast {
@@ -554,8 +568,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Vec<String>,
     },
     /// BTC claim-reward batch broadcast (same flow as BtcWithdrawBatch).
     BtcClaimRewardBatch {
@@ -564,8 +579,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Vec<String>,
     },
     /// TICS withdraw-liquidity batch broadcast.
     /// Final node broadcasts selected TICS (and optionally BTC) withdraw requests
@@ -632,8 +648,9 @@ pub enum GossipsubMessage {
         round: u64,
         timestamp: String,
         node_id: String,
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input)
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Vec<String>,
     },
     /// Claim-platform-fee transaction ID broadcast.
     ClaimPlatformFeeTxIdBroadcast {
@@ -684,9 +701,10 @@ pub enum GossipsubMessage {
         round: u64,
         /// Node ID of the final node broadcasting this batch
         node_id: String,
-        /// Nonce tuple_id for this batch's signature (all nodes must use the same nonce)
+        /// Coordinated nonce tuple IDs for threshold signing (one per potential input for BTC, one for TICS)
+        /// SECURITY: To avoid nonce re-use across inputs, BTC batches require multiple nonces.
         #[serde(default)]
-        nonce_tuple_id: Option<String>,
+        nonce_tuple_ids: Vec<String>,
     },
     /// TICS UserToVault intent batch: intents with source_chain TICS to be signed individually (one tx per intent).
     TicsUserToVaultIntentBatch {
@@ -700,15 +718,17 @@ pub enum GossipsubMessage {
         nonce_assignments: std::collections::HashMap<String, String>,
     },
     /// BTC UserToVault intent batch: intents with source_chain bitcoin to be signed individually (one tx per intent).
+    /// Uses per-input nonce assignments (vector per intent hash) for secure multi-input signing.
     BtcUserToVaultIntentBatch {
         intent_hashes: Vec<String>,
         round: u64,
         timestamp: String,
         node_id: String,
-        /// Nonce assignments: intent_hash -> nonce tuple_id
-        /// All nodes must use the same nonce for each intent to ensure signature aggregation
+        /// Nonce assignments: intent_hash -> [nonce_tuple_id_0, nonce_tuple_id_1, ...]
+        /// All nodes must use the same nonce tuple for each input index to ensure
+        /// threshold signature aggregation with unique nonces per input.
         #[serde(default)]
-        nonce_assignments: std::collections::HashMap<String, String>,
+        nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     },
     /// Notification that a transaction failed (signature verification, broadcasting, etc.)
     TransactionFailure {

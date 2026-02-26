@@ -10,7 +10,7 @@ pub const DEFAULT_SOLVER_CONTRACT_ADDRESS: &str = "0x28118Ef00aeFA859AC80C35E053
 /// Default IntentManager contract address.
 pub const DEFAULT_INTENT_MANAGER_CONTRACT_ADDRESS: &str = "0xbC8b59348f397C3D6bFeFC0d864a79A568d868EF";
 /// Default SolverManager chain ID.
-pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9030";
+pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9029";
 
 /// Default MPC Ethereum RPC URL.
 pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc.qubetics.work";
@@ -49,11 +49,11 @@ pub const DEFAULT_MAX_BTC_CLAIM_REWARD_PER_CYCLE: &str = "10";
 /// Default max add-liquidity requests per batch.
 pub const DEFAULT_MAX_ADD_LIQUIDITY_BATCH: &str = "10";
 /// Chain ID used for TICS EVM signing (mainnet).
-pub const DEFAULT_MPC_TICS_CHAIN_ID: &str = "9030";
+pub const DEFAULT_MPC_TICS_CHAIN_ID: &str = "9029";
 /// RPC URL for the TICS chain (platform-fee & TICS-chain contract calls).
 pub const DEFAULT_TICS_CHAIN_RPC_URL: &str = "https://rpc.qubetics.work";
 /// Chain ID for TICS chain contract calls (platform fee, etc.) — mainnet.
-pub const DEFAULT_TICS_CHAIN_ID: &str = "9030";
+pub const DEFAULT_TICS_CHAIN_ID: &str = "9029";
 /// Bitcoin fee rate in satoshis per vByte.
 pub const DEFAULT_BTC_FEE_RATE_SAT_VB: &str = "2";
 
