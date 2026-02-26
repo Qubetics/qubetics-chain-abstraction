@@ -2987,8 +2987,21 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Derive liquidity operator addresses once per batch
+        let lo_keys = self.get_vault_group_public_key().await.ok();
+        let lo_eth = lo_keys.map(|k| crate::utils::get_eth_address_from_group_key(k));
+        let lo_btc = lo_keys.map(|k| crate::utils::get_btc_address_from_group_key(k));
+
         let mut pending_with_input_counts = Vec::new();
-        for (hash, intent, user) in pending {
+        for (hash, intent, user_address) in pending {
+            let user_reg = match user_intent_manager.get_user_by_address(&user_address).await {
+                Some(u) => u,
+                None => {
+                    warn!("⚠️ [TICS_UTV_BATCH] Could not find user registration for address {} (intent {}), skipping nonce reservation", user_address, hash);
+                    continue;
+                }
+            };
+
             let source_amount: u128 = match intent.amount.trim().parse() {
                 Ok(a) if a > 0 => a,
                 _ => {
@@ -2998,16 +3011,14 @@ impl SigningNode {
             };
             let amount = source_amount + (source_amount / 20);
 
-            let derived_eth_addr = None;
-            let derived_btc_addr = None;
             let chain_tx_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(
                 &intent,
                 None,
-                derived_eth_addr,
-                derived_btc_addr,
+                user_reg.derived_eth_address.as_ref(),
+                user_reg.derived_btc_address.as_ref(),
                 crate::types::TransactionType::UserToVault,
-                None,
-                None,
+                lo_eth.as_ref(),
+                lo_btc.as_ref(),
                 amount,
             )
             .await;
@@ -3024,7 +3035,7 @@ impl SigningNode {
                 }
             };
 
-            pending_with_input_counts.push((hash, intent, user, n_intent));
+            pending_with_input_counts.push((hash, intent, user_address, n_intent));
         }
 
         if pending_with_input_counts.is_empty() {
@@ -3241,8 +3252,21 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Derive liquidity operator addresses once per batch
+        let lo_keys = self.get_vault_group_public_key().await.ok();
+        let lo_eth = lo_keys.map(|k| crate::utils::get_eth_address_from_group_key(k));
+        let lo_btc = lo_keys.map(|k| crate::utils::get_btc_address_from_group_key(k));
+
         let mut pending_with_input_counts = Vec::new();
-        for (hash, intent, user) in pending {
+        for (hash, intent, user_address) in pending {
+            let user_reg = match user_intent_manager.get_user_by_address(&user_address).await {
+                Some(u) => u,
+                None => {
+                    warn!("⚠️ [BTC_UTV_BATCH] Could not find user registration for address {} (intent {}), skipping nonce reservation", user_address, hash);
+                    continue;
+                }
+            };
+
             let amount_sats: u128 = match intent.amount.trim().parse() {
                 Ok(a) if a > 0 => a,
                 _ => {
@@ -3252,16 +3276,14 @@ impl SigningNode {
             };
             let amount = amount_sats + (amount_sats / 20);
 
-            let derived_eth_addr = None;
-            let derived_btc_addr = None;
             let chain_tx_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(
                 &intent,
                 None,
-                derived_eth_addr,
-                derived_btc_addr,
+                user_reg.derived_eth_address.as_ref(),
+                user_reg.derived_btc_address.as_ref(),
                 crate::types::TransactionType::UserToVault,
-                None,
-                None,
+                lo_eth.as_ref(),
+                lo_btc.as_ref(),
                 amount,
             )
             .await;
@@ -3284,7 +3306,7 @@ impl SigningNode {
                 }
             };
 
-            pending_with_input_counts.push((hash, intent, user, n_intent));
+            pending_with_input_counts.push((hash, intent, user_address, n_intent));
         }
 
         if pending_with_input_counts.is_empty() {
