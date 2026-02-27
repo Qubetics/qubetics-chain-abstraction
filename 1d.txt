@@ -1,3 +1,0 @@
-✅ Peer identity already exists
-Peer ID: 12D3KooWCwScMKeZMEz9vzwDkGoAwJjDS1aqyCZgvsN4LFHAsNzd
-Identity location: ./data/peer_identity.key
