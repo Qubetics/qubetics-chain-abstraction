@@ -3912,9 +3912,16 @@ impl SigningNode {
             return Ok(());
         }
 
+        // Cap the batch to MAX_INTENTS_PER_CYCLE
+        let max_intents_per_cycle = crate::env_defaults::max_intents_per_cycle()
+            .parse::<usize>()
+            .unwrap_or(crate::env_defaults::DEFAULT_MAX_INTENTS_PER_CYCLE.parse().unwrap());
+        eligible_intents.truncate(max_intents_per_cycle);
+
         info!(
-            "📋 [BTC_CONTRACT_UPDATE] Found {} eligible intents for contract update batch",
-            eligible_intents.len()
+            "📋 [BTC_CONTRACT_UPDATE] Found {} eligible intents for contract update batch (limit: {})",
+            eligible_intents.len(),
+            max_intents_per_cycle
         );
 
         // Prepare intent hashes for the batch
