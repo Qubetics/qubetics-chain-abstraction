@@ -1,0 +1,289 @@
+    Checking mpc-node v0.1.0 (/Users/user/Works/chain_abstraction/qubetics-chain-abstraction)
+warning: unused import: `Payload`
+ --> src/database/crypto.rs:2:45
+  |
+2 | use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+  |                                             ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: type `Migration_v0_1_0_to_v0_2_0` should have an upper camel case name
+   --> src/database/upgrade/migrations.rs:174:8
+    |
+174 | struct Migration_v0_1_0_to_v0_2_0;
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `MigrationV0_1_0ToV0_2_0`
+    |
+    = note: `#[warn(non_camel_case_types)]` on by default
+
+warning: unused import: `error`
+ --> src/database/upgrade/state_preservation.rs:6:15
+  |
+6 | use tracing::{error, info, warn};
+  |               ^^^^^
+
+warning: unused import: `chain_abstraction::transactions::ChainTransaction`
+   --> src/network/rpc/channel_handler.rs:926:5
+    |
+926 |     chain_abstraction::transactions::ChainTransaction,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `convert_src_smallest_to_dst_smallest` and `fetch_crypto_prices`
+  --> src/network/rpc/gossipsub_handler.rs:15:25
+   |
+15 |     rpc_server::utils::{convert_src_smallest_to_dst_smallest, fetch_crypto_prices},
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `GetNetworkAddressesResponse`, `LogPartialPubkeysRequest`, `TransactionResponse`, and `rpc::RPCRequest`
+  --> src/rpc_server/handlers.rs:16:56
+   |
+16 |         intent::{DepositIntent, DepositIntentResponse, TransactionResponse, TransactionType},
+   |                                                        ^^^^^^^^^^^^^^^^^^^
+17 |         messaging::ChannelMessage,
+18 |         rpc::RPCRequest,
+   |         ^^^^^^^^^^^^^^^
+...
+21 |             DKGStatusResponse, EnhancedUserRegistrationResponse, GetNetworkAddressesResponse,
+   |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+22 |             GetRewardSolverRequest, GetRewardSolverResponse, HeartbeatResponse,
+23 |             IntentsSolvedCountResponse, LogPartialPubkeysRequest, NodeIdResponse, RequestContext,
+   |                                         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+ --> src/signing/chains/bitcoin_batch.rs:4:17
+  |
+4 |     secp256k1::{self, ecdsa::RecoverableSignature, Secp256k1},
+  |                 ^^^^
+
+warning: unused import: `rpc::RPCRequest`
+ --> src/types/messaging.rs:6:9
+  |
+6 |         rpc::RPCRequest,
+  |         ^^^^^^^^^^^^^^^
+
+warning: unused imports: `ChainTransaction` and `EthereumTransaction`
+  --> src/utils/contract.rs:67:36
+   |
+67 |     use crate::chain_abstraction::{ChainTransaction, EthereumTransaction};
+   |                                    ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this method takes 10 arguments but 9 arguments were supplied
+   --> src/network/rpc/channel_handler.rs:672:22
+    |
+672 |                     .sign_contract_message(
+    |                      ^^^^^^^^^^^^^^^^^^^^^
+...
+679 |                         vault_tweaked_share,
+    |                         ------------------- argument #7 of type `std::option::Option<TransactionType>` is missing
+    |
+note: method defined here
+   --> src/signing/chains/ethereum.rs:69:18
+    |
+69  |     pub async fn sign_contract_message(
+    |                  ^^^^^^^^^^^^^^^^^^^^^
+...
+77  |         transaction_type: Option<crate::types::TransactionType>,
+    |         -------------------------------------------------------
+help: provide the argument
+    |
+672 -                     .sign_contract_message(
+673 -                         contract_tx_bytes,
+674 -                         &contract_chain_handler,
+675 -                         &contract_tx,
+676 -                         vault_tweaked_share,
+677 -                         None,
+678 -                         vec![],
+679 -                         vault_tweaked_share,
+680 -                         request_id, // Pass request_id from sequencer
+681 -                         original_request, // Pass original_request for retry support
+682 -                     )
+672 +                     .sign_contract_message(contract_tx_bytes, &contract_chain_handler, &contract_tx, vault_tweaked_share, None, vec![], /* std::option::Option<TransactionType> */, vault_tweaked_share, request_id, original_request)
+    |
+
+error[E0061]: this method takes 10 arguments but 9 arguments were supplied
+   --> src/network/rpc/channel_handler.rs:844:22
+    |
+844 |                     .sign_contract_message(
+    |                      ^^^^^^^^^^^^^^^^^^^^^
+...
+851 |                         vault_tweaked_share,
+    |                         ------------------- argument #7 of type `std::option::Option<TransactionType>` is missing
+    |
+note: method defined here
+   --> src/signing/chains/ethereum.rs:69:18
+    |
+69  |     pub async fn sign_contract_message(
+    |                  ^^^^^^^^^^^^^^^^^^^^^
+...
+77  |         transaction_type: Option<crate::types::TransactionType>,
+    |         -------------------------------------------------------
+help: provide the argument
+    |
+844 -                     .sign_contract_message(
+845 -                         tx_bytes,
+846 -                         &contract_chain_handler,
+847 -                         &contract_tx,
+848 -                         vault_tweaked_share,
+849 -                         None,
+850 -                         vec![],
+851 -                         vault_tweaked_share,
+852 -                         request_id, // Pass request_id from sequencer
+853 -                         original_request, // No original_request available in this context
+854 -                     )
+844 +                     .sign_contract_message(tx_bytes, &contract_chain_handler, &contract_tx, vault_tweaked_share, None, vec![], /* std::option::Option<TransactionType> */, vault_tweaked_share, request_id, original_request)
+    |
+
+warning: unused variable: `sender_peer_id`
+   --> src/network/rpc/message_handlers.rs:304:9
+    |
+304 |         sender_peer_id: &PeerId,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_sender_peer_id`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `peer`
+   --> src/network/rpc/rpc_handlers.rs:319:9
+    |
+319 |         peer: PeerId,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+warning: unused variable: `from_node_id`
+   --> src/network/rpc/rpc_handlers.rs:798:9
+    |
+798 |         from_node_id: String,
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_from_node_id`
+
+warning: unused variable: `peer`
+   --> src/network/rpc/rpc_handlers.rs:881:54
+    |
+881 |     async fn handle_request_current_vrf_round(&self, peer: PeerId) -> RPCResponse {
+    |                                                      ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+warning: unused variable: `requester_id`
+   --> src/network/rpc/rpc_handlers.rs:923:9
+    |
+923 |         requester_id: SerializablePeerId,
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_requester_id`
+
+warning: unused variable: `peer`
+   --> src/network/rpc/rpc_handlers.rs:947:9
+    |
+947 |         peer: PeerId,
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_peer`
+
+warning: unused variable: `addr_count`
+   --> src/network/rpc/rpc_handlers.rs:996:21
+    |
+996 |                 let addr_count = peer_info.addresses.len();
+    |                     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_addr_count`
+
+warning: unused variable: `peers_have_indices`
+    --> src/network/rpc/rpc_handlers.rs:1272:17
+     |
+1272 |             let peers_have_indices = !self.peer_discovery.peer_indices.is_empty();
+     |                 ^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_peers_have_indices`
+
+warning: unused variable: `max_peer_index`
+    --> src/network/rpc/rpc_handlers.rs:1273:17
+     |
+1273 |             let max_peer_index = self
+     |                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_peer_index`
+
+warning: unused variable: `connected_peer_count`
+    --> src/network/rpc/rpc_handlers.rs:1282:17
+     |
+1282 |             let connected_peer_count = swarm.connected_peers().count();
+     |                 ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_connected_peer_count`
+
+warning: unused variable: `peer_id`
+   --> src/network/transport/swarm_events.rs:447:9
+    |
+447 |         peer_id: PeerId,
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_peer_id`
+
+warning: unused variable: `original_request`
+    --> src/signing/mod.rs:2466:46
+     |
+2466 | ...                   let (request_id, original_request) = {
+     |                                        ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_original_request`
+
+warning: unused variable: `extras_opt`
+    --> src/signing/mod.rs:3893:28
+     |
+3893 |             let (chain_tx, extras_opt) = if is_reward_round {
+     |                            ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_extras_opt`
+
+warning: unused variable: `chain_tx_opt`
+    --> src/signing/mod.rs:4239:64
+     |
+4239 |         let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
+     |                                                                ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chain_tx_opt`
+
+warning: variable does not need to be mutable
+    --> src/signing/mod.rs:4239:24
+     |
+4239 |         let (tx_bytes, mut transaction_type, user_eth_address, chain_tx_opt) = if is_reward_round {
+     |                        ----^^^^^^^^^^^^^^^^
+     |                        |
+     |                        help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/signing/coordination/mod.rs:145:13
+    |
+145 |         let mut vrf_service = if let Some(ref storage) = self.vrf_storage {
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/signing/db_signing.rs:283:13
+    |
+283 |         let mut vrf_service = VrfService::new_with_storage_and_context(
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `chain_id`
+    --> src/utils/transaction.rs:1831:56
+     |
+1831 | pub async fn get_gas_price_for_chain(chain_name: &str, chain_id: u64) -> Result<String> {
+     |                                                        ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_chain_id`
+
+warning: use of deprecated method `libp2p::libp2p_request_response::Config::set_request_timeout`: Use `Config::with_request_timeout` for one-liner constructions.
+   --> src/types/rpc.rs:340:9
+    |
+340 |     cfg.set_request_timeout(std::time::Duration::from_secs(300));
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `hash`
+  --> src/network/whitelist.rs:91:13
+   |
+91 |         let hash = hasher.finalize();
+   |             ^^^^ help: if this is intentional, prefix it with an underscore: `_hash`
+
+warning: unused variable: `key_hash`
+   --> src/network/whitelist.rs:110:13
+    |
+110 |         let key_hash = key_hasher.finalize();
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_key_hash`
+
+warning: unused variable: `secp`
+   --> src/signing/chains/bitcoin_batch.rs:282:9
+    |
+282 |     let secp = Secp256k1::new();
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_secp`
+
+warning: variable does not need to be mutable
+   --> src/utils/transaction.rs:385:13
+    |
+385 |         let mut skip_no_change_path = false;
+    |             ----^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+For more information about this error, try `rustc --explain E0061`.
+warning: `mpc-node` (lib) generated 32 warnings
+error: could not compile `mpc-node` (lib) due to 2 previous errors; 32 warnings emitted
