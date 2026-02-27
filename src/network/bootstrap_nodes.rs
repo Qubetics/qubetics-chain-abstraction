@@ -3,9 +3,9 @@ use libp2p::Multiaddr;
 /// Production bootstrap nodes for the network
 /// These are the trusted bootstrap peers that nodes will connect to on startup
 pub const BOOTSTRAP_NODES: &[&str] = &[
-    // "/ip4/159.138.130.56/tcp/4001/p2p/12D3KooWJwXX32gTt5tyRuU1WnNW9F498PHaFNHq7Y9T5WfJUhHy",
-    // "/ip4/27.106.121.254/tcp/4001/p2p/12D3KooWD19JJh8G34gMUej4Hgrg4aeqhQKYDtbpTTKavkNsa8uF",
-    // "/ip4/119.8.37.76/tcp/4001/p2p/12D3KooWMopsLZ5XQbCFg92ZL4WN6ENT2gp5mcSzm5KPE9FXbtLH",
+    // "/ip4/159.138.130.56/tcp/4001/p2p/12D3KooWPa6rSxpPBZrgRzFUuN9RK2SqLdNinL3wTL593hjNbQRP",
+    // "/ip4/27.106.121.254/tcp/4001/p2p/12D3KooWMbYhUUxpG6pNjnw4LCW4uG8yKJBhbjzBkHRDVYvnkUS5",
+    // "/ip4/119.8.37.76/tcp/4001/p2p/12D3KooWHBCq9LpJ7Fn7NG9VAZfZD7d11F9R3rcTGxgBayF4Dwt4",
 ];
 
 /// Parse bootstrap nodes from the constant array

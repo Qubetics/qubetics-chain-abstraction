@@ -2373,7 +2373,7 @@ mod tests {
         // Test that Qubetics falls back to static price when RPC fails
         // This test uses an invalid RPC URL to trigger the fallback
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
-        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc.qubetics.com");
 
         let result = get_gas_price_for_chain("qubetics", crate::env_defaults::mpc_tics_chain_id()).await;
         assert!(result.is_ok());
@@ -2466,7 +2466,7 @@ mod tests {
         let original_url = std::env::var("MPC_ETHEREUM_RPC_URL").unwrap_or_default();
 
         // Try with the default Qubetics RPC URL
-        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc-testnet.qubetics.work");
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", "https://rpc.qubetics.com");
 
         let result = get_gas_price_for_chain("qubetics", crate::env_defaults::mpc_tics_chain_id()).await;
 

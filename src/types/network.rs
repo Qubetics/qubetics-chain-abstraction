@@ -85,7 +85,7 @@ pub fn is_testnet() -> bool {
 /// Resolve the RPC URL for the Qubetics chain directly from environment variables.
 pub fn qubetics_rpc_url_from_env() -> Result<String> {
     let raw = std::env::var(ETH_RPC_ENV_KEY)
-        .unwrap_or_else(|_| "https://rpc-testnet.qubetics.work".to_string());
+        .unwrap_or_else(|_| "https://rpc.qubetics.com".to_string());
 
     let trimmed = raw.trim();
     if trimmed.is_empty() {

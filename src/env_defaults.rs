@@ -4,16 +4,18 @@
 pub const DEFAULT_RPC_PORT: u16 = 80;
 
 /// Default SolverManager / TICS RPC URL.
-pub const DEFAULT_SOLVER_CONTRACT_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
+pub const DEFAULT_SOLVER_CONTRACT_RPC_URL: &str = "https://rpc.qubetics.com";
 /// Default SolverManager contract address.
-pub const DEFAULT_SOLVER_CONTRACT_ADDRESS: &str = "0x7A4710e8ae2e25416256720f75064Ec7A7B62C68";
+pub const DEFAULT_SOLVER_CONTRACT_ADDRESS: &str = "0x28D2cac6f86004439d9B9C9f2D12c3643E4097C3";
 /// Default IntentManager contract address.
-pub const DEFAULT_INTENT_MANAGER_CONTRACT_ADDRESS: &str = "0xcf5746BC1b491210CbbFF7067d52B9B9e9723c27";
+pub const DEFAULT_INTENT_MANAGER_CONTRACT_ADDRESS: &str = "0x06B7C1f42890731eE5579b7285B928978b0Dd37C";
+/// Default Treasury Vault contract address.
+pub const DEFAULT_TREASURY_VAULT_CONTRACT_ADDRESS: &str = "0x7FcB0878C58D8C0cae1E4EB43e9BD059EB3cEcb8";
 /// Default SolverManager chain ID.
-pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9029";
+pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9030";
 
 /// Default MPC Ethereum RPC URL.
-pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
+pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc.qubetics.com";
 /// Default MPC Bitcoin broadcast API URL.
 pub const DEFAULT_MPC_BITCOIN_RPC_URL: &str = "https://prod-btc-sync.qubetics.work/api/v1/tx/broadcast";
 /// Default backend API base URL.
@@ -30,8 +32,6 @@ pub const DEFAULT_NETWORK_TYPE: &str = "mainnet";
 pub const DEFAULT_QUBETICS_DB_ENCRYPTION_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 /// Default global clock interval in seconds.
 pub const DEFAULT_GLOBAL_CLOCK_INTERVAL_SECONDS: &str = "30";
-/// Default Treasury Vault contract address.
-pub const DEFAULT_TREASURY_VAULT_CONTRACT_ADDRESS: &str = "0x2De20Bf0acE8e031E7d3259953f9a4A490D9654B";
 /// Default max BTC withdraw entries per cycle.
 pub const DEFAULT_MAX_BTC_WITHDRAW_PER_CYCLE: &str = "10";
 /// Default max intents per cycle.
@@ -49,11 +49,11 @@ pub const DEFAULT_MAX_BTC_CLAIM_REWARD_PER_CYCLE: &str = "10";
 /// Default max add-liquidity requests per batch.
 pub const DEFAULT_MAX_ADD_LIQUIDITY_BATCH: &str = "10";
 /// Chain ID used for TICS EVM signing (mainnet).
-pub const DEFAULT_MPC_TICS_CHAIN_ID: &str = "9029";
+pub const DEFAULT_MPC_TICS_CHAIN_ID: &str = "9030";
 /// RPC URL for the TICS chain (platform-fee & TICS-chain contract calls).
-pub const DEFAULT_TICS_CHAIN_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
+pub const DEFAULT_TICS_CHAIN_RPC_URL: &str = "https://rpc.qubetics.com";
 /// Chain ID for TICS chain contract calls (platform fee, etc.) — mainnet.
-pub const DEFAULT_TICS_CHAIN_ID: &str = "9029";
+pub const DEFAULT_TICS_CHAIN_ID: &str = "9030";
 /// Bitcoin fee rate in satoshis per vByte.
 pub const DEFAULT_BTC_FEE_RATE_SAT_VB: &str = "2";
 

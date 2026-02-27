@@ -7,7 +7,6 @@ use reqwest::Client;
 mod utils;
 
 const RPC_PORT: u16 = 8081;
-// const ETH_PROVIDER_URL: &str = "https://rpc.qubetics.work";
 
 #[tokio::test]
 async fn main() -> anyhow::Result<()> {
