@@ -1757,7 +1757,7 @@ impl MpcNetworkLayer {
                 timestamp,
                 round,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 info!(
                     "📦 [INTENT_BATCH] Received intent batch broadcast from node {} (round {})",
@@ -1772,11 +1772,10 @@ impl MpcNetworkLayer {
 
                 // Remove coordinator-assigned nonce from local available pool so no
                 // other coordinator picks the same nonce for a different operation.
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -2208,6 +2207,22 @@ impl MpcNetworkLayer {
 
                             use crate::signing::chains::BitcoinSigner;
                             let mut btc_signer = BitcoinSigner::new(&mut signing_node);
+                            let computed_input_count = our_btc_tx.inputs.len();
+                            let nonce_count =
+                                nonce_tuple_ids.as_ref().map(|ids| ids.len()).unwrap_or(0);
+
+                            if nonce_count != computed_input_count {
+                                warn!(
+                                    "⚠️ [BTC_BATCH] Nonce count ({}) does not match computed input count ({}) before signing",
+                                    nonce_count, computed_input_count
+                                );
+                            } else {
+                                info!(
+                                    "ℹ️ [BTC_BATCH] Nonce count matches computed input count: {}",
+                                    computed_input_count
+                                );
+                            }
+
                             if let Err(e) = btc_signer
                                 .sign_transaction(
                                     tx_bytes,
@@ -2219,7 +2234,7 @@ impl MpcNetworkLayer {
                                     signing_key,
                                     None,
                                     signing_key,
-                                    nonce_tuple_id.clone(),
+                                    nonce_tuple_ids.clone(),
                                 )
                                 .await
                             {
@@ -2490,6 +2505,9 @@ impl MpcNetworkLayer {
                                 let contract_chain_handler =
                                     signing_node.get_contract_chain_handler().clone();
                                 let mut eth_signer = TicsSigner::new(&mut signing_node);
+                                let nonce_tuple_id =
+                                    nonce_tuple_ids.as_ref().and_then(|ids| ids.first().cloned());
+
                                 if let Err(e) = eth_signer
                                     .sign_contract_message(
                                         contract_tx_bytes,
@@ -2598,7 +2616,10 @@ impl MpcNetworkLayer {
                     node.record_tics_user_to_vault_batch(&intent_hashes);
                     // Remove coordinator-assigned nonces from local available pool
                     if !nonce_assignments.is_empty() {
-                        let nonce_ids: Vec<String> = nonce_assignments.values().cloned().collect();
+                        let nonce_ids: Vec<String> = nonce_assignments
+                            .values()
+                            .flat_map(|ids| ids.iter().cloned())
+                            .collect();
                         node.remove_nonces_from_available_pool(&nonce_ids).await;
                     }
                 }
@@ -2985,7 +3006,10 @@ impl MpcNetworkLayer {
                     node.record_btc_user_to_vault_batch(&intent_hashes);
                     // Remove coordinator-assigned nonces from local available pool
                     if !nonce_assignments.is_empty() {
-                        let nonce_ids: Vec<String> = nonce_assignments.values().cloned().collect();
+                        let nonce_ids: Vec<String> = nonce_assignments
+                            .values()
+                            .flat_map(|ids| ids.iter().cloned())
+                            .collect();
                         node.remove_nonces_from_available_pool(&nonce_ids).await;
                     }
                 }
@@ -3401,7 +3425,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::signing::chains::bitcoin_batch::{
                     build_batch_unsigned_tx, select_utxos_for_batch,
@@ -3415,11 +3439,10 @@ impl MpcNetworkLayer {
                 );
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -3720,6 +3743,46 @@ impl MpcNetworkLayer {
                     witness: None,
                 };
 
+                let mismatch = nonce_tuple_ids
+                    .as_ref()
+                    .map_or(true, |ids| ids.len() != our_btc_tx.inputs.len());
+                if mismatch {
+                    let nonce_count = nonce_tuple_ids.as_ref().map_or(0, |ids| ids.len());
+                    let input_count = our_btc_tx.inputs.len();
+                    error!(
+                        "❌ [BTC_WITHDRAW] Nonce/input count mismatch for batch {}: nonce_ids={}, inputs={}. Rejecting and rolling back batch",
+                        batch_id,
+                        nonce_count,
+                        input_count
+                    );
+
+                    self.processed_batch_rounds.remove(&(round, "BTC_WITHDRAW".to_string()));
+
+                    let entries: Vec<(String, PendingWithdrawRequest)> = self
+                        .db
+                        .get_values_with_prefix("pending_withdraw_liquidity:")
+                        .unwrap_or_default();
+                    for (key, req) in entries {
+                        let req_solver_lower = req.solver_address.to_lowercase();
+                        if req.status == "Batched"
+                            && req.tx_id.is_none()
+                            && used_requests
+                                .iter()
+                                .any(|(rid, solver)| *rid == req.request_id
+                                    && solver.to_lowercase() == req_solver_lower)
+                        {
+                            let mut reverted = req.clone();
+                            reverted.status = "Pending".to_string();
+                            let _ = self.db.put_string(&key, &reverted);
+                            info!(
+                                "🔄 [BTC_WITHDRAW] Reverted withdraw {} to Pending after nonce/input mismatch",
+                                req.request_id
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+
                 info!("🔄 [BTC_WITHDRAW] Converted to internal BitcoinTransaction type");
 
                 // Step 8: Trigger signing using existing BTC batch signing flow
@@ -3786,7 +3849,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None, // No per-withdraw solver address; encoded in identifiers
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            nonce_tuple_ids.clone(),
                         )
                         .await
                     {
@@ -3852,7 +3915,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::signing::chains::bitcoin_batch::{
@@ -3868,11 +3931,10 @@ impl MpcNetworkLayer {
                 );
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -4157,6 +4219,51 @@ impl MpcNetworkLayer {
                     witness: None,
                 };
 
+                if nonce_tuple_ids
+                    .as_ref()
+                    .map_or(true, |ids| ids.len() != our_btc_tx.inputs.len())
+                {
+                    error!(
+                        "❌ [BTC_CLAIM_REWARD] Nonce/input count mismatch. metadata={{batch_id: {}, round: {}, timestamp: {}, coordinator_node_id: {}, request_count: {}}}, counts={{nonce_tuple_ids: {}, tx_inputs: {}}}. Rejecting and rolling back batch",
+                        batch_id,
+                        round,
+                        timestamp,
+                        node_id,
+                        requests.len(),
+                        nonce_tuple_ids.as_ref().map(|ids| ids.len()).unwrap_or(0),
+                        our_btc_tx.inputs.len()
+                    );
+
+                    self.processed_batch_rounds
+                        .remove(&(round, "BTC_CLAIM_REWARD".to_string()));
+
+                    let entries: Vec<(String, PendingClaimRewardRequest)> = self
+                        .db
+                        .get_values_with_prefix("pending_claim_reward:")
+                        .unwrap_or_default();
+                    for (key, req) in entries {
+                        if req.status == "Batched"
+                            && req.tx_id
+                                .as_ref()
+                                .map(|tx_id| tx_id.trim().is_empty())
+                                .unwrap_or(true)
+                            && used_requests.iter().any(|(rid, solver)| {
+                                *rid == req.request_id
+                                    && solver.eq_ignore_ascii_case(&req.solver_address)
+                            })
+                        {
+                            let mut reverted = req.clone();
+                            reverted.status = "Pending".to_string();
+                            let _ = self.db.put_string(&key, &reverted);
+                            info!(
+                                "🔄 [BTC_CLAIM_REWARD] Reverted claim {} to Pending after nonce/input mismatch",
+                                req.request_id
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+
                 if let Some(arc) = &self.signing_node {
                     let mut signing_node = arc.lock().await;
                     let mut chain_handler_box =
@@ -4207,7 +4314,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None,
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            nonce_tuple_ids.clone(),
                         )
                         .await
                     {
@@ -4275,7 +4382,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::types::rpc_server::PendingWithdrawRequest;
                 use crate::utils::transaction::RemoveLiquidityBatchRequest;
@@ -4287,11 +4394,10 @@ impl MpcNetworkLayer {
                 );
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -4564,6 +4670,10 @@ impl MpcNetworkLayer {
                     let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                     let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
 
+                    let nonce_tuple_id = nonce_tuple_ids
+                        .as_ref()
+                        .and_then(|ids| ids.first().cloned());
+
                     if let Err(e) = eth_signer
                         .sign_contract_message(
                             contract_tx_bytes,
@@ -4650,7 +4760,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                 use crate::types::rpc_server::PendingClaimRewardRequest;
@@ -4665,11 +4775,10 @@ impl MpcNetworkLayer {
                 );
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -4936,6 +5045,10 @@ impl MpcNetworkLayer {
                     let contract_chain_handler = signing_node.get_contract_chain_handler().clone();
                     let mut eth_signer = crate::signing::TicsSigner::new(&mut signing_node);
 
+                    let nonce_tuple_id = nonce_tuple_ids
+                        .as_ref()
+                        .and_then(|ids| ids.first().cloned());
+
                     if let Err(e) = eth_signer
                         .sign_contract_message(
                             contract_tx_bytes,
@@ -5146,7 +5259,7 @@ impl MpcNetworkLayer {
                 update_round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 info!(
                     "🔄 [BTC_INTENT_MANAGER] Received BTC intent manager update batch from node {} (round {})",
@@ -5157,15 +5270,14 @@ impl MpcNetworkLayer {
                     intent_hashes.len(),
                     btc_batch_round,
                     btc_txid,
-                    nonce_tuple_id
+                    nonce_tuple_ids
                 );
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -5192,7 +5304,9 @@ impl MpcNetworkLayer {
                         update_round,
                         timestamp,
                         node_id,
-                        nonce_tuple_id,
+                        nonce_tuple_ids
+                            .as_ref()
+                            .and_then(|ids| ids.first().cloned()),
                     )
                     .await
                 {
@@ -5346,11 +5460,11 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 info!(
                     "📦 [PEER_INVALIDATION] Received peer invalidation batch from node {} (round {}, timestamp {}, {} solver IDs, nonce: {:?})",
-                    node_id, round, timestamp, solver_ids.len(), nonce_tuple_id
+                    node_id, round, timestamp, solver_ids.len(), nonce_tuple_ids
                 );
 
                 if solver_ids.is_empty() {
@@ -5359,11 +5473,10 @@ impl MpcNetworkLayer {
                 }
 
                 // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -5554,7 +5667,9 @@ impl MpcNetworkLayer {
                                 None,
                                 None,
                                 None, // tics_claim_platform_fee_identifiers (not applicable)
-                                nonce_tuple_id.clone(),
+                                nonce_tuple_ids
+                                    .as_ref()
+                                    .and_then(|ids| ids.first().cloned()),
                             )
                             .await?;
 
@@ -5578,7 +5693,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 info!(
                     "💧 [ADD_LIQUIDITY_BATCH] Received solver_add_liquidity batch from node {} (round {})",
@@ -5586,14 +5701,18 @@ impl MpcNetworkLayer {
                 );
                 info!(
                     "💧 [ADD_LIQUIDITY_BATCH] {} requests to process (will look up from RocksDB), timestamp: {}, nonce: {:?}",
-                    request_ids.len(), timestamp, nonce_tuple_id
+                    request_ids.len(), timestamp, nonce_tuple_ids
                 );
+
+                let nonce_tuple_id = nonce_tuple_ids
+                    .as_ref()
+                    .and_then(|ids| ids.first().cloned());
 
                 // Remove coordinator-assigned nonce from local available pool
                 if let Some(ref nonce_id) = nonce_tuple_id {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
+                        node.remove_nonces_from_available_pool(std::slice::from_ref(nonce_id))
                             .await;
                     }
                 }
@@ -6306,7 +6425,7 @@ impl MpcNetworkLayer {
                 round,
                 timestamp,
                 node_id,
-                nonce_tuple_id,
+                nonce_tuple_ids,
             } => {
                 use crate::signing::chains::bitcoin_batch::{
                     build_batch_unsigned_tx, select_utxos_for_batch,
@@ -6319,12 +6438,11 @@ impl MpcNetworkLayer {
                     batch_id, node_id, round, timestamp
                 );
 
-                // Remove coordinator-assigned nonce from local available pool
-                if let Some(ref nonce_id) = nonce_tuple_id {
+                // Remove coordinator-assigned nonces from local available pool
+                if let Some(ref nonce_ids) = nonce_tuple_ids {
                     if let Some(arc) = &self.signing_node {
                         let node = arc.lock().await;
-                        node.remove_nonces_from_available_pool(&[nonce_id.clone()])
-                            .await;
+                        node.remove_nonces_from_available_pool(nonce_ids).await;
                     }
                 }
 
@@ -6564,6 +6682,41 @@ impl MpcNetworkLayer {
                     witness: None,
                 };
 
+                if nonce_tuple_ids
+                    .as_ref()
+                    .map_or(true, |ids| ids.len() != our_btc_tx.inputs.len())
+                {
+                    error!(
+                        "❌ [BTC_CLAIM_PLATFORM_FEE] Nonce/input count mismatch for batch {}: nonce_ids={}, inputs={}. Rejecting and rolling back batch",
+                        batch_id,
+                        nonce_tuple_ids.as_ref().map(|ids| ids.len()).unwrap_or(0),
+                        our_btc_tx.inputs.len()
+                    );
+
+                    self.processed_batch_rounds
+                        .remove(&(round, "BTC_CLAIM_PLATFORM_FEE".to_string()));
+
+                    let entries: Vec<(String, PendingClaimPlatformFeeRequest)> = self
+                        .db
+                        .get_values_with_prefix("pending_claim_platform_fee:")
+                        .unwrap_or_default();
+                    for (key, req) in entries {
+                        if req.status == "Batched"
+                            && req.tx_id.is_none()
+                            && used_requests.iter().any(|(rid, _)| *rid == req.request_id)
+                        {
+                            let mut reverted = req.clone();
+                            reverted.status = "Pending".to_string();
+                            let _ = self.db.put_string(&key, &reverted);
+                            info!(
+                                "🔄 [BTC_CLAIM_PLATFORM_FEE] Reverted claim {} to Pending after nonce/input mismatch",
+                                req.request_id
+                            );
+                        }
+                    }
+                    return Ok(());
+                }
+
                 // Trigger signing
                 if let Some(arc) = &self.signing_node {
                     let mut signing_node = arc.lock().await;
@@ -6627,7 +6780,7 @@ impl MpcNetworkLayer {
                             signing_key,
                             None,
                             signing_key,
-                            nonce_tuple_id.clone(),
+                            nonce_tuple_ids.clone(),
                         )
                         .await
                     {
