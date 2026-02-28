@@ -1,6 +1,6 @@
-pub mod channel_handler;
+pub mod channel;
 pub mod channel_monitor;
-pub mod gossipsub_handler;
+pub mod gossipsub;
 pub mod message_handlers;
 pub mod outbound_retry;
 pub mod retry_manager;
