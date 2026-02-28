@@ -15,6 +15,18 @@ pub struct KeyStore {
     vault_group_key: Option<ProjectivePoint>,
 }
 
+impl Drop for KeyStore {
+    fn drop(&mut self) {
+        // Securely erase the private key material from memory.
+        // secp256k1::SecretKey::non_secure_erase() overwrites the key bytes
+        // (called "non_secure" only because it's not guaranteed against compiler
+        // optimizations on all platforms, but it's the best available API).
+        if let Some(ref mut sk) = self.private_key {
+            sk.non_secure_erase();
+        }
+    }
+}
+
 impl Default for KeyStore {
     fn default() -> Self {
         Self::new()

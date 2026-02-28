@@ -1,6 +1,7 @@
 use crate::types::secp::{SerializablePoint, SerializableScalar};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use zeroize::Zeroize;
 
 /// A pre-computed nonce tuple ready for threshold ECDSA signing.
 ///
@@ -13,6 +14,9 @@ use std::collections::HashMap;
 ///
 /// This approach is simpler than MtA-based schemes because all nodes
 /// end up with the same aggregated k value.
+///
+/// **Security**: Implements `Drop` to zeroize all secret scalar material.
+/// Nonce reuse would be catastrophic — it enables private key extraction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NonceTuple {
     /// Unique identifier for this nonce tuple (batch_id + index)
@@ -51,6 +55,18 @@ pub struct NonceTuple {
     /// Nonces created with fewer nodes than current total should not be used
     #[serde(default)]
     pub num_contributors: usize,
+}
+
+impl Drop for NonceTuple {
+    fn drop(&mut self) {
+        // Zeroize all secret scalar material.
+        // aggregated_k and k_inv are the most critical — if leaked,
+        // an attacker can extract the private key from any signature
+        // produced with this nonce.
+        self.aggregated_k.zeroize();
+        self.k_inv.zeroize();
+        self.r_scalar.zeroize();
+    }
 }
 
 /// Status of a nonce generation batch
@@ -120,6 +136,21 @@ pub struct NonceGenState {
 
     /// Total number of nodes
     pub total_nodes: usize,
+}
+
+impl Drop for NonceGenState {
+    fn drop(&mut self) {
+        // Zeroize all secret nonce shares — both our own local k values
+        // and the k shares received from other nodes.
+        for k_val in self.local_k_values.iter_mut() {
+            k_val.zeroize();
+        }
+        for shares in self.k_shares.values_mut() {
+            for share in shares.iter_mut() {
+                share.zeroize();
+            }
+        }
+    }
 }
 
 impl NonceGenState {

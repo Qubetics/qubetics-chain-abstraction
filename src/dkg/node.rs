@@ -13,6 +13,7 @@ use crate::types::{
 use crate::DKGMessage::*;
 use crate::NodeMembership;
 use k256::AffinePoint;
+use zeroize::Zeroize;
 
 #[derive(Clone)]
 struct DKGState {
@@ -32,6 +33,14 @@ pub struct DKGNode {
     pub(super) chain_code: [u8; 32],
     pub(super) user_intent_manager:
         Option<std::sync::Arc<crate::user_intent_manager::UserIntentManager>>, // optional handle to update users after refresh
+}
+
+impl Drop for DKGNode {
+    fn drop(&mut self) {
+        // Securely erase the chain_code — a secret derivation parameter
+        // used in BIP-32 key derivation paths.
+        self.chain_code.zeroize();
+    }
 }
 
 impl DKGNode {
