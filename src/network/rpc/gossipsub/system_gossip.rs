@@ -1,21 +1,13 @@
 use anyhow::Result;
 use libp2p::{gossipsub::Message, PeerId};
 use tracing::{debug, error, info, warn};
-use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
+use crate::network::transport::types::MpcNetworkLayer;
 use crate::types::*;
-use crate::protocols::*;
-use crate::rpc_server::utils::*;
-use crate::utils::transaction::*;
-use crate::signing::TicsSigner;
 use crate::database::key_utils;
-use crate::types::p2p::SerializablePeerId;
-use crate::types::vrf::{VrfRoundSyncResponse, VrfRoundSyncRequest};
-use ff::PrimeField;
-use std::time::Duration;
 use super::*;
 
 impl MpcNetworkLayer {
-    pub(crate) async fn handle_command(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_command(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::Command(cmd) => {
                     if let Some(cmd_processor) = self.command_processor.as_ref() {
@@ -27,7 +19,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_transactionidbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_transactionidbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TransactionIdBroadcast {
                     intent_hashes,
@@ -199,7 +191,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_finalnodeidbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_finalnodeidbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::FinalNodeIdBroadcast {
                     intent_hashes,
@@ -281,7 +273,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_transactionerrorbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_transactionerrorbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TransactionErrorBroadcast {
                     intent_hashes,
@@ -532,7 +524,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_peerinvalidationdeleted(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_peerinvalidationdeleted(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PeerInvalidationDeleted { solver_id, node_id } => {
                     info!(
@@ -557,7 +549,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_peerdiscovered(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_peerdiscovered(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PeerDiscovered {
                     peer,
@@ -694,7 +686,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_criticalmessageack(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_criticalmessageack(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::CriticalMessageAck {
                     message_type,
@@ -745,7 +737,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_transactionbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_transactionbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TransactionBroadcast {
                     sequencer_request_id: _,
@@ -763,7 +755,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_peerdisconnection(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_peerdisconnection(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PeerDisconnection {
                     peer_id,
@@ -868,7 +860,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_peerinvalidationbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_peerinvalidationbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PeerInvalidationBatch {
                     solver_ids,
@@ -1108,7 +1100,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_transactionfailure(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_transactionfailure(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TransactionFailure {
                     sequencer_request_id,
@@ -1146,7 +1138,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_activepeerlist(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_activepeerlist(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::ActivePeerList {
                     node_id,

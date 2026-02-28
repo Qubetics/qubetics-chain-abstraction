@@ -6,13 +6,12 @@ pub mod p2p_messaging;
 use crate::network::transport::types::{MpcNetworkLayer, MpcNetworkBehaviour};
 use crate::types::ChannelMessage;
 use anyhow::{Result, anyhow};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use ethers::prelude::Address;
 use ethers::types::U256;
 use libp2p::PeerId;
 use crate::contract::*;
-use crate::types::rpc::RPCRequest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PendingAddLiquidityRecord {

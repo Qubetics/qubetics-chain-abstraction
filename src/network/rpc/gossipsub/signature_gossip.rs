@@ -1,18 +1,10 @@
 use anyhow::Result;
-use libp2p::{gossipsub::Message, PeerId};
+use libp2p::gossipsub::Message;
 use tracing::{debug, error, info, warn};
 use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
 use crate::types::*;
-use crate::protocols::*;
-use crate::rpc_server::utils::*;
-use crate::utils::transaction::*;
-use crate::signing::TicsSigner;
-use crate::database::key_utils;
 use crate::types::p2p::SerializablePeerId;
-use crate::types::vrf::{VrfRoundSyncResponse, VrfRoundSyncRequest};
-use ff::PrimeField;
-use std::time::Duration;
-use super::*;
+use crate::types::vrf::VrfRoundSyncResponse;
 
 impl MpcNetworkLayer {
     pub(crate) async fn handle_signing(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
@@ -80,7 +72,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_consensus(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_consensus(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::Consensus(consensus_msg) => {
                     // Handle consensus message in signing node
@@ -96,7 +88,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_vrfselection(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_vrfselection(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::VrfSelection(_vrf_msg) => {
                     // Handle selection messages
@@ -156,7 +148,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_vrfroundsyncrequest(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_vrfroundsyncrequest(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::VrfRoundSyncRequest(sync_request) => {
                     let peer = sync_request.from.0;
@@ -213,7 +205,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_vrfroundsyncresponse(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_vrfroundsyncresponse(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::VrfRoundSyncResponse(sync_response) => {
                     let peer = sync_response.from.0;
@@ -245,7 +237,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_noncetuplebroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_noncetuplebroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::NonceTupleBroadcast {
                     batch_id,
@@ -292,7 +284,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_nonceinvalidation(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_nonceinvalidation(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::NonceInvalidation {
                     nonce_tuple_ids,

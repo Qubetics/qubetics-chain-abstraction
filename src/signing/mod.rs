@@ -1,22 +1,5 @@
-use crate::types::signing::{
-    BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignatureShare,
-};
-use crate::types::SpendKind;
-use anyhow::{anyhow, Result};
+use crate::types::signing::ECDSASignature;
 use hex;
-use k256::Scalar;
-use libp2p::PeerId;
-use num_bigint::BigUint;
-use num_traits::identities::One;
-use once_cell::sync::Lazy;
-use secp256k1::{self, ecdsa::RecoverableSignature, Message, PublicKey, Secp256k1, SecretKey};
-use sha3::Digest;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::str::FromStr;
-use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, warn};
 pub use chains::{BitcoinSigner, TicsSigner};
 pub use config::{BroadcastConfig, ChainBroadcastConfig};
 pub use coordination::Coordination;
@@ -27,17 +10,6 @@ pub use state::{
     PendingValue, RoundSlotKey, SignatureStore, SigningEnvironmentBuilder,
 };
 pub use nonce::{NonceGenerator, NonceManager};
-use num_bigint::{BigInt, ToBigInt};
-use secp256k1::{constants::CURVE_ORDER, ecdsa::RecoveryId};
-use crate::chain_abstraction::{ChainHandler, ChainTransaction};
-use crate::protocols::{VrfSelectedNodesBroadcast, VrfService};
-use crate::hrw;
-use crate::types::{
-    p2p::SerializablePeerId, ChannelMessage, ConsensusMessage, ConsensusResult, GossipsubMessage,
-    TransactionType,
-};
-use crate::user_intent_manager::UserIntentManager;
-use num_traits::Zero;
 
 pub mod node;
 pub mod keys;
@@ -49,14 +21,6 @@ pub mod consensus;
 pub mod nonce_management;
 pub mod settlement;
 pub use node::*;
-pub use keys::*;
-pub use aggregation::*;
-pub use verification::*;
-pub use sync::*;
-pub use network_messages::*;
-pub use consensus::*;
-pub use nonce_management::*;
-pub use settlement::*;
 
 // Existing submodules
 pub mod chains;
@@ -79,6 +43,7 @@ mod tests {
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::{ProjectivePoint, Scalar, U256};
     use rand::rngs::OsRng;
+    use secp256k1::{SecretKey, Message};
 
     #[test]
     fn intent_manager_address_comparison_is_case_insensitive() {

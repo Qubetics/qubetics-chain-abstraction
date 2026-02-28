@@ -1,21 +1,11 @@
 use anyhow::Result;
 use libp2p::{gossipsub::Message, PeerId};
-use tracing::{debug, error, info, warn};
-use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
+use tracing::{debug, info, warn};
+use crate::network::transport::types::MpcNetworkLayer;
 use crate::types::*;
-use crate::protocols::*;
-use crate::rpc_server::utils::*;
-use crate::utils::transaction::*;
-use crate::signing::TicsSigner;
-use crate::database::key_utils;
-use crate::types::p2p::SerializablePeerId;
-use crate::types::vrf::{VrfRoundSyncResponse, VrfRoundSyncRequest};
-use ff::PrimeField;
-use std::time::Duration;
-use super::*;
 
 impl MpcNetworkLayer {
-    pub(crate) async fn handle_dkg(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_dkg(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::DKG(dkg_msg) => {
                     // Check if this is a NodeDisconnected message - handle it specially

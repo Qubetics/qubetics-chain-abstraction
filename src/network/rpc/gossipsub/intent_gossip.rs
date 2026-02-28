@@ -1,21 +1,16 @@
 use anyhow::Result;
 use libp2p::{gossipsub::Message, PeerId};
 use tracing::{debug, error, info, warn};
-use crate::network::transport::types::{MpcNetworkLayer, VrfDomain, TOPIC_CONSENSUS};
+use crate::network::transport::types::MpcNetworkLayer;
 use crate::types::*;
-use crate::protocols::*;
 use crate::rpc_server::utils::*;
 use crate::utils::transaction::*;
 use crate::signing::TicsSigner;
-use crate::database::key_utils;
-use crate::types::p2p::SerializablePeerId;
-use crate::types::vrf::{VrfRoundSyncResponse, VrfRoundSyncRequest};
 use ff::PrimeField;
-use std::time::Duration;
 use super::*;
 
 impl MpcNetworkLayer {
-    pub(crate) async fn handle_userregistration(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_userregistration(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::UserRegistration {
                     tics_address,
@@ -114,7 +109,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_adminregistration(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_adminregistration(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::AdminRegistration {
                     tics_address,
@@ -188,7 +183,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_depositintent(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_depositintent(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::DepositIntent {
                     intent,
@@ -610,7 +605,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_solveraddliquidity(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_solveraddliquidity(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::SolverAddLiquidity {
                     request_id,
@@ -784,7 +779,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_ticsusertovaultintentbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_ticsusertovaultintentbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TicsUserToVaultIntentBatch {
                     intent_hashes,
@@ -1181,7 +1176,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_btcusertovaultintentbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_btcusertovaultintentbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::BtcUserToVaultIntentBatch {
                     intent_hashes,
@@ -1619,7 +1614,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_btcwithdrawbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_btcwithdrawbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::BtcWithdrawBatch {
                     batch_id,
@@ -2116,7 +2111,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_ticswithdrawbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_ticswithdrawbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TicsWithdrawBatch {
                     batch_id,
@@ -2501,7 +2496,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_btcclaimrewardbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_btcclaimrewardbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::BtcClaimRewardBatch {
                     batch_id,
@@ -2975,7 +2970,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_ticsclaimrewardbatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_ticsclaimrewardbatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TicsClaimRewardBatch {
                     batch_id,
@@ -3354,7 +3349,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_btcclaimplatformfeebatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_btcclaimplatformfeebatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::BtcClaimPlatformFeeBatch {
                     batch_id,
@@ -3779,7 +3774,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_ticsclaimplatformfeebatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_ticsclaimplatformfeebatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::TicsClaimPlatformFeeBatch {
                     batch_id,
@@ -4077,7 +4072,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_intentbatchbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_intentbatchbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::IntentBatchBroadcast {
                     intent_hashes,
@@ -4931,7 +4926,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_solveraddliquiditybatch(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_solveraddliquiditybatch(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::SolverAddLiquidityBatch {
                     request_ids,
@@ -4999,7 +4994,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_withdrawliquidity(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_withdrawliquidity(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::WithdrawLiquidity { .. } => {
                     // Legacy variant; withdraw requests are now propagated via PendingWithdrawRequestBroadcast.
@@ -5010,7 +5005,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_pendingwithdrawrequestbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_pendingwithdrawrequestbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PendingWithdrawRequestBroadcast { request } => {
                     use crate::types::rpc_server::PendingWithdrawRequest;
@@ -5127,7 +5122,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_pendingclaimplatformfeerequestbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_pendingclaimplatformfeerequestbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PendingClaimPlatformFeeRequestBroadcast { request } => {
                     use crate::types::rpc_server::PendingClaimPlatformFeeRequest;
@@ -5386,7 +5381,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_pendingclaimrewardrequestbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_pendingclaimrewardrequestbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::PendingClaimRewardRequestBroadcast { request } => {
                     use crate::types::rpc_server::PendingClaimRewardRequest;
@@ -5496,7 +5491,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_withdrawtxidbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_withdrawtxidbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::WithdrawTxIdBroadcast {
                     txid,
@@ -5589,7 +5584,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_claimrewardtxidbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_claimrewardtxidbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::ClaimRewardTxIdBroadcast {
                     txid,
@@ -5636,7 +5631,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_claimplatformfeetxidbroadcast(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_claimplatformfeetxidbroadcast(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::ClaimPlatformFeeTxIdBroadcast {
                     txid,
@@ -5671,7 +5666,7 @@ impl MpcNetworkLayer {
         Ok(())
     }
 
-    pub(crate) async fn handle_btcintentmanagertxupdate(&mut self, message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
+    pub(crate) async fn handle_btcintentmanagertxupdate(&mut self, _message: &Message, msg_enum: GossipsubMessage) -> Result<()> {
         match msg_enum {
             GossipsubMessage::BtcIntentManagerTxUpdate {
                     intent_hashes,
