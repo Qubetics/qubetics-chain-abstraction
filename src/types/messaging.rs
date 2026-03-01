@@ -13,12 +13,20 @@ use crate::{
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+use zeroize::Zeroize;
 
 /// Share metadata for AVSS exchanges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyShare {
     pub index: usize,
     pub value: SerializableScalar,
+}
+
+impl Drop for KeyShare {
+    fn drop(&mut self) {
+        // Zeroize the secret DKG share value.
+        self.value.zeroize();
+    }
 }
 
 /// Per-request metadata included in TICS withdraw-liquidity batches.

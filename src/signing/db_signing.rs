@@ -78,7 +78,7 @@ impl DatabaseSigningNode {
     }
 
     /// Derive a PeerId from a string (fallback method)
-    fn derive_peer_id_from_string(id: &str) -> PeerId {
+    pub(crate) fn derive_peer_id_from_string(id: &str) -> PeerId {
         use libp2p::identity::{ed25519, Keypair};
         use sha2::{Digest, Sha256};
 

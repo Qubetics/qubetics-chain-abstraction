@@ -4,6 +4,7 @@ use k256::{AffinePoint, EncodedPoint, Scalar};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use zeroize::Zeroize;
 
 /// Wrapper type for serialising `k256::AffinePoint` values.
 #[derive(Debug, Clone)]
@@ -61,8 +62,26 @@ impl<'de> Deserialize<'de> for SerializablePoint {
 }
 
 /// Wrapper type for serialising `k256::Scalar` values.
+///
+/// Implements `Zeroize` and `Drop` to ensure secret scalar material
+/// is explicitly zeroed from memory when no longer needed.
 #[derive(Debug, Clone)]
 pub struct SerializableScalar(pub Scalar);
+
+impl Zeroize for SerializableScalar {
+    fn zeroize(&mut self) {
+        // Overwrite the scalar's 32-byte representation with zeros.
+        // k256::Scalar stores data as FieldBytes (GenericArray<u8, U32>).
+        // We replace the inner value with the zero scalar.
+        self.0 = Scalar::ZERO;
+    }
+}
+
+impl Drop for SerializableScalar {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
 
 impl Serialize for SerializableScalar {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
