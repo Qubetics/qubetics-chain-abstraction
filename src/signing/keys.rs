@@ -467,7 +467,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
 
         // 8) k⁻¹ mod n
         let k_inv = BigUint::from_bytes_be(&k_bytes)
@@ -589,7 +589,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
         // 6) s = k⁻¹ * (z + r * x) mod n
         // Note: With aggregated k, all nodes compute the same s for their key share
         let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;

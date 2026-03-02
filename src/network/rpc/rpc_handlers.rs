@@ -501,7 +501,10 @@ impl MpcNetworkLayer {
             return RPCResponse::Error("DKG not initialized".to_string());
         }
 
-        let dkg_node = self.dkg_node.as_ref().unwrap();
+        let dkg_node = match self.dkg_node.as_ref() {
+            Some(node) => node,
+            None => return RPCResponse::Error("DKG not initialized".to_string()),
+        };
 
         // SECURITY FIX: Get our own actual index from storage instead of using hash-based fallback
         // The hash-based fallback would almost never match the actual index used during share generation,

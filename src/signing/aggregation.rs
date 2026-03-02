@@ -88,7 +88,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
 
         let s_bigint = BigUint::from_bytes_be(&agg_s);
         let half_n = &n >> 1;
@@ -185,7 +185,7 @@ impl SigningNode {
                 old_r = temp_r;
 
                 let temp_s = s.clone();
-                s = &old_s - &quotient.to_bigint().unwrap() * &s;
+                s = &old_s - &quotient.to_bigint().unwrap_or_default() * &s;
                 old_s = temp_s;
             }
 
@@ -193,9 +193,9 @@ impl SigningNode {
                 return None; // Not invertible
             }
 
-            let m_int = m.to_bigint().unwrap();
+            let m_int = m.to_bigint().unwrap_or_default();
             let result = (old_s % &m_int + &m_int) % &m_int;
-            Some(result.to_biguint().unwrap())
+            Some(result.to_biguint().unwrap_or_default())
         }
 
         let mut accum = BigUint::from(0u32);
