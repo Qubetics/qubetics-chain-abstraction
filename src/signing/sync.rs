@@ -95,3 +95,81 @@ impl SigningNode {
     }
 
 }
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn make_signing_node() -> SigningNode {
+        let (tx, _rx) = mpsc::channel(1);
+        SigningNode::new("test-sync-node".to_string(), 2, tx)
+    }
+
+    #[tokio::test]
+    async fn test_apply_synced_pending_rounds() {
+        let node = make_signing_node();
+        let withdraw_rounds = vec![10, 20, 30];
+        let claim_rounds = vec![15, 25];
+
+        node.apply_synced_pending_rounds(&withdraw_rounds, &claim_rounds).await;
+
+        let (wr, cr) = node.get_pending_rounds_for_sync().await;
+        assert!(wr.contains(&10));
+        assert!(wr.contains(&20));
+        assert!(wr.contains(&30));
+        assert!(cr.contains(&15));
+        assert!(cr.contains(&25));
+    }
+
+    #[tokio::test]
+    async fn test_apply_empty_synced_rounds_is_noop() {
+        let node = make_signing_node();
+        // First add some rounds
+        node.apply_synced_pending_rounds(&[100], &[200]).await;
+
+        // Apply empty — should be noop (existing rounds preserved)
+        node.apply_synced_pending_rounds(&[], &[]).await;
+
+        let (wr, cr) = node.get_pending_rounds_for_sync().await;
+        assert!(wr.contains(&100), "Existing withdraw round should be preserved");
+        assert!(cr.contains(&200), "Existing claim round should be preserved");
+    }
+
+    #[tokio::test]
+    async fn test_clear_and_apply_synced_pending_rounds() {
+        let node = make_signing_node();
+        // Add initial rounds
+        node.apply_synced_pending_rounds(&[1, 2, 3], &[4, 5]).await;
+
+        // Clear and replace with new rounds
+        node.clear_and_apply_synced_pending_rounds(&[10, 20], &[30]).await;
+
+        let (wr, cr) = node.get_pending_rounds_for_sync().await;
+        assert_eq!(wr.len(), 2);
+        assert!(wr.contains(&10));
+        assert!(wr.contains(&20));
+        assert!(!wr.contains(&1), "Old rounds should be cleared");
+        assert_eq!(cr.len(), 1);
+        assert!(cr.contains(&30));
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_rounds_for_sync_returns_inserted() {
+        let node = make_signing_node();
+        node.apply_synced_pending_rounds(&[42, 43], &[99]).await;
+
+        let (wr, cr) = node.get_pending_rounds_for_sync().await;
+        assert_eq!(wr.len(), 2);
+        assert_eq!(cr.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_sweep_old_rounds_under_1000_is_noop() {
+        let node = make_signing_node();
+        // With no signatures, sweep should return early without panic
+        node.sweep_old_rounds().await;
+        // If we reach here, it didn't panic — passes
+    }
+}
+

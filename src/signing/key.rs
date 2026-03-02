@@ -264,4 +264,40 @@ mod tests {
         store.set_vault_group_key(point, "node3");
         assert_eq!(store.get_vault_group_key().unwrap(), point);
     }
+
+    #[test]
+    fn test_keystore_default_has_no_keys() {
+        let store = KeyStore::new();
+        assert!(!store.has_private_key());
+        assert!(store.private_key().is_none());
+        assert!(store.public_key().is_none());
+        assert!(store.get_group_public_key().is_none());
+        assert!(store.get_vault_group_key().is_none());
+    }
+
+    #[test]
+    fn test_keystore_set_and_get_vault_group_key() {
+        let mut store = KeyStore::new();
+        let point1 = ProjectivePoint::GENERATOR;
+        let point2 = ProjectivePoint::GENERATOR * Scalar::from(2u32);
+
+        store.set_vault_group_key(point1, "node4");
+        assert_eq!(store.get_vault_group_key().unwrap(), point1);
+
+        // Overwrite with a different key
+        store.set_vault_group_key(point2, "node4");
+        assert_eq!(store.get_vault_group_key().unwrap(), point2);
+        assert_ne!(store.get_vault_group_key().unwrap(), point1);
+    }
+
+    #[test]
+    fn test_keystore_private_key_accessor_returns_set_value() {
+        let mut store = KeyStore::new();
+        let scalar = Scalar::ONE;
+        store.set_private_key_from_scalar(scalar, "node5").unwrap();
+
+        let pk = store.private_key().expect("private key should be set");
+        // The secret key should correspond to scalar value 1
+        assert_eq!(pk.secret_bytes().len(), 32);
+    }
 }

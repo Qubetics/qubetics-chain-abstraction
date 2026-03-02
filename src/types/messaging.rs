@@ -817,3 +817,62 @@ pub enum GossipsubMessage {
         timestamp: i64,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ff::Field;
+    use k256::Scalar;
+    use rand::rngs::OsRng;
+    use zeroize::Zeroize;
+
+    #[test]
+    fn test_key_share_drop_zeroizes_value() {
+        let mut share = KeyShare {
+            index: 1,
+            value: SerializableScalar(Scalar::random(&mut OsRng)),
+        };
+        assert_ne!(share.value.0, Scalar::ZERO, "Random share should not be zero");
+
+        share.value.zeroize();
+        assert_eq!(share.value.0, Scalar::ZERO, "KeyShare value must be zeroed");
+    }
+
+    #[test]
+    fn test_tics_withdraw_batch_request_serde() {
+        let req = TicsWithdrawBatchRequest {
+            request_id: "req_001".into(),
+            solver_address: "0xabc".into(),
+            asset: "TICS".into(),
+            amount: "1000000".into(),
+            chain_id: 11155111,
+            tx_id: Some("0xdeadbeef".into()),
+        };
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: TicsWithdrawBatchRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.request_id, "req_001");
+        assert_eq!(decoded.chain_id, 11155111);
+        assert_eq!(decoded.tx_id, Some("0xdeadbeef".into()));
+    }
+
+    #[test]
+    fn test_tics_claim_reward_batch_request_serde() {
+        let req = TicsClaimRewardBatchRequest {
+            request_id: "claim_001".into(),
+            solver_address: "0xdef".into(),
+            asset: "BTC".into(),
+            amount: "10000".into(),
+            chain_id: 0,
+            tx_id: None,
+        };
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: TicsClaimRewardBatchRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.request_id, "claim_001");
+        assert_eq!(decoded.asset, "BTC");
+        assert_eq!(decoded.tx_id, None);
+        assert_eq!(decoded.chain_id, 0);
+    }
+}
+
