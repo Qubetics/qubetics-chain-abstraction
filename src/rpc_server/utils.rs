@@ -152,7 +152,9 @@ pub(crate) fn convert_src_smallest_to_dst_smallest(
     Ok(result)
 }
 
-pub async fn fetch_crypto_prices(timestamp: Option<u128>) -> Result<HashMap<String, Decimal>, String> {
+pub async fn fetch_crypto_prices(
+    timestamp: Option<u128>,
+) -> Result<HashMap<String, Decimal>, String> {
     let base_url = crate::env_defaults::backend_api_url();
     let url = if let Some(ts) = timestamp {
         format!("{base_url}/api/v1/cryptos/prices?symbols=BTC,TICS&timestamp={ts}")
@@ -240,11 +242,7 @@ pub async fn fetch_crypto_prices(timestamp: Option<u128>) -> Result<HashMap<Stri
 pub(crate) async fn get_transaction_id_for_intent(
     user_intent_manager: &UserIntentManager,
     intent_hash: &[u8],
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> (Option<String>, Option<String>, Option<String>) {
     let intent_hash_hex = hex::encode(intent_hash);
 
     // Fetch any recorded transaction IDs for this intent hash
@@ -335,12 +333,7 @@ pub(crate) async fn wait_for_transaction_result(
             .await
         {
             if let Some(error_msg) = tx_ids.error_message {
-                return (
-                    None,
-                    None,
-                    tx_ids.final_solver_id.clone(),
-                    Some(error_msg),
-                );
+                return (None, None, tx_ids.final_solver_id.clone(), Some(error_msg));
             }
         }
 
@@ -565,15 +558,22 @@ mod tests {
         // 25 TICS = 25 * 10^18 wei
         let amount_wei = 25_000_000_000_000_000_000u128;
         let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "tics", &p).unwrap();
-        assert_eq!(result, amount_wei, "Same-chain TICS→TICS should pass through unchanged");
+        assert_eq!(
+            result, amount_wei,
+            "Same-chain TICS→TICS should pass through unchanged"
+        );
     }
 
     #[test]
     fn same_chain_btc_to_btc() {
         let p = prices(dec!(100000), dec!(0.01));
         let amount_sats = 100_000u128; // 0.001 BTC
-        let result = convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "bitcoin", &p).unwrap();
-        assert_eq!(result, amount_sats, "Same-chain BTC→BTC should pass through unchanged");
+        let result =
+            convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "bitcoin", &p).unwrap();
+        assert_eq!(
+            result, amount_sats,
+            "Same-chain BTC→BTC should pass through unchanged"
+        );
     }
 
     #[test]
@@ -604,7 +604,8 @@ mod tests {
         //   dst_whole = 2_500_000_000 * 0.01 / 100_000 = 250
         let p = prices(dec!(100000), dec!(0.01));
         let amount_wei = 25_000_000_000_000_000_000u128; // 25 TICS in wei
-        let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "bitcoin", &p).unwrap();
+        let result =
+            convert_src_smallest_to_dst_smallest(amount_wei, "tics", "bitcoin", &p).unwrap();
         assert_eq!(result, 250, "25 TICS @ $0.01 → BTC @ $100k = 250 sats");
     }
 
@@ -614,8 +615,12 @@ mod tests {
         // $10 / $100,000 = 0.0001 BTC = 10,000 sats
         let p = prices(dec!(100000), dec!(0.01));
         let amount_wei = 1_000_000_000_000_000_000_000u128; // 1000 TICS
-        let result = convert_src_smallest_to_dst_smallest(amount_wei, "qubetics", "btc", &p).unwrap();
-        assert_eq!(result, 10_000, "1000 TICS @ $0.01 → BTC @ $100k = 10,000 sats");
+        let result =
+            convert_src_smallest_to_dst_smallest(amount_wei, "qubetics", "btc", &p).unwrap();
+        assert_eq!(
+            result, 10_000,
+            "1000 TICS @ $0.01 → BTC @ $100k = 10,000 sats"
+        );
     }
 
     #[test]
@@ -625,7 +630,10 @@ mod tests {
         let p = prices(dec!(100000), dec!(0.01));
         let amount_wei = 1_000_000_000_000_000_000u128; // 1 TICS
         let result = convert_src_smallest_to_dst_smallest(amount_wei, "tics", "btc", &p).unwrap();
-        assert_eq!(result, 10, "1 TICS @ $0.01 → BTC @ $100k = 10 sats (below 546 dust)");
+        assert_eq!(
+            result, 10,
+            "1 TICS @ $0.01 → BTC @ $100k = 10 sats (below 546 dust)"
+        );
     }
 
     // =====================================================================
@@ -648,9 +656,13 @@ mod tests {
         //   result = 100_000_000_000_000_000_000 = 100 * 10^18
         let p = prices(dec!(100000), dec!(0.01));
         let amount_sats = 1000u128;
-        let result = convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "tics", &p).unwrap();
+        let result =
+            convert_src_smallest_to_dst_smallest(amount_sats, "bitcoin", "tics", &p).unwrap();
         let expected = 100_000_000_000_000_000_000u128; // 100 TICS in wei
-        assert_eq!(result, expected, "1000 sats @ $100k → TICS @ $0.01 = 100 TICS");
+        assert_eq!(
+            result, expected,
+            "1000 sats @ $100k → TICS @ $0.01 = 100 TICS"
+        );
     }
 
     #[test]
@@ -660,7 +672,8 @@ mod tests {
         // $0.70 / $0.01 = 70 TICS = 70 * 10^18 wei
         let p = prices(dec!(100000), dec!(0.01));
         let amount_sats = 700u128;
-        let result = convert_src_smallest_to_dst_smallest(amount_sats, "btc", "qubetics", &p).unwrap();
+        let result =
+            convert_src_smallest_to_dst_smallest(amount_sats, "btc", "qubetics", &p).unwrap();
         let expected = 70_000_000_000_000_000_000u128; // 70 TICS in wei
         assert_eq!(result, expected, "700 sats → 70 TICS");
     }
@@ -698,7 +711,7 @@ mod tests {
 
     // =====================================================================
     // 6. UserToVault amount correctness
-    //    UserToVault always uses source_amount + 5% fee on the SOURCE chain.
+    //    UserToVault legacy static 5% fee tests (Production now uses dynamic fees).
     // =====================================================================
 
     #[test]
@@ -714,8 +727,11 @@ mod tests {
 
         assert_eq!(utv_amount, expected, "TICS UserToVault = source + 5%");
         // Verify we're NOT using target_amount (which would be wrong)
-        assert_ne!(utv_amount, target_amount + (target_amount / 20),
-            "Must NOT use target_amount for source-chain tx");
+        assert_ne!(
+            utv_amount,
+            target_amount + (target_amount / 20),
+            "Must NOT use target_amount for source-chain tx"
+        );
     }
 
     #[test]
@@ -728,8 +744,11 @@ mod tests {
         let utv_amount = source_amount + (source_amount / 20);
         assert_eq!(utv_amount, 1050, "BTC UserToVault = 1000 + 50 = 1050 sats");
         // Verify we're NOT using target_amount
-        assert_ne!(utv_amount, target_amount + (target_amount / 20),
-            "Must NOT use target_amount for source-chain tx");
+        assert_ne!(
+            utv_amount,
+            target_amount + (target_amount / 20),
+            "Must NOT use target_amount for source-chain tx"
+        );
     }
 
     #[test]
@@ -737,7 +756,10 @@ mod tests {
         // TICS→TICS: source_amount = target_amount (same chain)
         let amount: u128 = 10_000_000_000_000_000_000; // 10 TICS
         let utv_amount = amount + (amount / 20);
-        assert_eq!(utv_amount, 10_500_000_000_000_000_000, "TICS→TICS UTV = 10 + 0.5 = 10.5 TICS");
+        assert_eq!(
+            utv_amount, 10_500_000_000_000_000_000,
+            "TICS→TICS UTV = 10 + 0.5 = 10.5 TICS"
+        );
     }
 
     #[test]
@@ -745,7 +767,10 @@ mod tests {
         // BTC→BTC: source_amount = target_amount (same chain)
         let amount: u128 = 50_000; // 50,000 sats
         let utv_amount = amount + (amount / 20);
-        assert_eq!(utv_amount, 52_500, "BTC→BTC UTV = 50000 + 2500 = 52500 sats");
+        assert_eq!(
+            utv_amount, 52_500,
+            "BTC→BTC UTV = 50000 + 2500 = 52500 sats"
+        );
     }
 
     // =====================================================================
@@ -763,19 +788,25 @@ mod tests {
 
         let source_wei = 25_000_000_000_000_000_000u128;
 
-        let stored_target = convert_src_smallest_to_dst_smallest(
-            source_wei, "tics", "btc", &p_at_submission,
-        ).unwrap();
+        let stored_target =
+            convert_src_smallest_to_dst_smallest(source_wei, "tics", "btc", &p_at_submission)
+                .unwrap();
         assert_eq!(stored_target, 250, "Stored target = 250 sats");
 
-        let recomputed_target = convert_src_smallest_to_dst_smallest(
-            source_wei, "tics", "btc", &p_at_execution,
-        ).unwrap();
+        let recomputed_target =
+            convert_src_smallest_to_dst_smallest(source_wei, "tics", "btc", &p_at_execution)
+                .unwrap();
         // With higher BTC price ($110k), same TICS buys fewer sats
-        assert_ne!(recomputed_target, stored_target,
-            "Re-computed amount differs from stored — proves why stored is needed");
-        assert!(recomputed_target < stored_target,
-            "Higher BTC price → fewer sats: {} < {}", recomputed_target, stored_target);
+        assert_ne!(
+            recomputed_target, stored_target,
+            "Re-computed amount differs from stored — proves why stored is needed"
+        );
+        assert!(
+            recomputed_target < stored_target,
+            "Higher BTC price → fewer sats: {} < {}",
+            recomputed_target,
+            stored_target
+        );
 
         // The system should use stored_target (250), not recomputed
     }
@@ -788,16 +819,18 @@ mod tests {
 
         let source_sats = 1000u128;
 
-        let stored_target = convert_src_smallest_to_dst_smallest(
-            source_sats, "btc", "tics", &p_at_submission,
-        ).unwrap();
+        let stored_target =
+            convert_src_smallest_to_dst_smallest(source_sats, "btc", "tics", &p_at_submission)
+                .unwrap();
 
-        let recomputed = convert_src_smallest_to_dst_smallest(
-            source_sats, "btc", "tics", &p_at_execution,
-        ).unwrap();
+        let recomputed =
+            convert_src_smallest_to_dst_smallest(source_sats, "btc", "tics", &p_at_execution)
+                .unwrap();
 
-        assert_ne!(recomputed, stored_target,
-            "Re-computed differs from stored when price changed");
+        assert_ne!(
+            recomputed, stored_target,
+            "Re-computed differs from stored when price changed"
+        );
     }
 
     // =====================================================================
@@ -811,14 +844,15 @@ mod tests {
         // 1000 wei instead of 100 TICS (100 * 10^18 wei) — massively wrong.
         let source_sats = 1000u128;
         let p = prices(dec!(100000), dec!(0.01));
-        let correct_target_wei = convert_src_smallest_to_dst_smallest(
-            source_sats, "btc", "tics", &p,
-        ).unwrap();
+        let correct_target_wei =
+            convert_src_smallest_to_dst_smallest(source_sats, "btc", "tics", &p).unwrap();
 
         // source_amount as target would be 1000 (wei) — essentially zero TICS
         let wrong_fallback = source_sats;
-        assert!(correct_target_wei > wrong_fallback * 1_000_000_000,
-            "Using source_amount as target is off by >9 orders of magnitude");
+        assert!(
+            correct_target_wei > wrong_fallback * 1_000_000_000,
+            "Using source_amount as target is off by >9 orders of magnitude"
+        );
     }
 
     #[test]
@@ -827,13 +861,14 @@ mod tests {
         // Correct target = 250 sats. Using source as target = 25 * 10^18 sats = insane.
         let source_wei = 25_000_000_000_000_000_000u128;
         let p = prices(dec!(100000), dec!(0.01));
-        let correct_target_sats = convert_src_smallest_to_dst_smallest(
-            source_wei, "tics", "btc", &p,
-        ).unwrap();
+        let correct_target_sats =
+            convert_src_smallest_to_dst_smallest(source_wei, "tics", "btc", &p).unwrap();
 
         assert_eq!(correct_target_sats, 250);
-        assert!(source_wei > correct_target_sats * 1_000_000_000_000_000,
-            "source_amount as target would be absurdly large");
+        assert!(
+            source_wei > correct_target_sats * 1_000_000_000_000_000,
+            "source_amount as target would be absurdly large"
+        );
     }
 
     // =====================================================================
@@ -855,8 +890,9 @@ mod tests {
     }
 
     #[test]
-    fn five_percent_fee_calculation() {
+    fn five_percent_fee_calculation_legacy() {
         // Verify integer division: amount + amount/20
+        // (Legacy 5% calculation logic; production now uses dynamic bps)
         // For small amounts, integer division truncates
         assert_eq!(100 + 100 / 20, 105); // exact
         assert_eq!(99 + 99 / 20, 99 + 4, "99/20 = 4 (truncated)");
@@ -886,6 +922,9 @@ mod tests {
         let amount_sats = 1u128;
         let result = convert_src_smallest_to_dst_smallest(amount_sats, "btc", "tics", &p).unwrap();
         // adjusted = 1 * 10^10, dst_whole = 10^10 * 1/1 = 10^10
-        assert_eq!(result, 10_000_000_000u128, "1 sat at equal prices = 10^10 wei");
+        assert_eq!(
+            result, 10_000_000_000u128,
+            "1 sat at equal prices = 10^10 wei"
+        );
     }
 }

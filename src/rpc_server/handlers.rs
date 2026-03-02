@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::rpc_server::utils::get_actual_dkg_secret_share;
 use crate::{
-    contract::{ContractClient, ContractConfig, SolverManagerContract},
+    contract::{fetch_dynamic_fee_bps, ContractClient, ContractConfig, SolverManagerContract},
     database::{Database, DkgStorage},
     types::{
         intent::{DepositIntent, DepositIntentResponse, TransactionType},
@@ -67,7 +67,8 @@ pub(crate) async fn handle_deposit_intent(
         )))
     })?;
 
-    let required_amount_u128 = parsed_amount + (parsed_amount / 20);
+    let fee_bps = fetch_dynamic_fee_bps().await;
+    let required_amount_u128 = parsed_amount + (parsed_amount * fee_bps / 10000);
 
     let intent_id = format!("intent-{}", Uuid::new_v4());
     let deposit_intent_msg = ChannelMessage::DepositIntent {
@@ -1223,8 +1224,9 @@ pub(crate) async fn handle_user_mpc_deposit(
                     "eth"
                 };
 
-                // Calculate required balance: amount + 5% buffer + estimated tx fee
-                let five_percent_buffer = source_amount / 20; // 5% of amount
+                // Calculate required balance: amount + dynamic buffer + estimated tx fee
+                let fee_bps = fetch_dynamic_fee_bps().await;
+                let dynamic_fee_buffer = (source_amount * fee_bps) / 10000;
                 let estimated_tx_fee: u128 = if source_blockchain == "btc" {
                     // BTC: conservative estimate for P2WPKH tx (2 inputs, 2 outputs)
                     // vbytes = 10 + 68*2 + 31*2 = 208, fee = 208 * 2 sat/vbyte = 416 sats
@@ -1238,7 +1240,7 @@ pub(crate) async fn handle_user_mpc_deposit(
                     // fee = 300_000 * 1_000_000_000 = 300_000_000_000_000 wei (0.0003 TICS)
                     300_000_000_000_000u128
                 };
-                let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+                let required_balance = source_amount + dynamic_fee_buffer + estimated_tx_fee;
 
                 // Fetch user's source address balance
                 match crate::rpc_server::utils::fetch_network_balance(
@@ -1250,24 +1252,24 @@ pub(crate) async fn handle_user_mpc_deposit(
                     Ok(user_balance) => {
                         if user_balance < required_balance {
                             warn!(
-                                "⚠️ [HTTP] Insufficient balance for intent {}: user has {}, needs {} (amount {} + 5% buffer {} + est. fee {})",
+                                "⚠️ [HTTP] Insufficient balance for intent {}: user has {}, needs {} (amount {} + dynamic fee buffer {} + est. fee {})",
                                 intent_hash_hex, user_balance, required_balance,
-                                source_amount, five_percent_buffer, estimated_tx_fee
+                                source_amount, dynamic_fee_buffer, estimated_tx_fee
                             );
                             return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                 status: "error".to_string(),
                                 intent_hash: intent_hash_hex.clone(),
                                 error_message: Some(format!(
-                                    "Insufficient balance: you have {} but need {} (amount {} + 5% buffer {} + estimated fee {})",
+                                    "Insufficient balance: you have {} but need {} (amount {} + dynamic fee buffer {} + estimated fee {})",
                                     user_balance, required_balance,
-                                    source_amount, five_percent_buffer, estimated_tx_fee
+                                    source_amount, dynamic_fee_buffer, estimated_tx_fee
                                 )),
                                 signer_eth_address: None,
                             }));
                         } else {
                             info!(
-                                "✅ [HTTP] Source address has sufficient balance: {} >= {} (amount {} + 5% {} + fee {})",
-                                user_balance, required_balance, source_amount, five_percent_buffer, estimated_tx_fee
+                                "✅ [HTTP] Source address has sufficient balance: {} >= {} (amount {} + dynamic fee {} + fee {})",
+                                user_balance, required_balance, source_amount, dynamic_fee_buffer, estimated_tx_fee
                             );
                         }
                     }
@@ -1431,22 +1433,22 @@ pub(crate) async fn handle_user_mpc_deposit(
                                 .filter(|u| u.status.confirmed)
                                 .map(|u| u.value as u128)
                                 .sum();
-                            // required_balance already includes amount + 5% buffer + estimated BTC fee
+                            // required_balance already includes amount + dynamic fee buffer + estimated BTC fee
                             if confirmed_balance < required_balance {
                                 warn!(
-                                    "⚠️ [HTTP] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {} (amount {} + 5% {} + fee {})",
+                                    "⚠️ [HTTP] Insufficient confirmed UTXOs for intent {}: confirmed {} sats, needs {} (amount {} + dynamic fee {} + fee {})",
                                     intent_hash_hex, confirmed_balance, required_balance,
-                                    source_amount, five_percent_buffer, estimated_tx_fee
+                                    source_amount, dynamic_fee_buffer, estimated_tx_fee
                                 );
                                 return Ok(warp::reply::json(&UserMpcDepositVerifyResponse {
                                     status: "error".to_string(),
                                     intent_hash: intent_hash_hex.clone(),
                                     error_message: Some(format!(
                                         "Insufficient confirmed balance: you have {} confirmed sats but need {} \
-                                         (amount {} + 5% buffer {} + estimated fee {}). \
+                                         (amount {} + dynamic fee buffer {} + estimated fee {}). \
                                          Please wait for your pending transactions to confirm.",
                                         confirmed_balance, required_balance,
-                                        source_amount, five_percent_buffer, estimated_tx_fee
+                                        source_amount, dynamic_fee_buffer, estimated_tx_fee
                                     )),
                                     signer_eth_address: None,
                                 }));

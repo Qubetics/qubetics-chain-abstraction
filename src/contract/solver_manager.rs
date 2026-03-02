@@ -24,6 +24,8 @@ abigen!(
         function isSolverOnboarded(string solverId) view returns (bool)
         function invalidateSolverIds(string[] solverIds)
         function getPlatformUnclaimedFee(uint256 chainId) view returns (uint256)
+        function getSolverFeePercentage() view returns (uint256)
+        function getPlatformFeePercentage() view returns (uint256)
     ]"#
 );
 
@@ -138,7 +140,12 @@ impl SolverManagerContract {
             .collect();
         let calldata = func
             .encode_input(&[Token::Array(input_tokens)])
-            .map_err(|e| anyhow!("Failed to encode getSolversUnclaimedRewards calldata: {}", e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to encode getSolversUnclaimedRewards calldata: {}",
+                    e
+                )
+            })?;
 
         // Make raw eth_call via the provider
         let provider = self.inner.client();
@@ -162,10 +169,7 @@ impl SolverManagerContract {
         let rewards_array = match decoded.into_iter().next() {
             Some(Token::Array(arr)) => arr,
             other => {
-                return Err(anyhow!(
-                    "Unexpected decoded output shape: {:?}",
-                    other
-                ));
+                return Err(anyhow!("Unexpected decoded output shape: {:?}", other));
             }
         };
 
@@ -282,5 +286,21 @@ impl SolverManagerContract {
             .call()
             .await
             .map_err(|e| anyhow!("getPlatformUnclaimedFee call failed: {}", e))
+    }
+
+    pub async fn get_solver_fee_percentage(&self) -> Result<ethers::types::U256> {
+        self.inner
+            .get_solver_fee_percentage()
+            .call()
+            .await
+            .map_err(|e| anyhow!("getSolverFeePercentage call failed: {}", e))
+    }
+
+    pub async fn get_platform_fee_percentage(&self) -> Result<ethers::types::U256> {
+        self.inner
+            .get_platform_fee_percentage()
+            .call()
+            .await
+            .map_err(|e| anyhow!("getPlatformFeePercentage call failed: {}", e))
     }
 }

@@ -2936,9 +2936,10 @@ impl SigningNode {
                 }
             };
             
-            let five_percent_buffer = source_amount / 20;
+            let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+            let dynamic_fee_buffer = (source_amount * fee_bps) / 10000;
             let estimated_tx_fee: u128 = 300_000_000_000_000;
-            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+            let required_balance = source_amount + dynamic_fee_buffer + estimated_tx_fee;
             
             match crate::rpc_server::utils::fetch_network_balance(&intent.source_address, "eth").await {
                 Ok(user_balance) => {
@@ -3009,7 +3010,8 @@ impl SigningNode {
                     continue;
                 }
             };
-            let amount = source_amount + (source_amount / 20);
+            let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+            let amount = source_amount + (source_amount * fee_bps / 10000);
 
             let chain_tx_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(
                 &intent,
@@ -3192,13 +3194,14 @@ impl SigningNode {
                 }
             };
             
-            let five_percent_buffer = source_amount / 20;
+            let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+            let dynamic_fee_buffer = (source_amount * fee_bps) / 10000;
             let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
                 .ok()
                 .and_then(|v| v.parse::<u128>().ok())
                 .unwrap_or(2);
             let estimated_tx_fee: u128 = 208 * fee_rate;
-            let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+            let required_balance = source_amount + dynamic_fee_buffer + estimated_tx_fee;
             
             match crate::utils::transaction::fetch_bitcoin_utxos(&intent.source_address, false).await {
                 Ok(utxos) => {
@@ -3274,7 +3277,8 @@ impl SigningNode {
                     continue;
                 }
             };
-            let amount = amount_sats + (amount_sats / 20);
+            let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+            let amount = amount_sats + (amount_sats * fee_bps / 10000);
 
             let chain_tx_result = crate::utils::transaction::create_chain_transaction_from_deposit_intent(
                 &intent,
