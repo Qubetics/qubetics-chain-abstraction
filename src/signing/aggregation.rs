@@ -219,14 +219,14 @@ impl SigningNode {
                     } else {
                         &xj_u + &n - &xm_u
                     };
-                    den = (den * diff.clone()) % &n;
+                    den = (den * diff) % &n;
                 }
             }
 
             let den_inv = modinv(&den, &n)
                 .ok_or_else(|| anyhow!("Denominator not invertible for share x={}", xj))?;
 
-            let lambda = (num.clone() * den_inv) % &n;
+            let lambda = (num * den_inv) % &n;
 
             let yj = BigUint::from_bytes_be(yj_bytes);
             let contribution = (&lambda * &yj) % &n;
