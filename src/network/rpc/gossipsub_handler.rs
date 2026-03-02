@@ -1138,8 +1138,9 @@ impl MpcNetworkLayer {
                     "eth"
                 };
 
-                // Calculate required balance: amount + 5% buffer + estimated tx fee
-                let five_percent_buffer = source_amount / 20;
+                // Calculate required balance: amount + dynamic buffer + estimated tx fee
+                let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+                let dynamic_fee_buffer = (source_amount * fee_bps) / 10000;
                 let estimated_tx_fee: u128 = if source_blockchain == "btc" {
                     let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
                         .ok()
@@ -1149,7 +1150,7 @@ impl MpcNetworkLayer {
                 } else {
                     300_000_000_000_000u128 // gas_limit=300k * gas_price=1 Gwei
                 };
-                let required_balance = source_amount + five_percent_buffer + estimated_tx_fee;
+                let required_balance = source_amount + dynamic_fee_buffer + estimated_tx_fee;
 
                 // Fetch user's source address balance
                 match fetch_network_balance(&intent.source_address, source_blockchain).await {
@@ -1158,7 +1159,7 @@ impl MpcNetworkLayer {
                             warn!(
                                 "⚠️ [GOSSIPSUB] Insufficient source balance for intent {}: user has {}, needs {} (amount {} + 5% {} + fee {})",
                                 intent_hash, user_balance, required_balance,
-                                source_amount, five_percent_buffer, estimated_tx_fee
+                                source_amount, dynamic_fee_buffer, estimated_tx_fee
                             );
                             return Ok(());
                         } else {
@@ -2505,8 +2506,9 @@ impl MpcNetworkLayer {
                                 let contract_chain_handler =
                                     signing_node.get_contract_chain_handler().clone();
                                 let mut eth_signer = TicsSigner::new(&mut signing_node);
-                                let nonce_tuple_id =
-                                    nonce_tuple_ids.as_ref().and_then(|ids| ids.first().cloned());
+                                let nonce_tuple_id = nonce_tuple_ids
+                                    .as_ref()
+                                    .and_then(|ids| ids.first().cloned());
 
                                 if let Err(e) = eth_signer
                                     .sign_contract_message(
@@ -2740,10 +2742,11 @@ impl MpcNetworkLayer {
                                         continue;
                                     }
                                 };
-                                let five_percent_buffer = source_amount / 20;
+                                let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+                                let dynamic_fee_buffer = (source_amount * fee_bps) / 10000;
                                 let estimated_tx_fee: u128 = 300_000_000_000_000;
                                 let required_balance =
-                                    source_amount + five_percent_buffer + estimated_tx_fee;
+                                    source_amount + dynamic_fee_buffer + estimated_tx_fee;
 
                                 match crate::rpc_server::utils::fetch_network_balance(
                                     &intent.source_address,
@@ -2833,7 +2836,8 @@ impl MpcNetworkLayer {
                                 continue;
                             }
                         };
-                        let amount = source_amount + (source_amount / 20);
+                        let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+                        let amount = source_amount + (source_amount * fee_bps / 10000);
 
                         let user =
                             match user_intent_manager.get_user_by_address(user_eth_addr).await {
@@ -3149,14 +3153,15 @@ impl MpcNetworkLayer {
                                     }
                                 }
 
-                                let five_percent_buffer = parsed_amount / 20;
+                                let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+                                let dynamic_fee_buffer = (parsed_amount * fee_bps) / 10000;
                                 let fee_rate = std::env::var("BTC_FEE_RATE_SAT_VB")
                                     .ok()
                                     .and_then(|v| v.parse::<u128>().ok())
                                     .unwrap_or(2);
                                 let estimated_tx_fee: u128 = 208 * fee_rate;
                                 let required_balance =
-                                    parsed_amount + five_percent_buffer + estimated_tx_fee;
+                                    parsed_amount + dynamic_fee_buffer + estimated_tx_fee;
 
                                 match crate::utils::transaction::fetch_bitcoin_utxos(
                                     &intent.source_address,
@@ -3259,7 +3264,8 @@ impl MpcNetworkLayer {
                                 continue;
                             }
                         };
-                        let amount = amount_sats + (amount_sats / 20); // 5% buffer for fees
+                        let fee_bps = crate::contract::fetch_dynamic_fee_bps().await;
+                        let amount = amount_sats + (amount_sats * fee_bps / 10000); // Dynamic buffer for fees
 
                         let user =
                             match user_intent_manager.get_user_by_address(user_eth_addr).await {
@@ -3756,7 +3762,8 @@ impl MpcNetworkLayer {
                         input_count
                     );
 
-                    self.processed_batch_rounds.remove(&(round, "BTC_WITHDRAW".to_string()));
+                    self.processed_batch_rounds
+                        .remove(&(round, "BTC_WITHDRAW".to_string()));
 
                     let entries: Vec<(String, PendingWithdrawRequest)> = self
                         .db
@@ -3766,10 +3773,9 @@ impl MpcNetworkLayer {
                         let req_solver_lower = req.solver_address.to_lowercase();
                         if req.status == "Batched"
                             && req.tx_id.is_none()
-                            && used_requests
-                                .iter()
-                                .any(|(rid, solver)| *rid == req.request_id
-                                    && solver.to_lowercase() == req_solver_lower)
+                            && used_requests.iter().any(|(rid, solver)| {
+                                *rid == req.request_id && solver.to_lowercase() == req_solver_lower
+                            })
                         {
                             let mut reverted = req.clone();
                             reverted.status = "Pending".to_string();
@@ -4243,7 +4249,8 @@ impl MpcNetworkLayer {
                         .unwrap_or_default();
                     for (key, req) in entries {
                         if req.status == "Batched"
-                            && req.tx_id
+                            && req
+                                .tx_id
                                 .as_ref()
                                 .map(|tx_id| tx_id.trim().is_empty())
                                 .unwrap_or(true)
