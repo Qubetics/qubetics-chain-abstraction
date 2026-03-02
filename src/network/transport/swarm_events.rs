@@ -313,7 +313,7 @@ impl MpcNetworkLayer {
 
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let start_time = now_secs + 10;
 

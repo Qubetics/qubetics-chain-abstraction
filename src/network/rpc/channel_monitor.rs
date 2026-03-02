@@ -82,7 +82,7 @@ impl ChannelHealthMonitor {
     pub fn health_check(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         
         let last_check = self.last_health_check.load(Ordering::Relaxed);

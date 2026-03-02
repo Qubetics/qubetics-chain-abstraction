@@ -730,3 +730,111 @@ impl BatchWriter {
         Ok(self.batch)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_test_db() -> (Database, TempDir) {
+        let dir = TempDir::new().expect("create tempdir");
+        // 32-byte key = 64 hex chars
+        let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let config = DatabaseConfig {
+            path: dir.path().to_string_lossy().to_string(),
+            create_if_missing: true,
+            max_open_files: 10,
+            encryption_key: Some(key_hex.to_string()),
+        };
+        let db = Database::new(config).expect("open test db");
+        (db, dir)
+    }
+
+    #[test]
+    fn test_put_and_get_string_roundtrip() {
+        let (db, _dir) = make_test_db();
+        let value: String = "hello world".to_string();
+        db.put_string("test_key", &value).expect("put");
+
+        let retrieved: Option<String> = db.get_string("test_key").expect("get");
+        assert_eq!(retrieved, Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_get_nonexistent_key_returns_none() {
+        let (db, _dir) = make_test_db();
+        let result: Option<String> = db.get_string("nonexistent").expect("get");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_keys_with_prefix() {
+        let (db, _dir) = make_test_db();
+        db.put_string("prefix:a", &1u32).expect("put");
+        db.put_string("prefix:b", &2u32).expect("put");
+        db.put_string("prefix:c", &3u32).expect("put");
+        db.put_string("other:x", &99u32).expect("put");
+
+        let keys = db.get_keys_with_prefix("prefix:").expect("prefix scan");
+        assert_eq!(keys.len(), 3);
+        assert!(keys.contains(&"prefix:a".to_string()));
+        assert!(keys.contains(&"prefix:b".to_string()));
+        assert!(keys.contains(&"prefix:c".to_string()));
+    }
+
+    #[test]
+    fn test_delete_key() {
+        let (db, _dir) = make_test_db();
+        db.put_string("to_delete", &42u32).expect("put");
+
+        let before: Option<u32> = db.get_string("to_delete").expect("get before");
+        assert_eq!(before, Some(42));
+
+        db.delete_string("to_delete").expect("delete");
+
+        let after: Option<u32> = db.get_string("to_delete").expect("get after");
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn test_contains_string_key() {
+        let (db, _dir) = make_test_db();
+        assert!(!db.contains_string_key("absent").expect("check before"));
+
+        db.put_string("present", &true).expect("put");
+        assert!(db.contains_string_key("present").expect("check after"));
+    }
+
+    #[test]
+    fn test_count_entries() {
+        let (db, _dir) = make_test_db();
+        db.put_string("k1", &1u32).expect("put");
+        db.put_string("k2", &2u32).expect("put");
+        db.put_string("k3", &3u32).expect("put");
+
+        let count = db.count_entries().expect("count");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_clear_all() {
+        let (db, _dir) = make_test_db();
+        db.put_string("a", &1u32).expect("put");
+        db.put_string("b", &2u32).expect("put");
+
+        db.clear_all().expect("clear");
+        let count = db.count_entries().expect("count after clear");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_keypair_encrypt_decrypt_roundtrip() {
+        let (db, _dir) = make_test_db();
+        let original = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        db.put_keypair("my_keypair", &original).expect("put keypair");
+
+        let retrieved = db.get_keypair("my_keypair").expect("get keypair");
+        assert_eq!(retrieved, Some(original));
+    }
+}
+

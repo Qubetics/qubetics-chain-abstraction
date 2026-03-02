@@ -88,7 +88,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
 
         let s_bigint = BigUint::from_bytes_be(&agg_s);
         let half_n = &n >> 1;
@@ -185,7 +185,7 @@ impl SigningNode {
                 old_r = temp_r;
 
                 let temp_s = s.clone();
-                s = &old_s - &quotient.to_bigint().unwrap() * &s;
+                s = &old_s - &quotient.to_bigint().unwrap_or_default() * &s;
                 old_s = temp_s;
             }
 
@@ -193,9 +193,9 @@ impl SigningNode {
                 return None; // Not invertible
             }
 
-            let m_int = m.to_bigint().unwrap();
+            let m_int = m.to_bigint().unwrap_or_default();
             let result = (old_s % &m_int + &m_int) % &m_int;
-            Some(result.to_biguint().unwrap())
+            Some(result.to_biguint().unwrap_or_default())
         }
 
         let mut accum = BigUint::from(0u32);
@@ -446,3 +446,91 @@ impl SigningNode {
     }
 
 }
+
+#[cfg(test)]
+mod aggregation_tests {
+    use super::*;
+    use secp256k1::{Secp256k1, SecretKey, Message};
+    use secp256k1::ecdsa::RecoveryId;
+    use tokio::sync::mpsc;
+
+    fn make_signing_node() -> SigningNode {
+        let _ = crate::types::network::init_network_type_from_env();
+        let (tx, _rx) = mpsc::channel(1);
+        SigningNode::new("test-agg-node".to_string(), 2, tx)
+    }
+
+    #[test]
+    fn test_lagrange_interpolate_three_shares_deterministic() {
+        // 3-of-3 scenario: verify that interpolation is deterministic
+        // and produces a valid 32-byte result
+        let node = make_signing_node();
+
+        let mut share1 = vec![0u8; 31];
+        share1.push(10);
+        let mut share2 = vec![0u8; 31];
+        share2.push(19);
+        let mut share3 = vec![0u8; 31];
+        share3.push(32);
+
+        let shares: Vec<(u32, Vec<u8>)> = vec![(1, share1.clone()), (2, share2.clone()), (3, share3.clone())];
+        let result1 = node.lagrange_interpolate(&shares).expect("run 1");
+        let result2 = node.lagrange_interpolate(&shares).expect("run 2");
+
+        assert_eq!(result1.len(), 32, "Result must be 32 bytes");
+        assert_eq!(result1, result2, "Same shares must produce same interpolation result");
+    }
+
+    #[test]
+    fn test_get_compressed_signature_bytes_format() {
+        let node = make_signing_node();
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid key");
+        let msg = Message::from_digest_slice(&[2u8; 32]).expect("valid msg");
+        let sig = secp.sign_ecdsa_recoverable(&msg, &sk);
+
+        let bytes = node.get_compressed_signature_bytes(&sig);
+        assert_eq!(bytes.len(), 65, "Compressed signature must be 65 bytes");
+    }
+
+    #[test]
+    fn test_get_compressed_signature_hex_format() {
+        let node = make_signing_node();
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid key");
+        let msg = Message::from_digest_slice(&[2u8; 32]).expect("valid msg");
+        let sig = secp.sign_ecdsa_recoverable(&msg, &sk);
+
+        let hex_str = node.get_compressed_signature_hex(&sig);
+        assert_eq!(hex_str.len(), 130, "Hex signature must be 130 chars (65 bytes * 2)");
+        assert!(hex::decode(&hex_str).is_ok(), "Must be valid hex");
+    }
+
+    #[test]
+    fn test_lagrange_interpolate_two_shares() {
+        // Create a simple 2-of-N secret sharing scenario
+        // For polynomial f(x) = secret + a*x (degree 1):
+        // f(1) = secret + a
+        // f(2) = secret + 2a
+        // Lagrange at x=0 should recover secret
+        let node = make_signing_node();
+
+        // Use small values for testability
+        // secret = 10, a = 5
+        // f(1) = 15, f(2) = 20
+        let mut share1 = vec![0u8; 31];
+        share1.push(15);
+        let mut share2 = vec![0u8; 31];
+        share2.push(20);
+
+        let shares: Vec<(u32, Vec<u8>)> = vec![(1, share1), (2, share2)];
+        let result = node.lagrange_interpolate(&shares);
+        assert!(result.is_ok(), "Two-share interpolation should succeed");
+
+        let secret = result.unwrap();
+        assert_eq!(secret.len(), 32);
+        // The last byte should be 10 (the secret)
+        assert_eq!(secret[31], 10, "Lagrange should recover the original secret");
+    }
+}
+

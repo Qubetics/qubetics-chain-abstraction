@@ -261,7 +261,7 @@ impl NonceManager {
 
         let round = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         self.generation_in_progress.store(true, Ordering::SeqCst);
@@ -515,7 +515,7 @@ impl NonceManager {
 
         let round = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         debug!(
@@ -578,7 +578,7 @@ impl NonceManager {
         // Start the first batch - subsequent batches will be triggered as they complete
         let round = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         self.generation_in_progress.store(true, Ordering::SeqCst);
@@ -1026,7 +1026,7 @@ impl NonceManager {
             commitments,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis(),
         };
 
@@ -1122,7 +1122,7 @@ impl NonceManager {
             commitments,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis(),
         };
 
@@ -1270,7 +1270,7 @@ impl NonceManager {
                 commitments: our_commitments,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_millis(),
             };
             self.broadcast_signing_message(msg).await?;
@@ -1333,7 +1333,7 @@ impl NonceManager {
                         k_shares,
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_millis(),
                     };
                     drop(batches); // Release lock before async call
@@ -1666,14 +1666,14 @@ impl NonceManager {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F",
             16,
         )
-        .unwrap();
+        .expect("secp256k1 field prime constant");
 
         // secp256k1 group order
         let n = BigUint::parse_bytes(
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .expect("secp256k1 group order constant");
 
         let r = BigUint::from_bytes_be(&r_scalar.to_bytes());
 
@@ -1850,7 +1850,7 @@ impl NonceManager {
         // No nonces available - start generation
         let round = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         info!(

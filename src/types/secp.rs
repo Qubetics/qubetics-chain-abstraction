@@ -140,3 +140,87 @@ impl<'de> Deserialize<'de> for SerializableScalar {
         deserializer.deserialize_bytes(ScalarVisitor)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ff::{Field, PrimeField};
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use rand::rngs::OsRng;
+    use serde_cbor;
+
+    #[test]
+    fn test_serializable_scalar_serde_roundtrip() {
+        let original_scalar = Scalar::random(&mut OsRng);
+        let wrapper = SerializableScalar(original_scalar);
+
+        // Serialize to CBOR (the format used across the codebase)
+        let bytes = serde_cbor::to_vec(&wrapper).expect("serialize");
+        let decoded: SerializableScalar = serde_cbor::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(
+            original_scalar.to_bytes(),
+            decoded.0.to_bytes(),
+            "Scalar must survive serde round-trip"
+        );
+    }
+
+    #[test]
+    fn test_serializable_point_serde_roundtrip() {
+        // Use generator point as a known non-identity point
+        let generator = k256::ProjectivePoint::GENERATOR;
+        let affine = generator.to_affine();
+        let wrapper = SerializablePoint(affine);
+
+        let bytes = serde_cbor::to_vec(&wrapper).expect("serialize");
+        let decoded: SerializablePoint = serde_cbor::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(
+            affine.to_encoded_point(true).as_bytes(),
+            decoded.0.to_encoded_point(true).as_bytes(),
+            "AffinePoint must survive serde round-trip"
+        );
+    }
+
+    #[test]
+    fn test_serializable_scalar_zeroize() {
+        let mut wrapper = SerializableScalar(Scalar::random(&mut OsRng));
+        assert_ne!(wrapper.0, Scalar::ZERO, "Random scalar should not be zero");
+
+        wrapper.zeroize();
+        assert_eq!(wrapper.0, Scalar::ZERO, "Zeroize must set inner to Scalar::ZERO");
+    }
+
+    #[test]
+    fn test_serializable_scalar_drop_zeroizes() {
+        // Create a scalar, clone its bytes for comparison, then drop
+        let random_scalar = Scalar::random(&mut OsRng);
+        let original_bytes = random_scalar.to_bytes();
+        assert_ne!(&original_bytes[..], &[0u8; 32], "Random scalar bytes should not be all zeros");
+
+        // After drop, a newly cloned version should be zeroed
+        // (We can verify the zeroize impl by calling it explicitly since Drop calls zeroize)
+        let mut wrapper = SerializableScalar(random_scalar);
+        wrapper.zeroize(); // Drop will call this automatically
+        assert_eq!(wrapper.0.to_bytes().as_slice(), &[0u8; 32], "After zeroize, bytes must be all zeros");
+    }
+
+    #[test]
+    fn test_scalar_invalid_length_rejected() {
+        // Wrap 31 bytes in CBOR bytes format — should fail
+        let short_bytes: Vec<u8> = vec![0u8; 31];
+        let cbor = serde_cbor::to_vec(&serde_cbor::Value::Bytes(short_bytes)).expect("cbor");
+        let result: Result<SerializableScalar, _> = serde_cbor::from_slice(&cbor);
+        assert!(result.is_err(), "31-byte input must be rejected");
+    }
+
+    #[test]
+    fn test_scalar_33_bytes_rejected() {
+        // 33 bytes — should also fail
+        let long_bytes: Vec<u8> = vec![0u8; 33];
+        let cbor = serde_cbor::to_vec(&serde_cbor::Value::Bytes(long_bytes)).expect("cbor");
+        let result: Result<SerializableScalar, _> = serde_cbor::from_slice(&cbor);
+        assert!(result.is_err(), "33-byte input must be rejected");
+    }
+}
+

@@ -467,7 +467,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
 
         // 8) k⁻¹ mod n
         let k_inv = BigUint::from_bytes_be(&k_bytes)
@@ -589,7 +589,7 @@ impl SigningNode {
             b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
             16,
         )
-        .unwrap();
+        .ok_or_else(|| anyhow!("failed to parse secp256k1 curve order"))?;
         // 6) s = k⁻¹ * (z + r * x) mod n
         // Note: With aggregated k, all nodes compute the same s for their key share
         let s = (&k_inv * (&z + (&r * &x) % &n)) % &n;
@@ -697,3 +697,99 @@ impl SigningNode {
     }
 
 }
+
+#[cfg(test)]
+mod keys_tests {
+    use super::*;
+    use k256::Scalar;
+    use secp256k1::{SecretKey, Message};
+    use tokio::sync::mpsc;
+
+    fn make_signing_node() -> SigningNode {
+        let (tx, _rx) = mpsc::channel(1);
+        SigningNode::new("test-node-keys".to_string(), 2, tx)
+    }
+
+    #[test]
+    fn test_der_signature_format_basic() {
+        let r = [0x01u8; 32];
+        let s = [0x01u8; 32];
+        let der = SigningNode::create_der_signature_p2wpkh(&r, &s);
+
+        // DER format: 0x30 <len> 0x02 <r_len> <r> 0x02 <s_len> <s>
+        assert_eq!(der[0], 0x30, "Must start with SEQUENCE tag");
+        assert_eq!(der[2], 0x02, "r must have INTEGER tag");
+        // Total length in der[1] should equal remaining bytes
+        assert_eq!(der[1] as usize, der.len() - 2, "Length byte must match");
+    }
+
+    #[test]
+    fn test_der_signature_high_bit_padding() {
+        // r starts with 0x80 → should get a 0x00 prepended
+        let mut r = [0x00u8; 32];
+        r[0] = 0x80;
+        let s = [0x01u8; 32];
+        let der = SigningNode::create_der_signature_p2wpkh(&r, &s);
+
+        // Find r data: starts at der[4]
+        let r_len = der[3] as usize;
+        // When MSB is set, DER adds 0x00 prefix → length should be 33
+        assert_eq!(r_len, 33, "High-bit r should have 33-byte encoded length");
+        assert_eq!(der[4], 0x00, "High-bit r must be prepended with 0x00");
+    }
+
+    #[test]
+    fn test_der_signature_strips_leading_zeros() {
+        // r has leading zeros → should be stripped
+        let mut r = [0x00u8; 32];
+        r[31] = 0x42; // Only last byte is non-zero
+        let s = [0x01u8; 32];
+        let der = SigningNode::create_der_signature_p2wpkh(&r, &s);
+
+        let r_len = der[3] as usize;
+        assert_eq!(r_len, 1, "Leading zeros in r should be stripped (only 0x42 remains)");
+        assert_eq!(der[4], 0x42);
+    }
+
+    #[test]
+    fn test_generate_key_pair_on_signing_node() {
+        let mut node = make_signing_node();
+        assert!(!node.has_private_key());
+
+        node.generate_key_pair().expect("key generation should succeed");
+        assert!(node.has_private_key());
+    }
+
+    #[test]
+    fn test_set_private_key_from_scalar() {
+        let mut node = make_signing_node();
+        let scalar = Scalar::ONE;
+        node.set_private_key_from_scalar(scalar);
+        assert!(node.has_private_key());
+    }
+
+    #[test]
+    fn test_derive_secp_secret_valid() {
+        let scalar = Scalar::ONE;
+        let result = SigningNode::derive_secp_secret(&scalar);
+        assert!(result.is_ok(), "Scalar::ONE should produce a valid SecretKey");
+    }
+
+    #[test]
+    fn test_set_and_get_group_public_key() {
+        let mut node = make_signing_node();
+        let point = k256::ProjectivePoint::GENERATOR;
+
+        assert!(node.get_group_public_key().is_none());
+        node.set_group_public_key(point);
+        assert_eq!(node.get_group_public_key().unwrap(), point);
+    }
+
+    #[tokio::test]
+    async fn test_has_dkg_share_without_storage() {
+        let node = make_signing_node();
+        // Without DKG storage set, should always return false
+        assert!(!node.has_dkg_share().await);
+    }
+}
+

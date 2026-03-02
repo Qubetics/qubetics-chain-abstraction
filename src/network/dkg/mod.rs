@@ -15,7 +15,7 @@ impl MpcNetworkLayer {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         let delay = start_time_unix.saturating_sub(now);
 

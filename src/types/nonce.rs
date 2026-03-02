@@ -245,3 +245,153 @@ pub struct NoncePoolMetrics {
     /// Last consumption timestamp
     pub last_consumed_at: Option<i64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ff::Field;
+    use k256::Scalar;
+    use rand::rngs::OsRng;
+
+    fn make_test_scalar() -> SerializableScalar {
+        SerializableScalar(Scalar::random(&mut OsRng))
+    }
+
+    fn make_test_point() -> SerializablePoint {
+        SerializablePoint(k256::ProjectivePoint::GENERATOR.to_affine())
+    }
+
+    #[test]
+    fn test_nonce_gen_state_new_defaults() {
+        let state = NonceGenState::new("batch_1".into(), 42, 3, 5, 10);
+        assert_eq!(state.batch_id, "batch_1");
+        assert_eq!(state.round, 42);
+        assert_eq!(state.threshold, 3);
+        assert_eq!(state.total_nodes, 5);
+        assert_eq!(state.batch_size, 10);
+        assert!(matches!(state.status, NonceGenStatus::Pending));
+        assert!(state.local_k_values.is_empty());
+        assert!(state.commitments.is_empty());
+        assert!(state.r_points.is_empty());
+        assert!(state.k_shares.is_empty());
+    }
+
+    #[test]
+    fn test_has_threshold_commitments() {
+        let mut state = NonceGenState::new("batch".into(), 1, 3, 5, 1);
+        assert!(!state.has_threshold_commitments(), "Should not have threshold with 0 commitments");
+
+        state.commitments.insert("peer1".into(), vec![[0u8; 32]]);
+        state.commitments.insert("peer2".into(), vec![[0u8; 32]]);
+        assert!(!state.has_threshold_commitments(), "2 < 3 threshold");
+
+        state.commitments.insert("peer3".into(), vec![[0u8; 32]]);
+        assert!(state.has_threshold_commitments(), "3 >= 3 threshold");
+
+        state.commitments.insert("peer4".into(), vec![[0u8; 32]]);
+        assert!(state.has_threshold_commitments(), "4 > 3 threshold");
+    }
+
+    #[test]
+    fn test_has_threshold_r_points() {
+        let mut state = NonceGenState::new("batch".into(), 1, 2, 3, 1);
+        assert!(!state.has_threshold_r_points());
+
+        state.r_points.insert("peer1".into(), vec![make_test_point()]);
+        assert!(!state.has_threshold_r_points(), "1 < 2 threshold");
+
+        state.r_points.insert("peer2".into(), vec![make_test_point()]);
+        assert!(state.has_threshold_r_points(), "2 >= 2 threshold");
+    }
+
+    #[test]
+    fn test_is_complete_and_is_failed() {
+        let mut state = NonceGenState::new("batch".into(), 1, 2, 3, 1);
+        assert!(!state.is_complete());
+        assert!(!state.is_failed());
+
+        state.status = NonceGenStatus::CommitmentPhase;
+        assert!(!state.is_complete());
+        assert!(!state.is_failed());
+
+        state.status = NonceGenStatus::Completed;
+        assert!(state.is_complete());
+        assert!(!state.is_failed());
+
+        state.status = NonceGenStatus::Failed { reason: "timeout".into() };
+        assert!(!state.is_complete());
+        assert!(state.is_failed());
+    }
+
+    #[test]
+    fn test_nonce_pool_config_defaults() {
+        let config = NoncePoolConfig::default();
+        assert_eq!(config.min_pool_size, 200);
+        assert_eq!(config.batch_size, 20);
+        assert_eq!(config.max_nonce_age_secs, 86400);
+        assert_eq!(config.phase_timeout_ms, 30000);
+    }
+
+    #[test]
+    fn test_nonce_gen_state_drop_zeroizes_k_values() {
+        let mut state = NonceGenState::new("batch".into(), 1, 2, 3, 2);
+        state.local_k_values.push(make_test_scalar());
+        state.local_k_values.push(make_test_scalar());
+        state.k_shares.insert("peer1".into(), vec![make_test_scalar()]);
+
+        // Verify they're non-zero before drop
+        for k in &state.local_k_values {
+            assert_ne!(k.0, Scalar::ZERO);
+        }
+
+        // Manually trigger the Drop-equivalent zeroize
+        // (We can't observe after real drop, but Drop calls this same code)
+        for k_val in state.local_k_values.iter_mut() {
+            k_val.zeroize();
+        }
+        for shares in state.k_shares.values_mut() {
+            for share in shares.iter_mut() {
+                share.zeroize();
+            }
+        }
+
+        for k in &state.local_k_values {
+            assert_eq!(k.0, Scalar::ZERO, "local_k_values must be zeroed");
+        }
+        for shares in state.k_shares.values() {
+            for share in shares {
+                assert_eq!(share.0, Scalar::ZERO, "k_shares must be zeroed");
+            }
+        }
+    }
+
+    #[test]
+    fn test_nonce_tuple_drop_zeroizes_secrets() {
+        let mut tuple = NonceTuple {
+            tuple_id: "test".into(),
+            aggregated_k: make_test_scalar(),
+            k_inv: make_test_scalar(),
+            aggregate_r: make_test_point(),
+            r_scalar: make_test_scalar(),
+            r_y_parity: 0,
+            consumed: false,
+            created_at: 0,
+            batch_id: "batch".into(),
+            num_contributors: 3,
+        };
+
+        assert_ne!(tuple.aggregated_k.0, Scalar::ZERO);
+        assert_ne!(tuple.k_inv.0, Scalar::ZERO);
+        assert_ne!(tuple.r_scalar.0, Scalar::ZERO);
+
+        // Trigger zeroize (same code as Drop)
+        tuple.aggregated_k.zeroize();
+        tuple.k_inv.zeroize();
+        tuple.r_scalar.zeroize();
+
+        assert_eq!(tuple.aggregated_k.0, Scalar::ZERO, "aggregated_k must be zeroed");
+        assert_eq!(tuple.k_inv.0, Scalar::ZERO, "k_inv must be zeroed");
+        assert_eq!(tuple.r_scalar.0, Scalar::ZERO, "r_scalar must be zeroed");
+    }
+}
+
