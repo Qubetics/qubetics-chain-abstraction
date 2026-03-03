@@ -1008,14 +1008,12 @@ impl NonceManager {
         state.local_r_values = local_r_values;
         state.status = NonceGenStatus::CommitmentPhase;
 
-        // Store in active batches
+        // Persist to storage first (by reference), then move into active batches
+        self.storage.store_batch_state(&state).await?;
         {
             let mut batches = self.active_batches.write().await;
-            batches.insert(batch_id.clone(), state.clone());
+            batches.insert(batch_id.clone(), state);
         }
-
-        // Persist to storage
-        self.storage.store_batch_state(&state).await?;
 
         // Broadcast commitment message with all commitments
         let msg = SigningMessage::NonceCommitment {
@@ -1104,14 +1102,12 @@ impl NonceManager {
         state.local_r_values = local_r_values;
         state.status = NonceGenStatus::CommitmentPhase;
 
-        // Store in active batches
+        // Persist to storage first (by reference), then move into active batches
+        self.storage.store_batch_state(&state).await?;
         {
             let mut batches = self.active_batches.write().await;
-            batches.insert(batch_id.to_string(), state.clone());
+            batches.insert(batch_id.to_string(), state);
         }
-
-        // Persist to storage
-        self.storage.store_batch_state(&state).await?;
 
         // Broadcast commitment message with all commitments
         let msg = SigningMessage::NonceCommitment {
@@ -1256,11 +1252,13 @@ impl NonceManager {
             state.local_k_values = local_k_values;
             state.local_r_values = local_r_values;
             state.status = NonceGenStatus::CommitmentPhase;
-            batches.insert(batch_id.to_string(), state.clone());
-
-            // Persist and broadcast our commitments
+            // Persist first (by reference), then move into batches map
             drop(batches); // Release lock before async call
             self.storage.store_batch_state(&state).await?;
+
+            // Re-acquire lock and insert (move, no clone)
+            batches = self.active_batches.write().await;
+            batches.insert(batch_id.to_string(), state);
 
             let msg = SigningMessage::NonceCommitment {
                 from: self.id.clone(),
