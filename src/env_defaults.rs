@@ -17,11 +17,12 @@ pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9030";
 /// Default MPC Ethereum RPC URL.
 pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc.qubetics.com";
 /// Default MPC Bitcoin broadcast API URL.
-pub const DEFAULT_MPC_BITCOIN_RPC_URL: &str = "https://prod-btc-sync.qubetics.work/api/v1/tx/broadcast";
+pub const DEFAULT_MPC_BITCOIN_RPC_URL: &str =
+    "https://crypto-api.ticssolver.com/api/v1/tx/broadcast";
 /// Default backend API base URL.
-pub const DEFAULT_BACKEND_API_URL: &str = "https://prod-crypto-api.qubetics.work";
+pub const DEFAULT_BACKEND_API_URL: &str = "https://crypto-api.ticssolver.com";
 /// Default BTC UTXO API base URL.
-pub const DEFAULT_BTC_UTXO_API_BASE: &str = "https://prod-crypto-api.qubetics.work";
+pub const DEFAULT_BTC_UTXO_API_BASE: &str = "https://crypto-api.ticssolver.com";
 /// Default RPC API key (for auth).
 pub const DEFAULT_RPC_API_KEY: &str = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 /// Default chain code hex (BIP32 chain code).
