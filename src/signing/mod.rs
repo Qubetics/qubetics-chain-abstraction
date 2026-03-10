@@ -1060,6 +1060,26 @@ impl SigningNode {
         };
         let agg_r = first_compact[0..32].to_vec();
 
+        // ─── r-consistency check: all partial sigs must share the same r ──────────────
+        // If r differs between signers their partial-s values were computed with different
+        // nonce k, so Lagrange interpolation will produce a garbage signature.
+        for (i, sig) in signatures.iter().enumerate().skip(1) {
+            let (_recid_i, compact_i) = sig.serialize_compact();
+            if compact_i[0..32] != first_compact[0..32] {
+                error!(
+                    "❌ [SIGNING] r-scalar MISMATCH between signer 0 and signer {}: \
+                     0x{} vs 0x{} — partial signatures used different nonces, \
+                     aggregate will be invalid. Dropping this batch.",
+                    i,
+                    hex::encode(&first_compact[0..32]),
+                    hex::encode(&compact_i[0..32])
+                );
+                return Err(anyhow!(
+                    "r-scalar mismatch across partial signatures: signers used different nonces"
+                ));
+            }
+        }
+
         // ─── 2) Build the (index, s_bytes) list ──────────────────────────────────────
         debug!(
             "[SIGNING] Aggregating {} signatures with peer-to-index mapping: {:?}",

@@ -1793,16 +1793,19 @@ impl NonceManager {
 
     /// Store a nonce tuple received via broadcast from another node.
     /// Used by observer nodes to populate their nonce pool for final-node coordination.
-    /// DKG nodes may also receive these (harmless duplicate — already stored during generation).
+    /// DKG nodes also receive these — always overwrite unconsumed tuples so a node that
+    /// locally computed a wrong aggregate (e.g. local_r_values were missing at finalization)
+    /// is corrected by a peer that computed correctly.
+    /// All nodes that ran the protocol correctly produce identical tuples for the same
+    /// batch_id, so accepting a peer's version is always safe.
     pub async fn store_received_nonce_tuple(&self, tuple: NonceTuple) -> Result<()> {
-        // Skip if already stored (DKG nodes store during generation)
-        if self
-            .storage
-            .get_nonce_tuple(&tuple.tuple_id)
-            .await?
-            .is_some()
-        {
-            return Ok(());
+        if let Some(existing) = self.storage.get_nonce_tuple(&tuple.tuple_id).await? {
+            // Never un-consume a nonce that was already used for signing.
+            if existing.consumed {
+                return Ok(());
+            }
+            // Overwrite: all correctly-operating nodes compute the same tuple for the
+            // same batch_id, so the peer's version is as good as (or better than) ours.
         }
         self.storage.store_nonce_tuple(&tuple).await?;
         Ok(())
