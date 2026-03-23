@@ -136,6 +136,7 @@ impl DkgStorage {
         let mut map: HashMap<String, HashMap<String, bool>> = HashMap::new();
         for (key, is_valid) in results {
             if let Some(stripped) = key.strip_prefix(prefix) {
+                // stripped is now "<to>:<from>"
                 if let Some((to, from)) = stripped.split_once(':') {
                     map.entry(to.to_string())
                         .or_default()
@@ -197,17 +198,29 @@ impl DkgStorage {
         Ok(())
     }
 
-    pub async fn set_liquidity_operator_addresses(&self, eth_address: &str, btc_address: &str) -> Result<()> {
-        self.db
-            .put_string(keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS, &eth_address.to_string())?;
-        self.db
-            .put_string(keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS, &btc_address.to_string())?;
+    pub async fn set_liquidity_operator_addresses(
+        &self,
+        eth_address: &str,
+        btc_address: &str,
+    ) -> Result<()> {
+        self.db.put_string(
+            keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS,
+            &eth_address.to_string(),
+        )?;
+        self.db.put_string(
+            keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS,
+            &btc_address.to_string(),
+        )?;
         Ok(())
     }
 
     pub async fn get_liquidity_operator_addresses(&self) -> Result<Option<(String, String)>> {
-        let eth: Option<String> = self.db.get_string(keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)?;
-        let btc: Option<String> = self.db.get_string(keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)?;
+        let eth: Option<String> = self
+            .db
+            .get_string(keys::DKG_LIQUIDITY_OPERATOR_ETH_ADDRESS)?;
+        let btc: Option<String> = self
+            .db
+            .get_string(keys::DKG_LIQUIDITY_OPERATOR_BTC_ADDRESS)?;
         if let (Some(e), Some(b)) = (eth, btc) {
             Ok(Some((e, b)))
         } else {
@@ -316,7 +329,6 @@ impl DkgStorage {
         Ok(())
     }
 
-
     /// Set the initial DKG completion flag (marks that the initial 4-node DKG is complete)
     pub async fn set_initial_dkg_complete(&self, is_complete: bool) -> Result<()> {
         self.db
@@ -353,7 +365,8 @@ impl DkgStorage {
 
     /// Store the PeerIds of the invulnerable nodes (the initial DKG signers that generated shares)
     pub fn set_invulnerables(&self, peer_ids: &[String]) -> Result<()> {
-        self.db.put_string(keys::DKG_INVULNERABLES, &peer_ids.to_vec())?;
+        self.db
+            .put_string(keys::DKG_INVULNERABLES, &peer_ids.to_vec())?;
         tracing::info!(
             "🔢 [DKG_STORAGE] Stored invulnerables ({}): {:?}",
             peer_ids.len(),
@@ -460,7 +473,8 @@ impl DkgStorage {
 
     /// Set the list of peer IDs from which we expect to receive shares this round
     pub async fn set_expected_shares(&self, peer_ids: &[String]) -> Result<()> {
-        self.db.put_string(keys::DKG_EXPECTED_SHARES, &peer_ids.to_vec())?;
+        self.db
+            .put_string(keys::DKG_EXPECTED_SHARES, &peer_ids.to_vec())?;
         info!(
             "📋 [DKG_STORAGE] Set expected shares from {} peers: {:?}",
             peer_ids.len(),
@@ -481,7 +495,7 @@ impl DkgStorage {
     /// Mark that we have received a share from a specific peer
     pub async fn mark_share_received(&self, from_peer_id: &str) -> Result<bool> {
         let key = format!("{}{}", keys::DKG_RECEIVED_SHARE, from_peer_id);
-        
+
         // Check if already received (return false if duplicate)
         if self.db.get_string::<bool>(&key)?.unwrap_or(false) {
             info!(
@@ -545,7 +559,7 @@ impl DkgStorage {
 
         // Clear expected shares
         self.db.delete_string(keys::DKG_EXPECTED_SHARES)?;
-        
+
         info!("🗑️ [DKG_STORAGE] Cleared share tracking data");
         Ok(())
     }
@@ -571,31 +585,22 @@ impl DkgStorage {
         let affine = pubkey.to_affine();
         let serial = SerializablePoint(affine);
         self.db.put_string(&key, &serial)?;
-        
+
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
         let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
-        
+
         info!(
             "✅ [DKG_STORAGE] Stored network share pubkey for peer: {}",
             peer_id
         );
-        info!(
-            "   📍 Network Share ETH Address: {}",
-            eth_addr
-        );
-        info!(
-            "   📍 Network Share BTC Address: {}",
-            btc_addr
-        );
+        info!("   📍 Network Share ETH Address: {}", eth_addr);
+        info!("   📍 Network Share BTC Address: {}", btc_addr);
         Ok(())
     }
 
     /// Get network share public key for a peer
-    pub async fn get_network_share_pubkey(
-        &self,
-        peer_id: &str,
-    ) -> Result<Option<ProjectivePoint>> {
+    pub async fn get_network_share_pubkey(&self, peer_id: &str) -> Result<Option<ProjectivePoint>> {
         use crate::database::key_utils;
         let key = key_utils::node_share_pubkey_network_key(peer_id);
         let result = self.db.get_string::<SerializablePoint>(&key)?;
@@ -613,31 +618,22 @@ impl DkgStorage {
         let affine = pubkey.to_affine();
         let serial = SerializablePoint(affine);
         self.db.put_string(&key, &serial)?;
-        
+
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
         let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
-        
+
         info!(
             "✅ [DKG_STORAGE] Stored vault share pubkey for peer: {}",
             peer_id
         );
-        info!(
-            "   📍 Vault Share ETH Address: {}",
-            eth_addr
-        );
-        info!(
-            "   📍 Vault Share BTC Address: {}",
-            btc_addr
-        );
+        info!("   📍 Vault Share ETH Address: {}", eth_addr);
+        info!("   📍 Vault Share BTC Address: {}", btc_addr);
         Ok(())
     }
 
     /// Get vault share public key for a peer
-    pub async fn get_vault_share_pubkey(
-        &self,
-        peer_id: &str,
-    ) -> Result<Option<ProjectivePoint>> {
+    pub async fn get_vault_share_pubkey(&self, peer_id: &str) -> Result<Option<ProjectivePoint>> {
         use crate::database::key_utils;
         let key = key_utils::node_share_pubkey_vault_key(peer_id);
         let result = self.db.get_string::<SerializablePoint>(&key)?;
@@ -656,23 +652,17 @@ impl DkgStorage {
         let affine = pubkey.to_affine();
         let serial = SerializablePoint(affine);
         self.db.put_string(&key, &serial)?;
-        
+
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
         let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
-        
+
         info!(
             "✅ [DKG_STORAGE] Stored user share pubkey for peer: {} user: {}",
             peer_id, user_tics_address
         );
-        info!(
-            "   📍 User Share ETH Address: {}",
-            eth_addr
-        );
-        info!(
-            "   📍 User Share BTC Address: {}",
-            btc_addr
-        );
+        info!("   📍 User Share ETH Address: {}", eth_addr);
+        info!("   📍 User Share BTC Address: {}", btc_addr);
         Ok(())
     }
 
@@ -764,7 +754,8 @@ impl DkgStorage {
         );
 
         // Aggregate commitments: aggregated_C[k] = sum over all peers i of C_i[k]
-        let mut aggregated_commitments: Vec<ProjectivePoint> = vec![ProjectivePoint::IDENTITY; max_degree];
+        let mut aggregated_commitments: Vec<ProjectivePoint> =
+            vec![ProjectivePoint::IDENTITY; max_degree];
         for (_peer_id, peer_commitments) in commitments.iter() {
             for (k, commitment) in peer_commitments.iter().enumerate() {
                 if k < max_degree {
@@ -786,10 +777,8 @@ impl DkgStorage {
                 .ok_or_else(|| anyhow::anyhow!("No DKG index found for peer {}", peer_id))?;
 
             // Evaluate aggregated polynomial: aggregated_C[0] + aggregated_C[1]*j + aggregated_C[2]*j^2 + ...
-            let network_share_pubkey = self.evaluate_aggregated_polynomial(
-                &aggregated_commitments,
-                dkg_index as u32,
-            )?;
+            let network_share_pubkey =
+                self.evaluate_aggregated_polynomial(&aggregated_commitments, dkg_index as u32)?;
 
             // Compute user share pubkey: network_share + user_tweak_point
             let user_share_pubkey = network_share_pubkey + user_tweak_point;
@@ -832,14 +821,17 @@ impl DkgStorage {
     /// This is useful for debugging and verification
     pub async fn log_all_stored_share_pubkeys(&self) -> Result<()> {
         use crate::utils::{get_btc_address_from_group_key, get_eth_address_from_group_key};
-        
+
         info!("🔍 [DKG_STORAGE] === Logging all stored share public keys ===");
-        
+
         let peer_indices = self.get_peer_indices().await?;
 
         for (peer_id, _) in peer_indices.iter() {
-            info!("🔍 [DKG_STORAGE] === Share Pubkeys for Peer: {} ===", peer_id);
-            
+            info!(
+                "🔍 [DKG_STORAGE] === Share Pubkeys for Peer: {} ===",
+                peer_id
+            );
+
             // Network share pubkey
             if let Ok(Some(network_pubkey)) = self.get_network_share_pubkey(peer_id).await {
                 let eth_addr = get_eth_address_from_group_key(network_pubkey);
@@ -850,7 +842,7 @@ impl DkgStorage {
             } else {
                 warn!("  ⚠️ Network share pubkey not found for peer: {}", peer_id);
             }
-            
+
             // Vault share pubkey
             if let Ok(Some(vault_pubkey)) = self.get_vault_share_pubkey(peer_id).await {
                 let eth_addr = get_eth_address_from_group_key(vault_pubkey);
@@ -861,7 +853,7 @@ impl DkgStorage {
             } else {
                 warn!("  ⚠️ Vault share pubkey not found for peer: {}", peer_id);
             }
-            
+
             // User share pubkeys
             if let Ok(user_pubkeys) = self.get_all_user_share_pubkeys_for_peer(peer_id).await {
                 if !user_pubkeys.is_empty() {
@@ -869,16 +861,22 @@ impl DkgStorage {
                     for (user_addr, user_pubkey) in user_pubkeys.iter() {
                         let eth_addr = get_eth_address_from_group_key(*user_pubkey);
                         let btc_addr = get_btc_address_from_group_key(*user_pubkey);
-                        info!("     User: {} -> ETH: {}, BTC: {}", user_addr, eth_addr, btc_addr);
+                        info!(
+                            "     User: {} -> ETH: {}, BTC: {}",
+                            user_addr, eth_addr, btc_addr
+                        );
                     }
                 } else {
                     info!("  ℹ️ No user share pubkeys stored for peer: {}", peer_id);
                 }
             } else {
-                warn!("  ⚠️ Failed to retrieve user share pubkeys for peer: {}", peer_id);
+                warn!(
+                    "  ⚠️ Failed to retrieve user share pubkeys for peer: {}",
+                    peer_id
+                );
             }
         }
-        
+
         info!("✅ [DKG_STORAGE] === Finished logging all stored share public keys ===");
         Ok(())
     }

@@ -92,7 +92,6 @@ pub enum RPCRequest {
         share_index: usize,
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
-        round: u64,
     },
 
     /// Unicast an ECDSA signature to the final node (P2P, not broadcast)
@@ -369,8 +368,8 @@ impl RequestResponseCodec for MPCCodec {
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
     // Increased from 180s to 300s to support 50 parallel intents with paced sends and receiver concurrency
     // This prevents timeouts when the final node is processing many parallel RPCs
-    let cfg = RequestResponseConfig::default()
-        .with_request_timeout(std::time::Duration::from_secs(300));
+    let cfg =
+        RequestResponseConfig::default().with_request_timeout(std::time::Duration::from_secs(300));
 
     let proto = StreamProtocol::new(MPCProtocol.as_ref());
     let protocols = std::iter::once((proto, ProtocolSupport::Full));

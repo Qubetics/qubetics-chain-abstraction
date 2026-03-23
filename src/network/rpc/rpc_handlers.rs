@@ -93,16 +93,9 @@ impl MpcNetworkLayer {
                 share_index,
                 share_value,
                 commitments,
-                round,
             } => {
-                self.handle_incoming_dkg_share(
-                    from_node_id,
-                    share_index,
-                    share_value,
-                    commitments,
-                    round,
-                )
-                .await
+                self.handle_incoming_dkg_share(from_node_id, share_index, share_value, commitments)
+                    .await
             }
             RPCRequest::SendECDSASignature {
                 from_node_id,
@@ -547,7 +540,6 @@ impl MpcNetworkLayer {
         share_index: usize,
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
-        _round: u64,
     ) -> RPCResponse {
         let dkg_node = match &mut self.dkg_node {
             Some(node) => node,

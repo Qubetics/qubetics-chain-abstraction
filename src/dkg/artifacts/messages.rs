@@ -7,7 +7,6 @@ pub enum DKGMessage {
         from: String,
         to: String,
         is_valid: bool,
-        round: u64,
     },
     /// Broadcasted when a node disconnects to notify all other nodes
     NodeDisconnected {
@@ -18,6 +17,5 @@ pub enum DKGMessage {
     CommitmentBroadcast {
         from: String,
         commitments: Vec<SerializablePoint>,
-        round: u64,
     },
 }

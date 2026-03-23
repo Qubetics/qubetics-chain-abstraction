@@ -68,12 +68,11 @@ impl DKGNode {
                         .add_validation(&self.id, &self.id, true)
                         .await?;
 
-                    // Broadcast validation
+                    // Broadcast own share validation
                     let validation_msg = ShareValidation {
                         from: self.id.clone(),
                         to: self.id.clone(),
                         is_valid: true,
-                        round: self.current_round(),
                     };
                     let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
                     let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
@@ -141,7 +140,6 @@ impl DKGNode {
                     share_index: share.index,
                     share_value: share.value.clone(),
                     commitments: commitments.clone(),
-                    round,
                     retry_count: 0,
                 };
 
@@ -169,12 +167,9 @@ impl DKGNode {
     }
 
     async fn broadcast_commitments(&self, commitments: Vec<SerializablePoint>) -> Result<()> {
-        let round = self.current_round();
-
         let dkg_msg = DKGMessage::CommitmentBroadcast {
             from: self.id.clone(),
             commitments,
-            round,
         };
 
         let gossip_wrap = GossipsubMessage::DKG(dkg_msg);

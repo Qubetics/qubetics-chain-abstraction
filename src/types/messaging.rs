@@ -390,7 +390,6 @@ pub enum ChannelMessage {
         share_index: usize,
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
-        round: u64,
         retry_count: u8,
     },
     /// Unicast a critical gossip message via P2P RPC

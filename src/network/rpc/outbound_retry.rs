@@ -19,7 +19,6 @@ pub enum RetryableUnicast {
         share_index: usize,
         share_value: SerializableScalar,
         commitments: Vec<SerializablePoint>,
-        round: u64,
     },
     UnicastCritical {
         target_peer_id: String,

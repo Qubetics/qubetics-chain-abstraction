@@ -1532,7 +1532,6 @@ impl MpcNetworkLayer {
                 share_index,
                 share_value,
                 commitments,
-                round,
                 retry_count,
             } => {
                 const MAX_RETRIES: u8 = 10;
@@ -1618,7 +1617,6 @@ impl MpcNetworkLayer {
                         share_index,
                         share_value,
                         commitments,
-                        round,
                         retry_count: retry_count + 1,
                     };
 
@@ -1662,7 +1660,6 @@ impl MpcNetworkLayer {
                             share_index,
                             share_value: share_value.clone(),
                             commitments: commitments.clone(),
-                            round,
                             retry_count,
                         };
                         tokio::spawn(async move {
@@ -1687,7 +1684,6 @@ impl MpcNetworkLayer {
                     share_index,
                     share_value,
                     commitments,
-                    round,
                 };
 
                 // Send via request-response protocol (unicast, not broadcast)
@@ -1705,7 +1701,6 @@ impl MpcNetworkLayer {
                         share_index,
                         share_value: share_value_clone,
                         commitments: commitments_clone,
-                        round,
                     };
                     let entry = OutboundRetryEntry {
                         peer: peer_id,

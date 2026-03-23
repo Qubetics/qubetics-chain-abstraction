@@ -350,7 +350,7 @@ impl DKGNode {
             share_index, from_node_id
         );
 
-        // Check for duplicate share (prevents replay attacks)
+        // Check for duplicate share (per-session dedup, reset clears this)
         if self.storage.is_share_received(&from_node_id).await? {
             warn!(
                 "⚠️ [DKG-SECURE] Duplicate share from {} (already received), ignoring",
@@ -393,9 +393,8 @@ impl DKGNode {
             }
         };
 
-        // Verify the share against commitments
+        // Verify the share against commitments (cryptographic guarantee)
         if self.verify_share(&share_value, share_index, &verification_commitments) {
-            // Store the share
             let key_share = KeyShare {
                 index: share_index,
                 value: share_value,
@@ -403,17 +402,14 @@ impl DKGNode {
 
             self.storage.store_share(&from_node_id, &key_share).await?;
 
-            // Store commitments
             let raw_commitments: Vec<AffinePoint> =
                 verification_commitments.iter().map(|c| c.0).collect();
             self.storage
                 .store_commitments(&from_node_id, &raw_commitments)
                 .await?;
 
-            // Mark share as received in tracking database
             self.storage.mark_share_received(&from_node_id).await?;
 
-            // Add validation
             self.storage
                 .add_validation(&self.id, &from_node_id, true)
                 .await?;
@@ -421,13 +417,11 @@ impl DKGNode {
             self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager)
                 .await?;
 
-            // Broadcast validation message to network
-            let round = self.current_round();
+            // Broadcast validation
             let validation_msg = ShareValidation {
                 from: self.id.clone(),
                 to: from_node_id.clone(),
                 is_valid: true,
-                round,
             };
             let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
             let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;
@@ -445,13 +439,10 @@ impl DKGNode {
                 share_index, from_node_id
             );
 
-            // Broadcast failed validation
-            let round = self.current_round();
             let validation_msg = ShareValidation {
                 from: self.id.clone(),
                 to: from_node_id.clone(),
                 is_valid: false,
-                round,
             };
             let gossip_wrapped = GossipsubMessage::DKG(validation_msg);
             let msg_bytes = serde_json::to_vec(&gossip_wrapped)?;

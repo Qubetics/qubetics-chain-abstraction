@@ -19,7 +19,9 @@ fn temp_db() -> (Database, tempfile::TempDir) {
     (Database::new(cfg).unwrap(), tmp)
 }
 
-fn s(val: u64) -> Scalar { Scalar::from(val) }
+fn s(val: u64) -> Scalar {
+    Scalar::from(val)
+}
 
 // === Final Secret / Public ===
 
@@ -47,7 +49,9 @@ async fn delete_final_secret_and_public() {
     let (db, _t) = temp_db();
     let st = DkgStorage::new(db);
     st.set_final_secret(s(99)).await.unwrap();
-    st.set_final_public(ProjectivePoint::GENERATOR).await.unwrap();
+    st.set_final_public(ProjectivePoint::GENERATOR)
+        .await
+        .unwrap();
     st.delete_final_secret().await.unwrap();
     st.delete_final_public().await.unwrap();
     assert!(st.get_final_secret().await.unwrap().is_none());
@@ -85,9 +89,15 @@ async fn original_commitments_persist_after_regular_clear() {
 async fn multiple_peers_original_commitments() {
     let (db, _t) = temp_db();
     let st = DkgStorage::new(db);
-    st.store_original_commitments("p1", &[AffinePoint::GENERATOR]).await.unwrap();
-    st.store_original_commitments("p2", &[(ProjectivePoint::GENERATOR * s(7)).to_affine()]).await.unwrap();
-    st.store_original_commitments("p3", &[(ProjectivePoint::GENERATOR * s(13)).to_affine()]).await.unwrap();
+    st.store_original_commitments("p1", &[AffinePoint::GENERATOR])
+        .await
+        .unwrap();
+    st.store_original_commitments("p2", &[(ProjectivePoint::GENERATOR * s(7)).to_affine()])
+        .await
+        .unwrap();
+    st.store_original_commitments("p3", &[(ProjectivePoint::GENERATOR * s(13)).to_affine()])
+        .await
+        .unwrap();
     assert_eq!(st.get_all_original_commitments().await.unwrap().len(), 3);
 }
 
@@ -131,7 +141,10 @@ async fn vault_tweaked_secret_crud() {
     let st = DkgStorage::new(db);
     assert!(st.get_vault_tweaked_secret().await.unwrap().is_none());
     st.set_vault_tweaked_secret(s(777)).await.unwrap();
-    assert_eq!(st.get_vault_tweaked_secret().await.unwrap().unwrap(), s(777));
+    assert_eq!(
+        st.get_vault_tweaked_secret().await.unwrap().unwrap(),
+        s(777)
+    );
     st.delete_vault_tweaked_secret().await.unwrap();
     assert!(st.get_vault_tweaked_secret().await.unwrap().is_none());
 }
@@ -227,7 +240,10 @@ async fn vault_tweaked_share_calculation() {
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n1".to_string(), 2, 3, tx, st, [0x29u8; 32]);
     let tweak = s(50);
-    let tweaked = node.calculate_vault_tweaked_secret_share(tweak).await.unwrap();
+    let tweaked = node
+        .calculate_vault_tweaked_secret_share(tweak)
+        .await
+        .unwrap();
     assert_eq!(tweaked, final_secret + tweak);
 }
 
@@ -252,7 +268,10 @@ async fn user_group_key_uses_final_public() {
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n".to_string(), 2, 3, tx, st, [0x29u8; 32]);
     let tweak = s(42);
-    let uk = node.derive_user_specific_group_key_from_commitments(tweak).await.unwrap();
+    let uk = node
+        .derive_user_specific_group_key_from_commitments(tweak)
+        .await
+        .unwrap();
     assert_eq!(uk, fp + ProjectivePoint::GENERATOR * tweak);
 }
 
@@ -262,7 +281,9 @@ async fn user_group_key_no_final_public_errors() {
     let st = DkgStorage::new(db);
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n".to_string(), 2, 3, tx, st, [0x29u8; 32]);
-    let result = node.derive_user_specific_group_key_from_commitments(s(42)).await;
+    let result = node
+        .derive_user_specific_group_key_from_commitments(s(42))
+        .await;
     assert!(result.is_err());
 }
 
@@ -270,11 +291,19 @@ async fn user_group_key_no_final_public_errors() {
 async fn user_group_key_different_tweaks() {
     let (db, _t) = temp_db();
     let st = DkgStorage::new(db.clone());
-    st.set_final_public(ProjectivePoint::GENERATOR * s(999)).await.unwrap();
+    st.set_final_public(ProjectivePoint::GENERATOR * s(999))
+        .await
+        .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n".to_string(), 2, 3, tx, st, [0x29u8; 32]);
-    let k1 = node.derive_user_specific_group_key_from_commitments(s(1)).await.unwrap();
-    let k2 = node.derive_user_specific_group_key_from_commitments(s(2)).await.unwrap();
+    let k1 = node
+        .derive_user_specific_group_key_from_commitments(s(1))
+        .await
+        .unwrap();
+    let k2 = node
+        .derive_user_specific_group_key_from_commitments(s(2))
+        .await
+        .unwrap();
     assert_ne!(k1, k2);
 }
 
@@ -284,16 +313,25 @@ async fn user_group_key_different_tweaks() {
 async fn vault_from_original_commitments() {
     let (db, _t) = temp_db();
     let st = DkgStorage::new(db.clone());
-    st.store_original_commitments("p1", &[(ProjectivePoint::GENERATOR * s(10)).to_affine()]).await.unwrap();
-    st.store_original_commitments("p2", &[(ProjectivePoint::GENERATOR * s(20)).to_affine()]).await.unwrap();
-    st.store_original_commitments("p3", &[(ProjectivePoint::GENERATOR * s(30)).to_affine()]).await.unwrap();
+    st.store_original_commitments("p1", &[(ProjectivePoint::GENERATOR * s(10)).to_affine()])
+        .await
+        .unwrap();
+    st.store_original_commitments("p2", &[(ProjectivePoint::GENERATOR * s(20)).to_affine()])
+        .await
+        .unwrap();
+    st.store_original_commitments("p3", &[(ProjectivePoint::GENERATOR * s(30)).to_affine()])
+        .await
+        .unwrap();
     st.set_peer_index("p1", 1).unwrap();
     st.set_peer_index("p2", 2).unwrap();
     st.set_peer_index("p3", 3).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n".to_string(), 2, 3, tx, st, [0x29u8; 32]);
     let tweak = s(5);
-    let vk = node.derive_vault_group_key_from_original_commitments(tweak).await.unwrap();
+    let vk = node
+        .derive_vault_group_key_from_original_commitments(tweak)
+        .await
+        .unwrap();
     let expected = ProjectivePoint::GENERATOR * s(60) + ProjectivePoint::GENERATOR * tweak;
     assert_eq!(vk, expected);
 }
@@ -304,7 +342,10 @@ async fn vault_from_empty_original_commitments_errors() {
     let st = DkgStorage::new(db);
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let node = DKGNode::new("n".to_string(), 2, 3, tx, st, [0x29u8; 32]);
-    assert!(node.derive_vault_group_key_from_original_commitments(s(1)).await.is_err());
+    assert!(node
+        .derive_vault_group_key_from_original_commitments(s(1))
+        .await
+        .is_err());
 }
 
 // === Consistency: tweaked share is additive ===
@@ -337,8 +378,12 @@ async fn user_key_consistent_despite_partial_commitments() {
     let (db1, _t1) = temp_db();
     let s1 = DkgStorage::new(db1.clone());
     s1.set_final_public(fp).await.unwrap();
-    s1.store_commitments("p1", &[AffinePoint::GENERATOR]).await.unwrap();
-    s1.store_commitments("p2", &[(ProjectivePoint::GENERATOR * s(2)).to_affine()]).await.unwrap();
+    s1.store_commitments("p1", &[AffinePoint::GENERATOR])
+        .await
+        .unwrap();
+    s1.store_commitments("p2", &[(ProjectivePoint::GENERATOR * s(2)).to_affine()])
+        .await
+        .unwrap();
     let (tx1, _rx1) = tokio::sync::mpsc::channel(10);
     let n1 = DKGNode::new("n1".to_string(), 2, 3, tx1, s1, [0x29u8; 32]);
 
@@ -346,11 +391,22 @@ async fn user_key_consistent_despite_partial_commitments() {
     let s2 = DkgStorage::new(db2.clone());
     s2.set_final_public(fp).await.unwrap();
     // Only 1 commitment (peer disconnect)
-    s2.store_commitments("p1", &[AffinePoint::GENERATOR]).await.unwrap();
+    s2.store_commitments("p1", &[AffinePoint::GENERATOR])
+        .await
+        .unwrap();
     let (tx2, _rx2) = tokio::sync::mpsc::channel(10);
     let n2 = DKGNode::new("n2".to_string(), 2, 3, tx2, s2, [0x29u8; 32]);
 
-    let k1 = n1.derive_user_specific_group_key_from_commitments(tweak).await.unwrap();
-    let k2 = n2.derive_user_specific_group_key_from_commitments(tweak).await.unwrap();
-    assert_eq!(k1, k2, "User key must be same regardless of commitment state");
+    let k1 = n1
+        .derive_user_specific_group_key_from_commitments(tweak)
+        .await
+        .unwrap();
+    let k2 = n2
+        .derive_user_specific_group_key_from_commitments(tweak)
+        .await
+        .unwrap();
+    assert_eq!(
+        k1, k2,
+        "User key must be same regardless of commitment state"
+    );
 }

@@ -190,11 +190,8 @@ impl MpcNetworkLayer {
 
         // 1. Solver contract validation — skipped for invulnerable nodes (initial DKG signers)
         if !is_invulnerable {
-            match crate::contract::validate_solver_active_strict(
-                &solver_id,
-                "SOLVER_VALIDATION",
-            )
-            .await
+            match crate::contract::validate_solver_active_strict(&solver_id, "SOLVER_VALIDATION")
+                .await
             {
                 Ok(_) => {}
                 Err(e) => {
@@ -210,7 +207,6 @@ impl MpcNetworkLayer {
                 }
             }
         }
-
 
         // 2. Staging cleanup — if this peer is in the disconnection staging map it means it
         //    disconnected earlier but is now rejoining before epoch-2 promoted it to the
@@ -465,14 +461,12 @@ impl MpcNetworkLayer {
                                     share_index,
                                     share_value,
                                     commitments,
-                                    round,
                                 } => ChannelMessage::UnicastShareDKG {
                                     target_peer_id,
                                     from_node_id,
                                     share_index,
                                     share_value,
                                     commitments,
-                                    round,
                                     retry_count: entry.retry_count + 1,
                                 },
                                 RetryableUnicast::UnicastCritical {

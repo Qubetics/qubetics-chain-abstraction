@@ -18,12 +18,7 @@ impl DKGNode {
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<()> {
         match msg {
-            DKGMessage::ShareValidation {
-                from,
-                to,
-                is_valid,
-                round: _,
-            } => {
+            DKGMessage::ShareValidation { from, to, is_valid } => {
                 info!(
                     "✅ Received share validation from {} for {}: {}",
                     from, to, is_valid
@@ -34,14 +29,10 @@ impl DKGNode {
             DKGMessage::NodeDisconnected { .. } => {
                 info!("📢 [DISCONNECT] Notification handled at network layer");
             }
-            DKGMessage::CommitmentBroadcast {
-                from,
-                commitments,
-                round,
-            } => {
+            DKGMessage::CommitmentBroadcast { from, commitments } => {
                 info!(
-                    "🔐 [DKG-SECURE] Received commitment broadcast from {} (round {})",
-                    from, round
+                    "🔐 [DKG-SECURE] Received commitment broadcast from {}",
+                    from
                 );
                 self.handle_commitment_broadcast(from, commitments).await?;
             }
