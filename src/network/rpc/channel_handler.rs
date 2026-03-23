@@ -3472,6 +3472,7 @@ impl MpcNetworkLayer {
                         None, // tics_claim_reward_identifiers (not applicable)
                         None, // tics_claim_platform_fee_identifiers (not applicable)
                         nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
+                        update_round,
                     )
                     .await?;
 
@@ -3730,6 +3731,7 @@ impl MpcNetworkLayer {
                     None,     // tics_claim_reward_identifiers (not applicable)
                     None,     // tics_claim_platform_fee_identifiers (not applicable)
                     nonce_tuple_id.clone(), // Coordinated nonce from batch broadcast
+                    round,
                 )
                 .await?;
 
