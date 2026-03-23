@@ -3036,9 +3036,10 @@ impl MpcNetworkLayer {
 
                     if total != 3 {
                         warn!(
-                            "⚠️ [DKG] Expected 4 nodes for initial DKG, but have {}",
+                            "⚠️ [DKG] Expected 3 nodes for initial DKG, but have {}. A node may have disconnected during the scheduling window. Aborting; DKG will retry when all 3 nodes reconnect.",
                             total
                         );
+                        return Ok(());
                     }
 
                     if let Err(e) = dkg.update_node_params(total, threshold) {
