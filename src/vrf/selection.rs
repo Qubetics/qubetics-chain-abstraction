@@ -5,7 +5,7 @@ use crate::{database::VrfStorage, types::ChannelMessage};
 
 use super::{
     selector::VrfNodeSelector,
-    service::{VrfService, VrfServiceConfig},
+    service::VrfService,
 };
 
 /// Facade over the VRF selector/service/types that other subsystems can depend on.
@@ -39,14 +39,6 @@ impl VrfSelectionFacade {
         context: impl Into<String>,
     ) -> VrfService {
         VrfService::new_with_storage_and_context(node_id, message_tx, storage, context)
-    }
-
-    pub fn new_service_with_config(
-        node_id: PeerId,
-        message_tx: mpsc::Sender<ChannelMessage>,
-        config: VrfServiceConfig,
-    ) -> VrfService {
-        VrfService::with_config(node_id, message_tx, config)
     }
 
     pub fn selector(node_id: PeerId) -> VrfNodeSelector {

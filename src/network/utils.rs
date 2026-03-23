@@ -114,10 +114,9 @@ impl MpcNetworkLayer {
                             let share_bytes = share_scalar.to_bytes();
                             // Derive pubkey and ETH address from this scalar for debug
                             let secp = secp256k1::Secp256k1::new();
-                            let sk = secp256k1::SecretKey::from_slice(&share_bytes)
-                                .unwrap_or_else(|_| {
-                                    secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap()
-                                });
+                            let sk = secp256k1::SecretKey::from_slice(&share_bytes).unwrap_or_else(
+                                |_| secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap(),
+                            );
                             let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
                             let pk_uncompressed = pk.serialize_uncompressed();
                             let pk_hash = {
@@ -129,9 +128,8 @@ impl MpcNetworkLayer {
                             let derived_addr = format!("0x{}", hex::encode(&pk_hash[12..]));
 
                             info!(
-                                "✅ [NETWORK] Found tweaked share for user {}: scalar_fingerprint=0x{}, hmac_constant=0x{}, derived_signing_addr={}",
+                                "✅ [NETWORK] Found tweaked share for user {}: hmac_constant=0x{}, derived_signing_addr={}",
                                 eth_address,
-                                hex::encode(&share_bytes[..8]),
                                 hex::encode(&user.hmac_constant[..8]),
                                 derived_addr
                             );
@@ -166,11 +164,7 @@ impl MpcNetworkLayer {
 
             if let Some(dkg_node) = &self.dkg_node {
                 if let Some(secret_share) = dkg_node.get_final_secret_share().await {
-                    let share_bytes = secret_share.to_bytes();
-                    info!(
-                        "✅ [NETWORK] Found network's DKG share: scalar_fingerprint=0x{}",
-                        hex::encode(&share_bytes[..8])
-                    );
+                    info!("✅ [NETWORK] Found network's DKG share");
                     Some(secret_share)
                 } else {
                     warn!("❌ [NETWORK] DKG not completed yet, no secret share available");
@@ -181,40 +175,6 @@ impl MpcNetworkLayer {
                 None
             }
         }
-    }
-
-    // Contract call helpers for user-to-vault have been removed; contract execution is skipped for that flow.
-
-    // ----------------------------------------------------------------------------
-    // Network transaction helper functions (sequencer removed, will be replaced with pool approach)
-    // ----------------------------------------------------------------------------
-
-    /// Submit a NetworkToTarget transaction (sequencer removed - stub for future pool implementation)
-    pub(crate) async fn submit_network_to_target_to_sequencer(
-        &mut self,
-        _intent: &crate::types::DepositIntent,
-        intent_hash: &str,
-        _amount: u128,
-        _tx_bytes: Vec<u8>,
-        _eth_tx: crate::chain_abstraction::TicsTransaction,
-        _user_tweaked_share: Option<k256::Scalar>,
-        _user_tics_address: Option<String>,
-    ) -> Result<()> {
-        // Sequencer removed - will be replaced with pool approach later
-        info!(
-            "📋 [NETWORK] NetworkToTarget transaction helper called (sequencer removed, pool approach pending): intent_hash={}",
-            intent_hash
-        );
-        Ok(())
-    }
-
-    /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
-    #[allow(dead_code)]
-    /// Process a single contract transaction (sequencer removed - method kept for compatibility but unused)
-    #[allow(dead_code)]
-    pub(crate) async fn process_contract_transaction(&mut self, _request: ()) -> Result<()> {
-        // Contract sequencer removed - transactions are executed directly
-        Ok(())
     }
 }
 

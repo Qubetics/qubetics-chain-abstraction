@@ -119,7 +119,11 @@ impl<'a> TicsSigner<'a> {
         // Use sign_tics_user_to_vault_batch_with_nonces with proper nonce assignments
         warn!("⚠️ [TICS_UTV_BATCH] sign_tics_user_to_vault_batch called without nonce assignments - all intents will be SKIPPED");
         self.node
-            .sign_tics_user_to_vault_batch_with_nonces(round, batch, std::collections::HashMap::new())
+            .sign_tics_user_to_vault_batch_with_nonces(
+                round,
+                batch,
+                std::collections::HashMap::new(),
+            )
             .await
     }
 
@@ -421,16 +425,15 @@ impl SigningNode {
         );
 
         // Convert DummyTransaction to ChainTransaction for chain-agnostic handling with UTXO error handling
-        let chain_transaction =
-            ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
-                to: transaction.to.clone(),
-                value: transaction.value.clone(),
-                gas_limit: transaction.gas_limit,
-                gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce,
-                data: None,
-                chain_id: transaction.chain_id,
-            });
+        let chain_transaction = ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            nonce: transaction.nonce,
+            data: None,
+            chain_id: transaction.chain_id,
+        });
 
         // Create transaction bytes using chain handler
         let tx_bytes = self
@@ -469,7 +472,9 @@ impl SigningNode {
 
         // Create ECDSA signature using secp256k1 (with random nonce if available)
         let msg = Message::from_digest_slice(&tx_hash)?;
-        let signature = self.create_ecdsa_signature_with_key_async(&msg, transaction, &signing_key).await?;
+        let signature = self
+            .create_ecdsa_signature_with_key_async(&msg, transaction, &signing_key)
+            .await?;
         let (recovery_id, signature_bytes) = signature.serialize_compact();
 
         info!(
@@ -558,16 +563,15 @@ impl SigningNode {
         // Store original transaction for reconstruction after aggregation
         if let Some(TransactionType::WithdrawLiquidity) = transaction_type {
             let solver_addr = solver_address.expect("Solver address should be validated above");
-            let chain_tx =
-                ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
-                    to: transaction.to.clone(),
-                    value: transaction.value.clone(),
-                    gas_limit: transaction.gas_limit,
-                    gas_price: transaction.gas_price.clone(),
-                    nonce: transaction.nonce,
-                    data: None,
-                    chain_id: transaction.chain_id,
-                });
+            let chain_tx = ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce,
+                data: None,
+                chain_id: transaction.chain_id,
+            });
 
             self.store_withdraw_transaction_tics(
                 round,
@@ -593,16 +597,15 @@ impl SigningNode {
         } else {
             // This is an intent-based transaction - store in regular pending transactions
             let mut pending_transactions = self.pending.pending_transactions.write().await;
-            let chain_tx =
-                ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
-                    to: transaction.to.clone(),
-                    value: transaction.value.clone(),
-                    gas_limit: transaction.gas_limit,
-                    gas_price: transaction.gas_price.clone(),
-                    nonce: transaction.nonce,
-                    data: None,
-                    chain_id: transaction.chain_id,
-                });
+            let chain_tx = ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
+                to: transaction.to.clone(),
+                value: transaction.value.clone(),
+                gas_limit: transaction.gas_limit,
+                gas_price: transaction.gas_price.clone(),
+                nonce: transaction.nonce,
+                data: None,
+                chain_id: transaction.chain_id,
+            });
             let primary_intent_hash = intent_hashes.first().cloned();
             pending_transactions.insert(
                 round,
@@ -654,8 +657,14 @@ impl SigningNode {
         debug!(
             "[SIGNING] Node {} {} contract tx: to={}, value={}, data_len={}",
             self.id,
-            if has_dkg { "signing" } else { "preparing (observer)" },
-            transaction.to, transaction.value, transaction.data.len()
+            if has_dkg {
+                "signing"
+            } else {
+                "preparing (observer)"
+            },
+            transaction.to,
+            transaction.value,
+            transaction.data.len()
         );
 
         // Create chain transaction from contract transaction
@@ -672,16 +681,15 @@ impl SigningNode {
             .map_err(|e| anyhow!("Invalid hex data in contract transaction: {}", e))?
         };
 
-        let chain_transaction =
-            ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
-                to: transaction.to.clone(),
-                value: transaction.value.clone(),
-                gas_limit: transaction.gas_limit,
-                gas_price: transaction.gas_price.clone(),
-                nonce: transaction.nonce,
-                data: Some(data_bytes.clone()),
-                chain_id: transaction.chain_id,
-            });
+        let chain_transaction = ChainTransaction::Tics(crate::chain_abstraction::TicsTransaction {
+            to: transaction.to.clone(),
+            value: transaction.value.clone(),
+            gas_limit: transaction.gas_limit,
+            gas_price: transaction.gas_price.clone(),
+            nonce: transaction.nonce,
+            data: Some(data_bytes.clone()),
+            chain_id: transaction.chain_id,
+        });
 
         // Create transaction bytes using contract chain handler
         let tx_bytes = self
@@ -759,14 +767,21 @@ impl SigningNode {
                                 hex::encode(&nonce_tuple.r_scalar.0.to_bytes()[..4])
                             );
                             drop(nm_guard); // Release lock before signing
-                            self.create_ecdsa_signature_with_nonce(&msg, &signing_key, &nonce_tuple)?
+                            self.create_ecdsa_signature_with_nonce(
+                                &msg,
+                                &signing_key,
+                                &nonce_tuple,
+                            )?
                         }
                         Ok(None) => {
                             error!(
                                 "🔴 [CONTRACT_SIGN] Nonce {} not found or already consumed",
                                 tuple_id
                             );
-                            return Err(anyhow!("Nonce {} not found or already consumed", tuple_id));
+                            return Err(anyhow!(
+                                "Nonce {} not found or already consumed",
+                                tuple_id
+                            ));
                         }
                         Err(e) => {
                             error!(
@@ -778,7 +793,9 @@ impl SigningNode {
                     }
                 } else {
                     error!("🔴 [CONTRACT_SIGN] Nonce manager not available");
-                    return Err(anyhow!("Nonce manager not available for coordinated signing"));
+                    return Err(anyhow!(
+                        "Nonce manager not available for coordinated signing"
+                    ));
                 }
             } else {
                 // No nonce_tuple_id provided - this is a BUG in the caller
@@ -826,11 +843,17 @@ impl SigningNode {
 
             // Store original transaction and broadcast signature (DKG path continues below)
             self.store_contract_tx_and_broadcast(
-                round, chain_transaction, tx_bytes, intent_hashes,
-                tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                round,
+                chain_transaction,
+                tx_bytes,
+                intent_hashes,
+                tics_withdraw_identifiers,
+                tics_claim_reward_identifiers,
                 tics_claim_platform_fee_identifiers,
-                request_id, original_request,
-            ).await
+                request_id,
+                original_request,
+            )
+            .await
         } else {
             // Non-DKG node: skip signing, just advance round and store TX
 
@@ -851,11 +874,17 @@ impl SigningNode {
 
             // Store original transaction (same as DKG path, without signature broadcast)
             self.store_contract_tx_and_broadcast(
-                round, chain_transaction, tx_bytes, intent_hashes,
-                tics_withdraw_identifiers, tics_claim_reward_identifiers,
+                round,
+                chain_transaction,
+                tx_bytes,
+                intent_hashes,
+                tics_withdraw_identifiers,
+                tics_claim_reward_identifiers,
                 tics_claim_platform_fee_identifiers,
-                request_id, original_request,
-            ).await
+                request_id,
+                original_request,
+            )
+            .await
         }
     }
 
@@ -873,7 +902,6 @@ impl SigningNode {
         request_id: Option<String>,
         original_request: Option<()>,
     ) -> Result<()> {
-
         // Store original transaction for reconstruction after aggregation (contract-specific path)
         // TICS withdraw batch: store in withdraw_pending_transactions_tics with identifiers for tx-id broadcast
         if let Some(ref identifiers) = tics_withdraw_identifiers {
@@ -1090,24 +1118,68 @@ impl SigningNode {
                 }
                 let found = if is_withdraw_round {
                     let store = self.pending.withdraw_pending_transactions_tics.read().await;
-                    store.get(&round).map(|(chain_tx, _tx_bytes, _solver_address, transaction_type, _request_id, _original_request)| {
-                        (Some(chain_tx.clone()), transaction_type.clone())
-                    })
+                    store.get(&round).map(
+                        |(
+                            chain_tx,
+                            _tx_bytes,
+                            _solver_address,
+                            transaction_type,
+                            _request_id,
+                            _original_request,
+                        )| {
+                            (Some(chain_tx.clone()), transaction_type.clone())
+                        },
+                    )
                 } else if is_claim_reward_round {
-                    let store = self.pending.claim_reward_pending_transactions_tics.read().await;
-                    store.get(&round).map(|(chain_tx, _tx_bytes, _identifiers, transaction_type, _request_id, _original_request)| {
-                        (Some(chain_tx.clone()), transaction_type.clone())
-                    })
+                    let store = self
+                        .pending
+                        .claim_reward_pending_transactions_tics
+                        .read()
+                        .await;
+                    store.get(&round).map(
+                        |(
+                            chain_tx,
+                            _tx_bytes,
+                            _identifiers,
+                            transaction_type,
+                            _request_id,
+                            _original_request,
+                        )| {
+                            (Some(chain_tx.clone()), transaction_type.clone())
+                        },
+                    )
                 } else if is_claim_platform_fee_round {
-                    let store = self.pending.claim_platform_fee_pending_transactions_tics.read().await;
-                    store.get(&round).map(|(chain_tx, _tx_bytes, _identifiers, transaction_type, _request_id, _original_request)| {
-                        (Some(chain_tx.clone()), transaction_type.clone())
-                    })
+                    let store = self
+                        .pending
+                        .claim_platform_fee_pending_transactions_tics
+                        .read()
+                        .await;
+                    store.get(&round).map(
+                        |(
+                            chain_tx,
+                            _tx_bytes,
+                            _identifiers,
+                            transaction_type,
+                            _request_id,
+                            _original_request,
+                        )| {
+                            (Some(chain_tx.clone()), transaction_type.clone())
+                        },
+                    )
                 } else {
                     let store = self.pending.pending_transactions.read().await;
-                    store.get(&round).map(|(chain_tx, _tx_bytes, _intent_hash, transaction_type, _request_id, _original_request)| {
-                        (Some(chain_tx.clone()), transaction_type.clone())
-                    })
+                    store.get(&round).map(
+                        |(
+                            chain_tx,
+                            _tx_bytes,
+                            _intent_hash,
+                            transaction_type,
+                            _request_id,
+                            _original_request,
+                        )| {
+                            (Some(chain_tx.clone()), transaction_type.clone())
+                        },
+                    )
                 };
                 if let Some(val) = found {
                     result = val;
@@ -1362,27 +1434,36 @@ impl SigningNode {
                     let tx_hash = hasher.finalize();
                     info!(
                         "🔍 [SIGNING] Unsigned tx hash for round {}: 0x{}",
-                        round, hex::encode(&tx_hash)
+                        round,
+                        hex::encode(&tx_hash)
                     );
                     info!(
                         "🔍 [SIGNING] Signature r: 0x{}, s: 0x{}, v: {} (recovery_id: {})",
-                        hex::encode(r), hex::encode(s), v, recovery_id
+                        hex::encode(r),
+                        hex::encode(s),
+                        v,
+                        recovery_id
                     );
                     if let Ok(msg) = Message::from_digest_slice(&tx_hash) {
                         let secp = Secp256k1::new();
                         let recid_for_recover = (v - 35 - chain_id * 2) as u8;
-                        if let Ok(rid) = secp256k1::ecdsa::RecoveryId::from_i32(recid_for_recover as i32) {
+                        if let Ok(rid) =
+                            secp256k1::ecdsa::RecoveryId::from_i32(recid_for_recover as i32)
+                        {
                             let mut sig_bytes_64 = [0u8; 64];
                             sig_bytes_64[0..32].copy_from_slice(r);
                             sig_bytes_64[32..64].copy_from_slice(s);
-                            if let Ok(rec_sig) = RecoverableSignature::from_compact(&sig_bytes_64, rid) {
+                            if let Ok(rec_sig) =
+                                RecoverableSignature::from_compact(&sig_bytes_64, rid)
+                            {
                                 match secp.recover_ecdsa(&msg, &rec_sig) {
                                     Ok(pubkey) => {
                                         let pub_bytes = pubkey.serialize_uncompressed();
                                         let mut keccak = sha3::Keccak256::new();
                                         keccak.update(&pub_bytes[1..]);
                                         let hash = keccak.finalize();
-                                        let recovered_addr = format!("0x{}", hex::encode(&hash[12..]));
+                                        let recovered_addr =
+                                            format!("0x{}", hex::encode(&hash[12..]));
                                         info!(
                                             "🔍 [SIGNING] Recovered sender address for round {}: {}",
                                             round, recovered_addr
@@ -1391,7 +1472,9 @@ impl SigningNode {
                                             "🔍 [SIGNING] Expected sender (nonce_address) for round {}: {}",
                                             round, nonce_address
                                         );
-                                        if recovered_addr.to_lowercase() != nonce_address.to_lowercase() {
+                                        if recovered_addr.to_lowercase()
+                                            != nonce_address.to_lowercase()
+                                        {
                                             error!(
                                                 "❌ [SIGNING] ADDRESS MISMATCH for round {}! Recovered: {} vs Expected: {}",
                                                 round, recovered_addr, nonce_address
@@ -1456,7 +1539,12 @@ impl SigningNode {
                                 round, slot_id, attempt + 1, attempt * 100
                             );
                         }
-                        result = Some((entry.0.clone(), entry.1.clone(), entry.2.clone(), entry.3.clone()));
+                        result = Some((
+                            entry.0.clone(),
+                            entry.1.clone(),
+                            entry.2.clone(),
+                            entry.3.clone(),
+                        ));
                         break;
                     }
                 }
@@ -1467,7 +1555,13 @@ impl SigningNode {
                     );
                 }
             }
-            result.ok_or_else(|| anyhow!("No TICS UserToVault batch for round {} slot {}", round, slot_id))?
+            result.ok_or_else(|| {
+                anyhow!(
+                    "No TICS UserToVault batch for round {} slot {}",
+                    round,
+                    slot_id
+                )
+            })?
         };
         let ChainTransaction::Tics(original_tx) = &chain_tx else {
             return Ok(None);
@@ -1479,17 +1573,10 @@ impl SigningNode {
         let user_derived_address = if let Some(user_intent_manager) = &self.user_intent_manager {
             if let Some(user) = user_intent_manager.get_user_by_address(&user_eth).await {
                 if let Some(derived_eth_addr) = &user.derived_eth_address {
-                    Self::fetch_nonce_and_log(
-                        derived_eth_addr,
-                        chain_id,
-                        "UserToVault batch slot",
-                    )
-                    .await?
+                    Self::fetch_nonce_and_log(derived_eth_addr, chain_id, "UserToVault batch slot")
+                        .await?
                 } else {
-                    return Err(anyhow!(
-                        "User {} has no derived TICS address",
-                        user_eth
-                    ));
+                    return Err(anyhow!("User {} has no derived TICS address", user_eth));
                 }
             } else {
                 return Err(anyhow!("User {} not found in registry", user_eth));
@@ -1540,11 +1627,15 @@ impl SigningNode {
             let tx_hash = hasher.finalize();
             info!(
                 "🔍 [SIGNING] Unsigned tx hash for batch slot {}: 0x{}",
-                slot_id, hex::encode(&tx_hash)
+                slot_id,
+                hex::encode(&tx_hash)
             );
             info!(
                 "🔍 [SIGNING] Signature r: 0x{}, s: 0x{}, v: {} (recovery_id: {})",
-                hex::encode(r), hex::encode(s), v, recovery_id
+                hex::encode(r),
+                hex::encode(s),
+                v,
+                recovery_id
             );
             if let Ok(msg) = Message::from_digest_slice(&tx_hash) {
                 let secp = Secp256k1::new();
@@ -1658,7 +1749,9 @@ impl SigningNode {
             }
         } else {
             error!("🔴 [SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
-            return Err(anyhow!("NonceManager not available - fixed k fallback has been removed for security"));
+            return Err(anyhow!(
+                "NonceManager not available - fixed k fallback has been removed for security"
+            ));
         };
 
         self.create_ecdsa_signature_with_nonce(message, signing_key, &nonce_tuple)
@@ -1696,7 +1789,9 @@ impl SigningNode {
             }
         } else {
             error!("🔴 [SIGNING] NonceManager not available - CANNOT SIGN (fixed k removed for security)");
-            return Err(anyhow!("NonceManager not available - fixed k fallback has been removed for security"));
+            return Err(anyhow!(
+                "NonceManager not available - fixed k fallback has been removed for security"
+            ));
         };
 
         self.create_ecdsa_signature_with_nonce(message, signing_key, &nonce_tuple)
@@ -1770,13 +1865,7 @@ impl SigningNode {
     pub async fn sign_tics_user_to_vault_batch(
         &mut self,
         round: u64,
-        batch: Vec<(
-            String,
-            String,
-            ChainTransaction,
-            Vec<u8>,
-            Option<Scalar>,
-        )>,
+        batch: Vec<(String, String, ChainTransaction, Vec<u8>, Option<Scalar>)>,
     ) -> Result<()> {
         use crate::signing::state::RoundSlotKey;
         if batch.is_empty() {
@@ -1784,10 +1873,9 @@ impl SigningNode {
         }
         let final_node_id = {
             let final_nodes = self.signatures.final_nodes_by_round.read().await;
-            final_nodes
-                .get(&round)
-                .cloned()
-                .ok_or_else(|| anyhow!("No final node for TICS UserToVault batch round {}", round))?
+            final_nodes.get(&round).cloned().ok_or_else(|| {
+                anyhow!("No final node for TICS UserToVault batch round {}", round)
+            })?
         };
 
         let batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>)> = batch
@@ -1810,10 +1898,9 @@ impl SigningNode {
         for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
             let signing_key = match key_opt {
                 Some(scalar) => {
-                    let scalar_bytes = scalar.to_bytes();
                     info!(
-                        "🔑 [TICS_UTV_BATCH] Intent {} (user {}): tweaked_share scalar_fingerprint=0x{} (no-nonce path)",
-                        intent_hash, user_eth, hex::encode(&scalar_bytes[..8])
+                        "🔑 [TICS_UTV_BATCH] Intent {} (user {}): using tweaked_share (no-nonce path)",
+                        intent_hash, user_eth
                     );
                     let secp_key = Self::derive_secp_secret(&scalar)?;
                     {
@@ -1849,12 +1936,14 @@ impl SigningNode {
                     continue;
                 }
             };
-            let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_async(
-                &tx_bytes,
-                eth_tx,
-                &signing_key,
-                Some(user_eth.clone()),
-            ).await?;
+            let ecdsa_sig = self
+                .create_partial_ecdsa_for_tics_slot_async(
+                    &tx_bytes,
+                    eth_tx,
+                    &signing_key,
+                    Some(user_eth.clone()),
+                )
+                .await?;
 
             let slot_key: RoundSlotKey = (round, intent_hash.clone());
             {
@@ -1868,7 +1957,10 @@ impl SigningNode {
                 from: self.id.clone(),
                 signature: ecdsa_sig,
                 round,
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis(),
                 user_tics_address: Some(user_eth_clone),
                 slot_id: Some(intent_hash.clone()),
             };
@@ -1909,13 +2001,7 @@ impl SigningNode {
     pub async fn sign_tics_user_to_vault_batch_with_nonces(
         &mut self,
         round: u64,
-        batch: Vec<(
-            String,
-            String,
-            ChainTransaction,
-            Vec<u8>,
-            Option<Scalar>,
-        )>,
+        batch: Vec<(String, String, ChainTransaction, Vec<u8>, Option<Scalar>)>,
         nonce_assignments: std::collections::HashMap<String, Vec<String>>,
     ) -> Result<()> {
         use crate::signing::state::RoundSlotKey;
@@ -1933,10 +2019,9 @@ impl SigningNode {
 
         let final_node_id = {
             let final_nodes = self.signatures.final_nodes_by_round.read().await;
-            final_nodes
-                .get(&round)
-                .cloned()
-                .ok_or_else(|| anyhow!("No final node for TICS UserToVault batch round {}", round))?
+            final_nodes.get(&round).cloned().ok_or_else(|| {
+                anyhow!("No final node for TICS UserToVault batch round {}", round)
+            })?
         };
 
         let batch_storage: Vec<(String, String, ChainTransaction, Vec<u8>)> = batch
@@ -1968,10 +2053,9 @@ impl SigningNode {
             for (intent_hash, user_eth, chain_tx, tx_bytes, key_opt) in batch {
                 let signing_key = match key_opt {
                     Some(scalar) => {
-                        let scalar_bytes = scalar.to_bytes();
                         info!(
-                            "🔑 [TICS_UTV_BATCH] Intent {} (user {}): tweaked_share scalar_fingerprint=0x{}",
-                            intent_hash, user_eth, hex::encode(&scalar_bytes[..8])
+                            "🔑 [TICS_UTV_BATCH] Intent {} (user {}): using tweaked_share",
+                            intent_hash, user_eth
                         );
                         let secp_key = Self::derive_secp_secret(&scalar)?;
                         // Derive the ETH address this signing key corresponds to
@@ -2025,8 +2109,8 @@ impl SigningNode {
                         match nm_guard.acquire_specific_nonce(tuple_id).await {
                             Ok(Some(tuple)) => {
                                 info!(
-                                    "🔐 [TICS_UTV_BATCH] Using coordinated nonce {} for intent {} (r_scalar: 0x{})",
-                                    tuple.tuple_id, intent_hash, hex::encode(tuple.r_scalar.0.to_bytes())
+                                    "🔐 [TICS_UTV_BATCH] Using coordinated nonce {} for intent {}",
+                                    tuple.tuple_id, intent_hash
                                 );
                                 tuple
                             }
@@ -2061,13 +2145,15 @@ impl SigningNode {
                 };
 
                 // Sign with coordinated nonce (fixed k fallback removed for security)
-                let ecdsa_sig = self.create_partial_ecdsa_for_tics_slot_with_nonce(
-                    &tx_bytes,
-                    eth_tx,
-                    &signing_key,
-                    Some(user_eth.clone()),
-                    &nonce_tuple,
-                ).await?;
+                let ecdsa_sig = self
+                    .create_partial_ecdsa_for_tics_slot_with_nonce(
+                        &tx_bytes,
+                        eth_tx,
+                        &signing_key,
+                        Some(user_eth.clone()),
+                        &nonce_tuple,
+                    )
+                    .await?;
 
                 let slot_key: RoundSlotKey = (round, intent_hash.clone());
                 {
@@ -2081,7 +2167,10 @@ impl SigningNode {
                     from: self.id.clone(),
                     signature: ecdsa_sig,
                     round,
-                    timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+                    timestamp: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
                     user_tics_address: Some(user_eth_clone),
                     slot_id: Some(intent_hash.clone()),
                 };

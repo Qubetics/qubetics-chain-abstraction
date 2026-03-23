@@ -102,9 +102,6 @@ impl DKGNode {
             peer_indices.len(),
             peer_indices
         );
-
-        let round = self.current_round();
-
         // Build reverse mapping: index -> peer_id
         let index_to_peer: HashMap<usize, String> = peer_indices
             .iter()
@@ -234,46 +231,6 @@ impl DKGNode {
             shares.len()
         );
         info!("🔍 [DKG] === END SECRET SHARE GENERATION ===");
-        Ok(shares)
-    }
-
-    pub(crate) fn generate_shares_for_indices(
-        &self,
-        polynomial: &[Scalar],
-        indices: &[usize],
-    ) -> Result<Vec<KeyShare>> {
-        info!("🔍 [REFRESH] === REFRESH SHARE GENERATION FOR SPECIFIC INDICES ===");
-        info!(
-            "📊 [REFRESH] Node {} generating shares for indices: {:?}",
-            self.id, indices
-        );
-
-        let mut shares = Vec::with_capacity(indices.len());
-
-        for &index in indices {
-            let x = Scalar::from(index as u64);
-            let mut y = Scalar::ZERO;
-
-            for (j, coeff) in polynomial.iter().enumerate() {
-                let mut x_pow = Scalar::ONE;
-                for _ in 0..j {
-                    x_pow *= x;
-                }
-                let term = *coeff * x_pow;
-                y += term;
-            }
-
-            shares.push(KeyShare {
-                index,
-                value: SerializableScalar(y),
-            });
-        }
-
-        info!("🔍 [REFRESH] === GENERATED REFRESH SHARES SUMMARY ===");
-        for share in shares.iter() {
-            info!("🔍 [REFRESH] Share generated for index {}", share.index);
-        }
-
         Ok(shares)
     }
 

@@ -289,10 +289,12 @@ impl VrfNodeSelector {
         hex::encode(self.vrf_public_key.to_bytes())
     }
 
+    #[cfg(test)]
     pub fn get_secret_key(&self) -> Vec<u8> {
         self.vrf_secret_key.to_bytes().to_vec()
     }
 
+    #[cfg(test)]
     pub fn get_secret_key_hex(&self) -> String {
         hex::encode(self.vrf_secret_key.to_bytes())
     }

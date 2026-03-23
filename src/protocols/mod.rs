@@ -11,5 +11,5 @@ pub use crate::dkg::{
 
 pub use crate::vrf::{
     NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionFacade,
-    VrfSelectionMessage, VrfService, VrfServiceConfig,
+    VrfSelectionMessage, VrfService
 };

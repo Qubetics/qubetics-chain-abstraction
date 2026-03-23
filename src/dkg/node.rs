@@ -43,14 +43,6 @@ impl DKGNode {
         self.state.read().unwrap().threshold
     }
 
-    pub(crate) fn current_round(&self) -> u64 {
-        self.state.read().unwrap().round
-    }
-
-    pub(crate) fn permanent_index(&self) -> Option<usize> {
-        self.state.read().unwrap().my_permanent_index
-    }
-
     pub(super) fn set_permanent_index(&self, index: usize) {
         let mut state = self.state.write().unwrap();
         if let Some(existing) = state.my_permanent_index {
@@ -62,12 +54,6 @@ impl DKGNode {
             }
         }
         state.my_permanent_index = Some(index);
-    }
-
-    /// Clear in-memory permanent index (used after clear_state_for_reconnect).
-    fn clear_permanent_index(&self) {
-        let mut state = self.state.write().unwrap();
-        state.my_permanent_index = None;
     }
 
     fn increment_round(&self) {

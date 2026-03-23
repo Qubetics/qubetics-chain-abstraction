@@ -13,10 +13,9 @@ use secp256k1::{
 };
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
-use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::{database::DkgStorage, user_intent_manager::UserIntentManager};
+use crate::{database::DkgStorage};
 
 use super::errors::TransactionError;
 
@@ -237,116 +236,6 @@ pub async fn fetch_crypto_prices(
 
     info!("Fetched crypto prices (Decimal): {:?}", prices);
     Ok(prices)
-}
-
-pub(crate) async fn get_transaction_id_for_intent(
-    user_intent_manager: &UserIntentManager,
-    intent_hash: &[u8],
-) -> (Option<String>, Option<String>, Option<String>) {
-    let intent_hash_hex = hex::encode(intent_hash);
-
-    // Fetch any recorded transaction IDs for this intent hash
-    if let Some(tx_ids) = user_intent_manager
-        .get_intent_transaction_ids(&intent_hash_hex)
-        .await
-    {
-        // Check each candidate transaction id individually
-        let mut user_to_network_tx_id = None;
-        if let Some(ref tx_id) = tx_ids.user_to_network_tx_id {
-            if user_intent_manager
-                .get_transaction_status(tx_id)
-                .await
-                .is_some()
-            {
-                user_to_network_tx_id = Some(tx_id.clone());
-            }
-        }
-
-        let mut network_to_target_tx_id = None;
-        if let Some(ref tx_id) = tx_ids.network_to_target_tx_id {
-            if user_intent_manager
-                .get_transaction_status(tx_id)
-                .await
-                .is_some()
-            {
-                network_to_target_tx_id = Some(tx_id.clone());
-            }
-        }
-
-        let final_solver_id = tx_ids.final_solver_id.clone();
-        return (
-            user_to_network_tx_id,
-            network_to_target_tx_id,
-            final_solver_id,
-        );
-    }
-
-    (None, None, None)
-}
-
-/// Wait for a transaction ID or chain error associated with the given intent hash.
-/// Polls the database frequently to return as soon as possible and times out
-/// after the provided number of seconds. Tries to get all transaction IDs when possible,
-/// but returns with whatever is available after the timeout.
-pub(crate) async fn wait_for_transaction_result(
-    user_intent_manager: &UserIntentManager,
-    intent_hash: &[u8],
-    timeout_secs: u64,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
-    let start = Instant::now();
-    let intent_hash_hex = hex::encode(intent_hash);
-    let poll_interval = Duration::from_millis(250);
-    let timeout = Duration::from_secs(timeout_secs);
-
-    // Give a bit more time to potentially get all transaction IDs
-    let extended_timeout = timeout + Duration::from_secs(2);
-    let mut best_result = (None, None, None, None);
-
-    loop {
-        // Check for transaction ids
-        let (u2n_tx, n2t_tx, final_solver) =
-            get_transaction_id_for_intent(user_intent_manager, intent_hash).await;
-
-        // Update our best result if we have new information
-        if u2n_tx.is_some() || n2t_tx.is_some() {
-            best_result = (u2n_tx, n2t_tx, final_solver, None);
-            // If we have all transaction IDs, return immediately
-            if best_result.0.is_some() && best_result.1.is_some() {
-                return best_result;
-            }
-
-            // If we have at least one, continue polling for a bit longer to see if we can get the others
-            // But don't wait too long - return after the original timeout if we have at least one
-            if start.elapsed() >= timeout {
-                return best_result;
-            }
-        }
-
-        // Check for any recorded chain error
-        if let Some(tx_ids) = user_intent_manager
-            .get_intent_transaction_ids(&intent_hash_hex)
-            .await
-        {
-            if let Some(error_msg) = tx_ids.error_message {
-                return (None, None, tx_ids.final_solver_id.clone(), Some(error_msg));
-            }
-        }
-
-        // If we've exceeded the extended timeout, return whatever we have
-        if start.elapsed() >= extended_timeout {
-            break;
-        }
-
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    // Return the best result we found, or None if we found nothing
-    best_result
 }
 
 // Helper function to get the actual DKG secret share from shared state

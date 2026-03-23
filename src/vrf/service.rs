@@ -25,19 +25,6 @@ use super::{
 /// Can be adjusted for redundancy, threshold signing, security improvement, or decentralization.
 pub const VRF_NODE_SELECTION_COUNT: usize = 1;
 
-#[derive(Debug, Clone)]
-pub struct VrfServiceConfig {
-    pub allow_synthetic_submissions: bool,
-}
-
-impl Default for VrfServiceConfig {
-    fn default() -> Self {
-        Self {
-            allow_synthetic_submissions: true,
-        }
-    }
-}
-
 /// Round and HRW selection service for chain-agnostic node selection
 #[derive(Clone)]
 pub struct VrfService {
@@ -48,7 +35,6 @@ pub struct VrfService {
     round_update_lock: Arc<Mutex<()>>,
     vrf_storage: Option<VrfStorage>,
     context: String,
-    config: VrfServiceConfig,
     /// Shared sync state for parallel transactions
     sync_in_progress: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     last_sync_result: Arc<RwLock<Option<(u64, std::time::Instant)>>>,
@@ -76,7 +62,7 @@ impl VrfRoundSyncKind {
 impl VrfService {
     /// Create a new round/selection service
     pub fn new(node_id: PeerId, message_tx: mpsc::Sender<ChannelMessage>) -> Self {
-        Self::with_config_and_storage(node_id, message_tx, VrfServiceConfig::default(), None, "")
+        Self::with_config_and_storage(node_id, message_tx, None, "")
     }
 
     pub fn new_with_context(
@@ -87,7 +73,6 @@ impl VrfService {
         Self::with_config_and_storage(
             node_id,
             message_tx,
-            VrfServiceConfig::default(),
             None,
             context,
         )
@@ -101,7 +86,6 @@ impl VrfService {
         Self::with_config_and_storage(
             node_id,
             message_tx,
-            VrfServiceConfig::default(),
             Some(vrf_storage),
             "",
         )
@@ -116,7 +100,6 @@ impl VrfService {
         Self::with_config_and_storage(
             node_id,
             message_tx,
-            VrfServiceConfig::default(),
             Some(vrf_storage),
             context,
         )
@@ -125,24 +108,21 @@ impl VrfService {
     pub fn with_config(
         node_id: PeerId,
         message_tx: mpsc::Sender<ChannelMessage>,
-        config: VrfServiceConfig,
     ) -> Self {
-        Self::with_config_and_storage(node_id, message_tx, config, None, "")
+        Self::with_config_and_storage(node_id, message_tx, None, "")
     }
 
     pub fn with_config_and_context(
         node_id: PeerId,
         message_tx: mpsc::Sender<ChannelMessage>,
-        config: VrfServiceConfig,
         context: impl Into<String>,
     ) -> Self {
-        Self::with_config_and_storage(node_id, message_tx, config, None, context)
+        Self::with_config_and_storage(node_id, message_tx, None, context)
     }
 
     pub fn with_config_and_storage(
         node_id: PeerId,
         message_tx: mpsc::Sender<ChannelMessage>,
-        config: VrfServiceConfig,
         vrf_storage: Option<VrfStorage>,
         context: impl Into<String>,
     ) -> Self {
@@ -161,7 +141,6 @@ impl VrfService {
             round_update_lock: Arc::new(Mutex::new(())),
             vrf_storage,
             context,
-            config,
             sync_in_progress: Arc::new(Mutex::new(None)),
             last_sync_result: Arc::new(RwLock::new(None)),
         }

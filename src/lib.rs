@@ -38,8 +38,7 @@ pub use node_selection::{
 };
 pub use protocols::{
     DKGMessage, DKGNode, DKGStatus, NodeSelectionResult, VrfNodeSelector, VrfOutput,
-    VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfSelectionMessage, VrfService,
-    VrfServiceConfig,
+    VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfSelectionMessage, VrfService
 };
 pub use signing::{DatabaseSigningNode, SigningNode};
 pub use types::{ECDSASignature, SigningMessage};

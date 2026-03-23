@@ -807,12 +807,8 @@ impl SigningNode {
             if computed_r != *r_scalar {
                 error!(
                     "❌❌❌ [SIGNING-NONCE] CRITICAL: r_scalar != x(R) for nonce {}\n\
-                     \tComputed r (from x(R)): 0x{}\n\
-                     \tStored r_scalar:        0x{}\n\
                      \tThis indicates corrupted nonce data!",
-                    nonce.tuple_id,
-                    hex::encode(computed_r.to_bytes()),
-                    hex::encode(r_scalar.to_bytes())
+                    nonce.tuple_id
                 );
                 return Err(anyhow!("Corrupted nonce: r_scalar != x(R)"));
             }
