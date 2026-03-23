@@ -50,6 +50,7 @@ impl<'a> BitcoinSigner<'a> {
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
         nonce_tuple_ids: Option<Vec<String>>,
+        round: u64,
     ) -> Result<()> {
         self.node
             .sign_bitcoin_transaction(
@@ -63,6 +64,7 @@ impl<'a> BitcoinSigner<'a> {
                 solver_address,
                 signing_key_override,
                 nonce_tuple_ids,
+                round,
             )
             .await
     }
@@ -463,12 +465,13 @@ impl SigningNode {
         _solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
         nonce_tuple_ids: Option<Vec<String>>,
+        round: u64,
     ) -> Result<()> {
         use secp256k1::{ecdsa::RecoverableSignature, Message};
 
         info!(
-            "📝 [SIGNING] Node {} starting Bitcoin transaction signing",
-            self.id
+            "📝 [SIGNING] Node {} starting Bitcoin transaction signing for round {}",
+            self.id, round
         );
 
         // We require the full tx object to compute correct per-input digests.
@@ -637,13 +640,13 @@ impl SigningNode {
 
         // ===== Select round (HRW) =====
         let available_nodes = self.coordination.get_available_nodes_from_manager().await;
-        let current_round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
-            vrf_service.get_next_round().await
-        } else {
-            warn!("⚠️ [SIGNING] No round/selection service available, using round 0 as fallback");
-            0
-        };
+
+        // We use the explicit round provided by the initiator to maintain perfect synchronization
+        let current_round = round;
+        if let Some(vrf_service) = self.coordination.vrf_service() {
+            vrf_service.set_current_round(current_round).await;
+        }
+
         self.coordination
             .replicate_vrf_round_to_consensus(current_round);
         if current_round != 0 {
@@ -657,7 +660,7 @@ impl SigningNode {
                     )
                     .await;
                 info!(
-                    "🎲 [SIGNING] Node {} using round {} for Bitcoin transaction signing",
+                    "🎲 [SIGNING] Node {} using explicit round {} for Bitcoin transaction signing",
                     self.id, current_round
                 );
             }

@@ -52,6 +52,7 @@ impl<'a> TicsSigner<'a> {
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        round: u64,
     ) -> Result<()> {
         self.node
             .sign_message(
@@ -64,6 +65,7 @@ impl<'a> TicsSigner<'a> {
                 transaction_type,
                 solver_address,
                 signing_key_override,
+                round,
             )
             .await
     }
@@ -83,6 +85,7 @@ impl<'a> TicsSigner<'a> {
         tics_claim_reward_identifiers: Option<Vec<String>>,
         tics_claim_platform_fee_identifiers: Option<Vec<String>>,
         nonce_tuple_id: Option<String>,
+        round: u64,
     ) -> Result<()> {
         self.node
             .sign_contract_message(
@@ -99,6 +102,7 @@ impl<'a> TicsSigner<'a> {
                 tics_claim_reward_identifiers,
                 tics_claim_platform_fee_identifiers,
                 nonce_tuple_id,
+                round,
             )
             .await
     }
@@ -389,6 +393,7 @@ impl SigningNode {
         transaction_type: Option<TransactionType>,
         solver_address: Option<String>,
         signing_key_override: Option<Scalar>,
+        round: u64,
     ) -> Result<()> {
         info!(
             "🔗 [SIGNING] Using {} chain handler for EVM signing",
@@ -540,15 +545,12 @@ impl SigningNode {
             user_tics_address: user_tics_address.clone(), // Clone to avoid borrow checker issues
         };
 
-        // Synchronize rounds before advancing and acquiring the signing round
-        let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-            vrf_service.sync_rounds_before_signing().await?;
-            let r = vrf_service.get_next_round().await;
-            self.coordination.replicate_vrf_round_to_consensus(r);
-            r
-        } else {
-            0
-        };
+        // We use the explicit round provided by the initiator to maintain perfect synchronization
+        // and avoid non-deterministic race conditions during parallel batch broadcasts.
+        if let Some(vrf_service) = self.coordination.vrf_service() {
+            vrf_service.set_current_round(round).await;
+            self.coordination.replicate_vrf_round_to_consensus(round);
+        }
 
         // Store signature by round before touching any pending transaction locks to maintain
         // a consistent lock acquisition order across signing and reconstruction paths
@@ -651,6 +653,7 @@ impl SigningNode {
         tics_claim_reward_identifiers: Option<Vec<String>>,
         tics_claim_platform_fee_identifiers: Option<Vec<String>>,
         nonce_tuple_id: Option<String>,
+        round: u64,
     ) -> Result<()> {
         let has_dkg = self.has_dkg_share().await;
 
@@ -708,7 +711,6 @@ impl SigningNode {
 
         // Use VrfService for node selection (chain-agnostic)
         if let Some(vrf_service) = self.coordination.vrf_service() {
-            let round = vrf_service.get_current_round().await;
             let _selection_result = vrf_service
                 .perform_node_selection(
                     &available_nodes,
@@ -822,15 +824,11 @@ impl SigningNode {
                 user_tics_address: user_tics_address.clone(),
             };
 
-            // Synchronize rounds before advancing and acquiring the signing round
-            let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-                vrf_service.sync_rounds_before_signing().await?;
-                let r = vrf_service.get_next_round().await;
-                self.coordination.replicate_vrf_round_to_consensus(r);
-                r
-            } else {
-                0
-            };
+            // We use the explicit round provided by the initiator to maintain perfect synchronization
+            if let Some(vrf_service) = self.coordination.vrf_service() {
+                vrf_service.set_current_round(round).await;
+                self.coordination.replicate_vrf_round_to_consensus(round);
+            }
 
             // Store signature by round
             {
@@ -857,15 +855,11 @@ impl SigningNode {
         } else {
             // Non-DKG node: skip signing, just advance round and store TX
 
-            // Synchronize rounds and advance to keep in sync with DKG nodes
-            let round = if let Some(vrf_service) = self.coordination.vrf_service() {
-                vrf_service.sync_rounds_before_signing().await?;
-                let r = vrf_service.get_next_round().await;
-                self.coordination.replicate_vrf_round_to_consensus(r);
-                r
-            } else {
-                0
-            };
+            // We use the explicit round provided by the initiator to maintain perfect synchronization
+            if let Some(vrf_service) = self.coordination.vrf_service() {
+                vrf_service.set_current_round(round).await;
+                self.coordination.replicate_vrf_round_to_consensus(round);
+            }
 
             debug!(
                 "💾 [SIGNING] Stored contract TX for round {} (ready for final-node reconstruction)",

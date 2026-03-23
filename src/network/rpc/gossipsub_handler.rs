@@ -2236,6 +2236,7 @@ impl MpcNetworkLayer {
                                     None,
                                     signing_key,
                                     nonce_tuple_ids.clone(),
+                                    round,
                                 )
                                 .await
                             {
@@ -2526,6 +2527,7 @@ impl MpcNetworkLayer {
                                         None, // tics_claim_reward_identifiers (not applicable)
                                         None, // tics_claim_platform_fee_identifiers (not applicable)
                                         nonce_tuple_id.clone(), // COORDINATED nonce from coordinator
+                                        round,
                                     )
                                     .await
                                 {
@@ -3856,6 +3858,7 @@ impl MpcNetworkLayer {
                             None, // No per-withdraw solver address; encoded in identifiers
                             signing_key,
                             nonce_tuple_ids.clone(),
+                            round,
                         )
                         .await
                     {
@@ -4322,6 +4325,7 @@ impl MpcNetworkLayer {
                             None,
                             signing_key,
                             nonce_tuple_ids.clone(),
+                            round,
                         )
                         .await
                     {
@@ -4696,6 +4700,7 @@ impl MpcNetworkLayer {
                             None,
                             None,
                             nonce_tuple_id.clone(),
+                            round,
                         )
                         .await
                     {
@@ -5071,6 +5076,7 @@ impl MpcNetworkLayer {
                             Some(used_identifiers.clone()),
                             None,
                             nonce_tuple_id.clone(),
+                            round,
                         )
                         .await
                     {
@@ -5677,6 +5683,7 @@ impl MpcNetworkLayer {
                                 nonce_tuple_ids
                                     .as_ref()
                                     .and_then(|ids| ids.first().cloned()),
+                                round,
                             )
                             .await?;
 
@@ -6788,6 +6795,7 @@ impl MpcNetworkLayer {
                             None,
                             signing_key,
                             nonce_tuple_ids.clone(),
+                            round,
                         )
                         .await
                     {
@@ -7077,6 +7085,7 @@ impl MpcNetworkLayer {
                             None,                // tics_claim_reward_identifiers
                             Some(used_identifiers.clone()), // tics_claim_platform_fee_identifiers
                             nonce_tuple_id.clone(), // coordinated nonce
+                            round,
                         )
                         .await
                     {

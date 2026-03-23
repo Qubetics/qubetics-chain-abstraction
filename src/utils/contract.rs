@@ -26,6 +26,7 @@ pub async fn execute_contract_call_for_transaction(
     target_amount: Option<u128>,
     tx_hash: &[u8],
     nonce_tuple_id: Option<String>,
+    round: u64,
 ) -> Result<()> {
     // Convert tx_hash from bytes to hex string for the executor
     let tx_hash_str = hex::encode(tx_hash);
@@ -41,9 +42,10 @@ pub async fn execute_contract_call_for_transaction(
         amount,
         target_amount,
         &tx_hash_str,
-        None, // No request_id for non-sequencer call
-        None, // No original_request for non-sequencer call
+        None,           // No request_id for non-sequencer call
+        None,           // No original_request for non-sequencer call
         nonce_tuple_id, // Coordinated nonce (required for signing)
+        round,
     )
     .await
 }
