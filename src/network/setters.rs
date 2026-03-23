@@ -19,7 +19,10 @@ impl MpcNetworkLayer {
 
     /// Set the signing node (Arc<Mutex<SigningNode>>). Calls set_self_arc on the node so it can spawn aggregation tasks.
     pub async fn set_signing_node(&mut self, signing_node: Arc<Mutex<SigningNode>>) {
-        signing_node.lock().await.set_self_arc(Arc::clone(&signing_node));
+        signing_node
+            .lock()
+            .await
+            .set_self_arc(Arc::clone(&signing_node));
         self.signing_node = Some(signing_node);
     }
 
@@ -50,18 +53,13 @@ impl MpcNetworkLayer {
 
         // Also set the user registry on the signing node for transaction ID storage
         if let Some(signing_node) = &self.signing_node {
-            signing_node.lock().await.set_user_intent_manager(registry.clone());
+            signing_node
+                .lock()
+                .await
+                .set_user_intent_manager(registry.clone());
             info!("📋 [NETWORK] Set user registry on signing node for transaction ID storage");
         } else {
             info!("⚠️ [NETWORK] Signing node not available when setting user registry");
-        }
-
-        // Attach user registry to DKG node so it can refresh user shares after secret updates
-        if let Some(dkg_node) = &mut self.dkg_node {
-            dkg_node.set_user_intent_manager(registry.clone());
-            info!("🔗 [NETWORK] Attached user registry to DKG node");
-        } else {
-            info!("⚠️ [NETWORK] DKG node not available when setting user registry");
         }
     }
 
@@ -77,5 +75,4 @@ impl MpcNetworkLayer {
             info!("⚠️ [NETWORK] Signing node not available when setting database");
         }
     }
-
 }
