@@ -1397,12 +1397,10 @@ pub async fn create_chain_transaction_from_contract_call(
         &[batch_intent],
         batch_type,
         &intent.timestamp.to_string(),
-    );
+    )
+    .ok_or_else(|| anyhow::anyhow!("Failed to encode calldata for encode_process_batch_intents_calldata (intent_hash={}, batch_type={:?})", intent_hash, batch_type))?;
 
-    let calldata_hex = calldata
-        .as_ref()
-        .map(|d| format!("0x{}", hex::encode(d)))
-        .unwrap_or_else(|| "0x".to_string());
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
     let estimated_gas = estimate_gas_for_deposit_intent(
         &network_address,
         &contract_address_env,
@@ -1433,8 +1431,7 @@ pub async fn create_chain_transaction_from_contract_call(
     info!("  - Gas Price: {}", gas_price);
     info!("  - Chain ID: {}", chain_id);
     // Avoid logging full calldata bytes at info level to keep logs compact
-    let calldata_len = calldata.as_ref().map(|c| c.len()).unwrap_or(0);
-    info!("  - Calldata length: {} bytes", calldata_len);
+    info!("  - Calldata length: {} bytes", calldata.len());
 
     let tics_tx = TicsTransaction {
         to: contract_address_env,
@@ -1442,7 +1439,7 @@ pub async fn create_chain_transaction_from_contract_call(
         gas_limit,
         gas_price,
         nonce,
-        data: calldata,
+        data: Some(calldata),
         chain_id,
     };
 
@@ -1475,16 +1472,14 @@ pub async fn create_solver_rewards_update_transaction(
     info!("🔧 [CONTRACT] Chain name: {}", chain_name);
     info!("🔧 [CONTRACT] From address: {}", from_address);
 
-    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash);
+    let calldata = encode_update_solver_rewards_calldata(solver_address, rewards, transaction_hash)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode calldata for encode_update_solver_rewards_calldata (solver={}, tx_hash={})", solver_address, transaction_hash))?;
     // Keep detailed calldata logs at debug level only
     debug!(
         "🔧 [CONTRACT] Prepared solver rewards calldata ({} bytes)",
-        calldata.as_ref().map(|c| c.len()).unwrap_or(0)
+        calldata.len()
     );
-    let calldata_hex = calldata
-        .as_ref()
-        .map(|d| format!("0x{}", hex::encode(d)))
-        .unwrap_or_else(|| "0x".to_string());
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
 
     debug!("🔧 [CONTRACT] Calldata prepared: {}", calldata_hex);
 
@@ -1514,7 +1509,7 @@ pub async fn create_solver_rewards_update_transaction(
         gas_limit,
         gas_price,
         nonce,
-        data: calldata,
+        data: Some(calldata),
         chain_id,
     };
 
@@ -1664,13 +1659,11 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         normalized_contract_address
     );
 
-    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types, tx_ids);
-    let calldata_hex = calldata
-        .as_ref()
-        .map(|d| format!("0x{}", hex::encode(d)))
-        .unwrap_or_else(|| "0x".to_string());
+    let calldata = encode_add_liquidity_batch_calldata(solver_ids, amounts, chain_types, tx_ids)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode calldata for encode_add_liquidity_batch_calldata (solvers={}, chain_id={})", solver_ids.len(), chain_id))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
 
-    info!("🔧 [CONTRACT] addLiquidityBatch calldata prepared (len={} bytes)", calldata.as_ref().map(|c| c.len()).unwrap_or(0));
+    info!("🔧 [CONTRACT] addLiquidityBatch calldata prepared (len={} bytes)", calldata.len());
 
     let estimated_gas = estimate_gas_for_deposit_intent(
         from_address,
@@ -1701,7 +1694,7 @@ pub async fn create_solver_add_liquidity_batch_transaction(
         gas_limit,
         gas_price,
         nonce,
-        data: calldata,
+        data: Some(calldata),
         chain_id,
     };
 
@@ -2504,6 +2497,69 @@ mod tests {
             std::env::set_var("MPC_ETHEREUM_RPC_URL", original_url);
         }
     }
+
+    // ── QCA-74: calldata encoder tests ──────────────────────────────────────
+
+    #[test]
+    fn test_encode_process_batch_intents_calldata_valid() {
+        use crate::types::{BatchIntentInput, BatchType};
+        let intent = BatchIntentInput {
+            source_address: "0xabc".to_string(),
+            target_address: "0xdef".to_string(),
+            source_chain: "qubetics".to_string(),
+            target_chain: "qubetics".to_string(),
+            source_amount: 1000,
+            target_amount: 900,
+            source_token: "USDT".to_string(),
+            target_token: "USDT".to_string(),
+            intent_id: "intent-1".to_string(),
+            withdraw_tx_hash: "0xhash".to_string(),
+            deposit_tx_hash: None,
+        };
+        let result = encode_process_batch_intents_calldata(&[intent], BatchType::TICS, "12345");
+        assert!(result.is_some(), "expected Some for valid batch intent input");
+        assert!(result.unwrap().len() >= 4, "calldata must include at least 4-byte selector");
+    }
+
+    #[test]
+    fn test_encode_update_solver_rewards_calldata_valid() {
+        let result = encode_update_solver_rewards_calldata(
+            "0x1234567890abcdef1234567890abcdef12345678",
+            &[U256::from(1000u64), U256::zero()],
+            "0xtxhash",
+        );
+        assert!(result.is_some(), "expected Some for valid solver rewards input");
+        assert!(result.unwrap().len() >= 4);
+    }
+
+    #[test]
+    fn test_encode_add_liquidity_batch_calldata_mismatched_lengths_returns_none() {
+        let solver_ids = vec!["solver1".to_string()];
+        let amounts = vec![U256::from(100u64), U256::from(200u64)]; // length mismatch
+        let chain_types = vec![0u8];
+        let tx_ids = vec!["tx1".to_string()];
+        let result = encode_add_liquidity_batch_calldata(&solver_ids, &amounts, &chain_types, &tx_ids);
+        assert!(result.is_none(), "expected None when input lengths differ");
+    }
+
+    #[test]
+    fn test_encode_add_liquidity_batch_calldata_valid() {
+        let solver_ids = vec!["solver1".to_string()];
+        let amounts = vec![U256::from(100u64)];
+        let chain_types = vec![0u8];
+        let tx_ids = vec!["tx1".to_string()];
+        let result = encode_add_liquidity_batch_calldata(&solver_ids, &amounts, &chain_types, &tx_ids);
+        assert!(result.is_some(), "expected Some for valid add liquidity input");
+        assert!(result.unwrap().len() >= 4);
+    }
+
+    #[test]
+    fn test_encode_invalidate_solver_ids_calldata_valid() {
+        let solver_ids = vec!["solver1".to_string(), "solver2".to_string()];
+        let result = encode_invalidate_solver_ids_calldata(&solver_ids);
+        assert!(result.is_some(), "expected Some for valid solver ids input");
+        assert!(result.unwrap().len() >= 4);
+    }
 }
 
 pub(crate) fn create_bitcoin_script_pubkey(address: &str) -> Result<Vec<u8>> {
@@ -3194,13 +3250,11 @@ pub async fn create_invalidate_solver_ids_transaction(
         normalized_contract_address
     );
 
-    let calldata = encode_invalidate_solver_ids_calldata(solver_ids);
-    let calldata_hex = calldata
-        .as_ref()
-        .map(|d| format!("0x{}", hex::encode(d)))
-        .unwrap_or_else(|| "0x".to_string());
+    let calldata = encode_invalidate_solver_ids_calldata(solver_ids)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode calldata for encode_invalidate_solver_ids_calldata (solver_ids={:?}, chain_id={})", solver_ids, chain_id))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
 
-    info!("🔧 [CONTRACT] invalidateSolverIds calldata prepared (len={} bytes)", calldata.as_ref().map(|c| c.len()).unwrap_or(0));
+    info!("🔧 [CONTRACT] invalidateSolverIds calldata prepared (len={} bytes)", calldata.len());
 
     let estimated_gas = estimate_gas_for_deposit_intent(
         from_address,
@@ -3231,7 +3285,7 @@ pub async fn create_invalidate_solver_ids_transaction(
         gas_limit,
         gas_price,
         nonce,
-        data: calldata,
+        data: Some(calldata),
         chain_id,
     };
 

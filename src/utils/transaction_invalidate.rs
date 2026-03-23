@@ -47,15 +47,13 @@ pub async fn create_invalidate_solver_ids_transaction(
         normalized_contract_address
     );
 
-    let calldata = encode_invalidate_solver_ids_calldata(solver_ids);
-    let calldata_hex = calldata
-        .as_ref()
-        .map(|d| format!("0x{}", hex::encode(d)))
-        .unwrap_or_else(|| "0x".to_string());
+    let calldata = encode_invalidate_solver_ids_calldata(solver_ids)
+        .ok_or_else(|| anyhow::anyhow!("Failed to encode calldata for encode_invalidate_solver_ids_calldata (solver_ids={:?}, chain_id={})", solver_ids, chain_id))?;
+    let calldata_hex = format!("0x{}", hex::encode(&calldata));
 
     info!(
         "🔧 [CONTRACT] invalidateSolverIds calldata prepared (len={} bytes)",
-        calldata.as_ref().map(|c| c.len()).unwrap_or(0)
+        calldata.len()
     );
 
     let estimated_gas = estimate_gas_for_deposit_intent(
@@ -87,7 +85,7 @@ pub async fn create_invalidate_solver_ids_transaction(
         gas_limit,
         gas_price,
         nonce,
-        data: calldata,
+        data: Some(calldata),
         chain_id,
     };
 
