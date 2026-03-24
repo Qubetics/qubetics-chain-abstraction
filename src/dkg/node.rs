@@ -30,8 +30,6 @@ pub struct DKGNode {
     pub(super) message_tx: mpsc::Sender<ChannelMessage>,
     pub(super) completion_callback: Option<DKGCompletionCallback>,
     pub(super) chain_code: [u8; 32],
-    pub(super) user_intent_manager:
-        Option<std::sync::Arc<crate::user_intent_manager::UserIntentManager>>, // optional handle to update users after refresh
 }
 
 impl DKGNode {
@@ -110,16 +108,7 @@ impl DKGNode {
             message_tx,
             completion_callback: None,
             chain_code,
-            user_intent_manager: None,
         }
-    }
-
-    pub fn set_user_intent_manager(
-        &mut self,
-        registry: std::sync::Arc<crate::user_intent_manager::UserIntentManager>,
-    ) {
-        self.user_intent_manager = Some(registry);
-        info!("🔗 [DKG] User registry handle attached to DKG node");
     }
 
     /// Load permanent index from storage
