@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha3::{Digest, Keccak256};
 use tracing::{debug, error, info, warn};
 
-use crate::{database::DkgStorage};
+use crate::database::DkgStorage;
 
 use super::errors::TransactionError;
 

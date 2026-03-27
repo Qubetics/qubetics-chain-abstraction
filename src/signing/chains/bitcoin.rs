@@ -683,7 +683,15 @@ impl SigningNode {
             };
 
             // Calculate and log DKG index for this node (Bitcoin)
-            let dkg_index = self.calculate_dkg_index_for_peer(&self.id).await;
+            let dkg_index = self
+                .calculate_dkg_index_for_peer(&self.id)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Bitcoin signing aborted — cannot determine DKG index for self: {}",
+                        e
+                    )
+                })?;
             info!(
                 "🔢 [BTC-SIGNING-DEBUG] Node {} Bitcoin DKG index: {}",
                 self.id, dkg_index
