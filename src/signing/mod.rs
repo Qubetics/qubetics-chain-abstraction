@@ -5241,33 +5241,38 @@ impl SigningNode {
             }
         }
 
-        // Verify signature before storing
-        // For contract transactions (transaction_type = None), use vault share pubkey
+        // Verify partial signature before storing.
         //
-        // NOTE: With random nonces (coordinated nonces), partial signature verification
-        // via ECDSA public key recovery is not mathematically possible because all nodes
-        // use the same aggregated k⁻¹ and r values. The security comes from:
-        // 1. All nodes compute the same message digest
-        // 2. The final aggregated signature is verified against the group public key
-        // 3. Invalid partial signatures will result in an invalid aggregated signature
+        // In this aggregated-nonce scheme all DKG nodes locally reconstruct the same
+        // shared nonce k and its inverse k⁻¹.  Each node then computes:
         //
-        // For now, we log but don't fail on partial verification errors. The final
-        // aggregated signature verification provides the actual security guarantee.
-        if let Err(e) = self
+        //   s_i = k⁻¹ · (z + r · x_i)   (z = message digest, x_i = private share)
+        //
+        // Because k is the same for every signer, (r, s_i) is a standard ECDSA
+        // signature verifiable against the node's share public key Q_i = x_i·G via:
+        //
+        //   recover_pubkey(r, s_i, z) == Q_i
+        //
+        // We therefore enforce this check as a hard rejection: signatures that do not
+        // correspond to the sender's registered partial public key for this round's
+        // transaction digest are dropped and never enter the aggregation pool.
+        match self
             .verify_signature_for_round(&from, &signature, round, None)
             .await
         {
-            warn!(
-                "⚠️ [SIGNING] Partial verification failed for peer {} in round {} (expected with random nonces): {}",
-                from, round, e
-            );
-            // Don't return error - with random nonces, partial verification is not possible.
-            // The final aggregated signature will be verified against the group public key.
-        } else {
-            info!(
-                "✅ [SIGNING] Signature verification passed for peer {} in round {}",
-                from, round
-            );
+            Ok(()) => {
+                info!(
+                    "✅ [SIGNING] Partial signature verification passed for peer {} in round {}",
+                    from, round
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING] Partial signature verification FAILED for peer {} in round {} — rejecting: {}",
+                    from, round, e
+                );
+                return Ok(());
+            }
         }
 
         // Store signature by round
