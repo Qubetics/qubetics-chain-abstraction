@@ -2,7 +2,6 @@
 ///
 /// This module extracts redundant code patterns to follow DRY principles and Rust best practices.
 use anyhow::Result;
-use libp2p::PeerId;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -123,19 +122,18 @@ impl MpcNetworkLayer {
     /// Handle transaction ID storage and contract execution
     ///
     /// SECURITY: This function now includes:
-    /// 1. Authentication check (caller must verify sender is trusted)
-    /// 2. Consensus mechanism (require multiple nodes to agree)
-    /// 3. Rate limiting (prevent duplicate processing)
+    /// 1. Authentication check (caller must verify sender is trusted via message.source)
+    /// 2. Rate limiting (prevent duplicate processing)
     pub(crate) async fn handle_transaction_id_storage(
         &mut self,
         intent_hash: &str,
         transaction_id: &str,
         transaction_type: &str,
-        node_id: &str,
+        _node_id: &str,
         sender_peer_id: &libp2p::PeerId,
     ) -> Result<()> {
         if let Some(user_intent_manager) = &self.user_intent_manager {
-            // SECURITY FIX 2: Check if this transaction ID was already processed (rate limiting)
+            // Check if this transaction ID was already processed (rate limiting)
             let was_already_processed = {
                 if let Some(existing_tx_ids) = user_intent_manager
                     .get_intent_transaction_ids(intent_hash)
@@ -157,6 +155,10 @@ impl MpcNetworkLayer {
                 }
             };
 
+            // Use the authenticated sender (message.source) as the node identity for storage,
+            // not the self-reported payload node_id which could be forged.
+            let authenticated_node_id = sender_peer_id.to_string();
+
             // Store transaction ID (this will update if it already exists, which is fine for synchronization)
             match self
                 .store_transaction_id_by_type(
@@ -164,7 +166,7 @@ impl MpcNetworkLayer {
                     intent_hash,
                     transaction_id,
                     transaction_type,
-                    Some(node_id),
+                    Some(authenticated_node_id.as_str()),
                 )
                 .await
             {
@@ -184,38 +186,10 @@ impl MpcNetworkLayer {
                         transaction_id, intent_hash, transaction_type
                     );
 
-                    // SECURITY FIX 4: Consensus mechanism - require multiple nodes to agree before contract execution
-                    // Only execute contract call if this is a new transaction ID (not already processed)
                     if was_already_processed {
                         info!(
                             "⏭️ [NETWORK] Transaction ID {} for intent {} (type: {}) was already processed, skipping contract call to prevent duplicate execution",
                             transaction_id, intent_hash, transaction_type
-                        );
-                    } else {
-                        // SECURITY FIX 5: Require consensus before executing contract calls
-                        // Check if we have received this transaction_id from multiple trusted nodes
-                        let consensus_reached = self
-                            .check_transaction_id_consensus(
-                                intent_hash,
-                                transaction_id,
-                                transaction_type,
-                                sender_peer_id,
-                            )
-                            .await;
-
-                        if !consensus_reached {
-                            info!(
-                                "⏳ [SECURITY] Waiting for consensus on transaction {} before executing contract call (received from {} so far)",
-                                transaction_id, node_id
-                            );
-                            // Store the transaction ID but don't execute contract call yet
-                            // Contract call will be executed when consensus is reached
-                            return Ok(());
-                        }
-
-                        info!(
-                            "✅ [SECURITY] Consensus reached on transaction {} - proceeding with contract call",
-                            transaction_id
                         );
                     }
                 }
@@ -230,80 +204,6 @@ impl MpcNetworkLayer {
             warn!("❌ [NETWORK] No user registry available to store synchronized transaction ID");
         }
         Ok(())
-    }
-
-    /// SECURITY: Check if consensus has been reached on a transaction ID
-    /// Requires at least 2/3 of active nodes to agree before executing contract calls
-    async fn check_transaction_id_consensus(
-        &self,
-        intent_hash: &str,
-        transaction_id: &str,
-        transaction_type: &str,
-        _sender_peer_id: &PeerId,
-    ) -> bool {
-        // Get total number of active nodes
-        let total_nodes = self.node_manager.get_total_nodes();
-        if total_nodes < 2 {
-            // Single node or no nodes - can't have consensus
-            warn!(
-                "⚠️ [SECURITY] Cannot check consensus: insufficient nodes ({})",
-                total_nodes
-            );
-            return false;
-        }
-
-        // Calculate required consensus threshold (2/3 of nodes, minimum 2)
-        let consensus_threshold = std::cmp::max(2, (total_nodes * 2) / 3);
-
-        // Check how many nodes have reported this transaction_id for this intent
-        if let Some(user_intent_manager) = &self.user_intent_manager {
-            // Get all stored transaction IDs for this intent to see which nodes reported them
-            if let Some(tx_ids) = user_intent_manager
-                .get_intent_transaction_ids(intent_hash)
-                .await
-            {
-                // Check if the transaction_id matches for this transaction type
-                let matches = match transaction_type {
-                    "user_to_vault" => {
-                        tx_ids.user_to_network_tx_id.as_ref() == Some(&transaction_id.to_string())
-                    }
-                    "network_to_target" => {
-                        tx_ids.network_to_target_tx_id.as_ref() == Some(&transaction_id.to_string())
-                    }
-                    _ => false,
-                };
-
-                if matches {
-                    // Count how many unique nodes have stored this transaction_id
-                    // For now, we'll use a simple heuristic: if we've seen it from at least threshold nodes
-                    // In a production system, you'd track which specific nodes reported it
-                    info!(
-                        "🔍 [SECURITY] Checking consensus for transaction {}: threshold={}, total_nodes={}",
-                        transaction_id, consensus_threshold, total_nodes
-                    );
-
-                    // For now, require at least 2 nodes to have reported it (including current sender)
-                    // In a full implementation, you'd track which nodes reported which transaction_ids
-                    // This is a simplified version - you may want to enhance this with a proper consensus tracking mechanism
-                    if total_nodes >= consensus_threshold {
-                        // In a real implementation, you'd check a consensus tracking structure
-                        // For now, we'll be conservative and require the transaction to be stored
-                        // and validated before executing contract calls
-                        info!(
-                            "✅ [SECURITY] Consensus check passed for transaction {} (simplified check - transaction validated and stored)",
-                            transaction_id
-                        );
-                        return true;
-                    }
-                }
-            }
-        }
-
-        warn!(
-            "⏳ [SECURITY] Consensus not yet reached for transaction {} (need {} nodes, have at least 1)",
-            transaction_id, consensus_threshold
-        );
-        false
     }
     /// Handle withdraw liquidity transaction ID storage
     pub(crate) async fn handle_withdraw_liquidity_transaction_id_storage(

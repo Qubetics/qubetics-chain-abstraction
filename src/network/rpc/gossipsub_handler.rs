@@ -494,13 +494,12 @@ impl MpcNetworkLayer {
                     node_id
                 );
 
-                // SECURITY FIX 1: Authenticate sender - verify node_id is a trusted/active node
-                let sender_peer_id = match node_id.parse::<libp2p::PeerId>() {
-                    Ok(pid) => pid,
-                    Err(e) => {
+                // Authenticate against the real libp2p sender, not the self-reported payload field.
+                let sender_peer_id = match message.source {
+                    Some(pid) => pid,
+                    None => {
                         warn!(
-                            "🚫 [SECURITY] Rejecting TransactionIdBroadcast: invalid node_id format '{}': {}",
-                            node_id, e
+                            "🚫 [SECURITY] Rejecting TransactionIdBroadcast: message has no source peer ID"
                         );
                         return Ok(());
                     }
@@ -512,15 +511,25 @@ impl MpcNetworkLayer {
                     .contains(&sender_peer_id);
                 if !is_trusted_node {
                     warn!(
-                        "🚫 [SECURITY] Rejecting TransactionIdBroadcast: sender {} is not a trusted/active node",
-                        node_id
+                        "🚫 [SECURITY] Rejecting TransactionIdBroadcast: actual sender {} is not a trusted/active node",
+                        sender_peer_id
                     );
                     return Ok(());
                 }
 
+                // Warn if payload node_id differs from the authenticated source (spoofing attempt).
+                if let Ok(claimed_pid) = node_id.parse::<libp2p::PeerId>() {
+                    if claimed_pid != sender_peer_id {
+                        warn!(
+                            "⚠️ [SECURITY] TransactionIdBroadcast payload node_id {} differs from actual sender {} — using actual sender",
+                            node_id, sender_peer_id
+                        );
+                    }
+                }
+
                 info!(
                     "✅ [SECURITY] TransactionIdBroadcast authenticated from trusted node {}",
-                    node_id
+                    sender_peer_id
                 );
                 if !intent_hashes.is_empty() {
                     info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
@@ -656,14 +665,12 @@ impl MpcNetworkLayer {
                     final_node_id
                 );
 
-                // SECURITY FIX: Authenticate sender - verify final_node_id is a trusted/active node
-                // It should match the ID of the node sending the message.
-                let sender_peer_id = match final_node_id.parse::<libp2p::PeerId>() {
-                    Ok(pid) => pid,
-                    Err(e) => {
+                // Authenticate against the real libp2p sender, not the self-reported payload field.
+                let actual_source = match message.source {
+                    Some(pid) => pid,
+                    None => {
                         warn!(
-                            "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: invalid final_node_id format '{}': {}",
-                            final_node_id, e
+                            "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: message has no source peer ID"
                         );
                         return Ok(());
                     }
@@ -672,18 +679,28 @@ impl MpcNetworkLayer {
                 let is_trusted_node = self
                     .node_manager
                     .get_active_nodes()
-                    .contains(&sender_peer_id);
+                    .contains(&actual_source);
                 if !is_trusted_node {
                     warn!(
-                        "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: sender {} is not a trusted/active node",
-                        final_node_id
+                        "🚫 [SECURITY] Rejecting FinalNodeIdBroadcast: actual sender {} is not a trusted/active node",
+                        actual_source
                     );
                     return Ok(());
                 }
 
+                // Warn if payload final_node_id differs from the authenticated source.
+                if let Ok(claimed_pid) = final_node_id.parse::<libp2p::PeerId>() {
+                    if claimed_pid != actual_source {
+                        warn!(
+                            "⚠️ [SECURITY] FinalNodeIdBroadcast payload final_node_id {} differs from actual sender {} — ignoring payload claim",
+                            final_node_id, actual_source
+                        );
+                    }
+                }
+
                 info!(
                     "✅ [SECURITY] FinalNodeIdBroadcast authenticated from trusted node {}",
-                    final_node_id
+                    actual_source
                 );
                 if !intent_hashes.is_empty() {
                     info!("🔗 [NETWORK] Intent hashes: {:?}", intent_hashes);
