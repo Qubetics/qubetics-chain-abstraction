@@ -641,7 +641,7 @@ impl MpcNetworkLayer {
                 }
             }
         } else {
-            // BTC claim-reward: store tx_id only (do not mark done). request_id required.
+            // BTC claim-reward: store tx_id AND mark as Completed immediately. request_id required.
             let Some(req_id) = request_id else {
                 warn!(
                     "⚠️ [CLAIM_REWARD_TXID] BTC claim-reward txid requires request_id (solver {}, txid {})",
@@ -667,14 +667,15 @@ impl MpcNetworkLayer {
                     return Ok(());
                 }
                 req.tx_id = Some(transaction_id.to_string());
+                req.status = "Completed".to_string();
                 if let Err(e) = db.put_string(&key, &req) {
                     warn!(
-                        "⚠️ [CLAIM_REWARD_TXID] Failed to update tx_id for claim reward {} (solver {}): {}",
+                        "⚠️ [CLAIM_REWARD_TXID] Failed to update tx_id and status for claim reward {} (solver {}): {}",
                         req_id, solver_address, e
                     );
                 } else {
                     info!(
-                        "💾 [CLAIM_REWARD_TXID] Updated tx_id for claim reward {} (solver {}) to {}",
+                        "💾 [CLAIM_REWARD_TXID] Marked claim reward {} (solver {}) as Completed and updated tx_id to {}",
                         req_id, solver_address, transaction_id
                     );
                 }
@@ -706,8 +707,9 @@ impl MpcNetworkLayer {
         let db = &self.db;
 
         let maybe_req: Option<PendingClaimPlatformFeeRequest> = match db
-            .get_string::<PendingClaimPlatformFeeRequest>(&key)
-        {
+            .get_string::<PendingClaimPlatformFeeRequest>(
+            &key,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 warn!(
@@ -751,7 +753,11 @@ impl MpcNetworkLayer {
                     "💾 [CLAIM_PLATFORM_FEE_TXID] Updated claim {} tx_id={} {}",
                     request_id,
                     transaction_id,
-                    if is_tics_tx { "(Completed)" } else { "(Pending — awaiting contract call)" }
+                    if is_tics_tx {
+                        "(Completed)"
+                    } else {
+                        "(Pending — awaiting contract call)"
+                    }
                 );
             }
         } else {
