@@ -4475,6 +4475,7 @@ impl SigningNode {
             .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
 
         let mut tics_batched = 0usize;
+        let mut btc_updated = 0usize;
         let mut tics_claim_batch_requests: Vec<TicsClaimRewardBatchRequest> = Vec::new();
 
         for (key, mut req) in all_claims {
@@ -4503,6 +4504,29 @@ impl SigningNode {
                     tics_batched += 1;
                 }
                 continue;
+            }
+
+            // BTC: pick pending requests that already have tx_id (register on contract in same batch)
+            let has_tx_id = req.tx_id.as_ref().map_or(false, |s| !s.is_empty());
+            let has_btc = req.btc_address.as_ref().map_or(false, |a| !a.trim().is_empty());
+            if has_btc && has_tx_id {
+                tics_claim_batch_requests.push(TicsClaimRewardBatchRequest {
+                    request_id: req.request_id.clone(),
+                    solver_address: req.solver_address.clone(),
+                    asset: "BTC".to_string(),
+                    amount: "0".to_string(),
+                    chain_id: 0,
+                    tx_id: req.tx_id.clone(),
+                });
+                req.status = "Batched".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!(
+                        "⚠️ [CLOCK][TICS_CLAIM] Failed to mark BTC claim {} as Batched: {}",
+                        req.request_id, e
+                    );
+                } else {
+                    btc_updated += 1;
+                }
             }
         }
 
@@ -4565,8 +4589,8 @@ impl SigningNode {
         }
 
         info!(
-            "✅ [CLOCK][TICS_CLAIM] Settlement epoch completed: {} TICS claim requests batched",
-            tics_batched
+            "✅ [CLOCK][TICS_CLAIM] Settlement epoch completed: {} TICS claim requests batched, {} BTC claim requests (with tx_id) batched for contract",
+            tics_batched, btc_updated
         );
 
         Ok(())
