@@ -585,7 +585,9 @@ pub async fn fetch_tics_nonce(address: &str, chain_id: u64) -> Result<u64> {
             return Err(anyhow::anyhow!("Nonce fetch failed: {}", error));
         }
         if let Some(nonce_hex) = result.get("result") {
-            let nonce_str = nonce_hex.as_str().unwrap_or("0x0");
+            let nonce_str = nonce_hex
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("RPC returned non-string nonce: {}", nonce_hex))?;
             let nonce = u64::from_str_radix(nonce_str.strip_prefix("0x").unwrap_or(nonce_str), 16)?;
             info!("✅ Fetched nonce {} for address {}", nonce, address);
             Ok(nonce)
@@ -905,7 +907,9 @@ pub(crate) async fn estimate_gas_for_deposit_intent(
             return Err(anyhow::anyhow!("Gas estimation failed: {}", error));
         }
         if let Some(gas_hex) = result.get("result") {
-            let gas_str = gas_hex.as_str().unwrap_or("0x0");
+            let gas_str = gas_hex
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("RPC returned non-string gas estimate: {}", gas_hex))?;
             let gas = u64::from_str_radix(gas_str.strip_prefix("0x").unwrap_or(gas_str), 16)?;
             info!("✅ Estimated gas: {}", gas);
             Ok(gas)
@@ -2265,7 +2269,9 @@ pub async fn fetch_qubetics_gas_price(chain_id: u64) -> Result<String> {
             return Err(anyhow::anyhow!("Gas price fetch failed: {}", error));
         }
         if let Some(gas_price_hex) = result.get("result") {
-            let gas_price_str = gas_price_hex.as_str().unwrap_or("0x0");
+            let gas_price_str = gas_price_hex
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("RPC returned non-string gas price: {}", gas_price_hex))?;
             info!("✅ Fetched current gas price: {}", gas_price_str);
             Ok(gas_price_str.to_string())
         } else {
@@ -3290,4 +3296,151 @@ pub async fn create_invalidate_solver_ids_transaction(
     };
 
     Ok(ChainTransaction::Tics(tics_tx))
+}
+
+#[cfg(test)]
+mod rpc_parsing_tests {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Spin up a mock HTTP server that returns `body` for every POST,
+    /// then point `MPC_ETHEREUM_RPC_URL` at it.
+    async fn setup_mock(body: serde_json::Value) -> (MockServer, u64) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let chain_id = crate::env_defaults::mpc_tics_chain_id();
+        std::env::set_var("MPC_ETHEREUM_RPC_URL", server.uri());
+        (server, chain_id)
+    }
+
+    // ── fetch_tics_nonce ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_fetch_nonce_rejects_numeric_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":5})).await;
+        let err = fetch_tics_nonce("0x0000000000000000000000000000000000000001", chain_id)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("non-string nonce"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_nonce_rejects_null_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":null})).await;
+        let err = fetch_tics_nonce("0x0000000000000000000000000000000000000001", chain_id)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("non-string nonce"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_nonce_rejects_object_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})).await;
+        let err = fetch_tics_nonce("0x0000000000000000000000000000000000000001", chain_id)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("non-string nonce"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_nonce_accepts_valid_hex() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":"0x7"})).await;
+        let nonce = fetch_tics_nonce("0x0000000000000000000000000000000000000001", chain_id)
+            .await
+            .unwrap();
+        assert_eq!(nonce, 7);
+    }
+
+    // ── estimate_gas_for_deposit_intent ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_estimate_gas_rejects_numeric_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":21000})).await;
+        let err = estimate_gas_for_deposit_intent(
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+            "0x",
+            chain_id,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("non-string gas estimate"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_estimate_gas_rejects_null_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":null})).await;
+        let err = estimate_gas_for_deposit_intent(
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+            "0x",
+            chain_id,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("non-string gas estimate"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_estimate_gas_accepts_valid_hex() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":"0x5208"})).await;
+        let gas = estimate_gas_for_deposit_intent(
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+            "0x",
+            chain_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(gas, 21000);
+    }
+
+    // ── fetch_qubetics_gas_price ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_fetch_gas_price_rejects_numeric_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":1000000000})).await;
+        let err = fetch_qubetics_gas_price(chain_id).await.unwrap_err();
+        assert!(
+            err.to_string().contains("non-string gas price"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_gas_price_rejects_null_result() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":null})).await;
+        let err = fetch_qubetics_gas_price(chain_id).await.unwrap_err();
+        assert!(
+            err.to_string().contains("non-string gas price"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_gas_price_accepts_valid_hex() {
+        let (_server, chain_id) =
+            setup_mock(serde_json::json!({"jsonrpc":"2.0","id":1,"result":"0x3B9ACA00"})).await;
+        let price = fetch_qubetics_gas_price(chain_id).await.unwrap();
+        assert_eq!(price, "0x3B9ACA00");
+    }
 }
