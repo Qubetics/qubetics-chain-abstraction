@@ -17,8 +17,9 @@ pub fn derive_peer_id_from_string(id: &str) -> PeerId {
     let mut key_bytes = [0u8; 32];
     key_bytes.copy_from_slice(&hash[..32]);
 
-    let ed_kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut key_bytes)
-        .unwrap_or_else(|_| libp2p::identity::ed25519::Keypair::generate());
+    let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut key_bytes)
+        .expect("SHA-256 output is always a valid ed25519 seed");
+    let ed_kp = libp2p::identity::ed25519::Keypair::from(secret);
     let kp = libp2p::identity::Keypair::from(ed_kp);
 
     PeerId::from_public_key(&kp.public())

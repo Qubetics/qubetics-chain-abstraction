@@ -41,7 +41,9 @@ pub fn select_final(round: u64, candidates: &[PeerId], domain: &str) -> Option<P
             Some(s) => match score.cmp(s) {
                 std::cmp::Ordering::Greater => true,
                 std::cmp::Ordering::Less => false,
-                std::cmp::Ordering::Equal => p.to_bytes().as_slice() < best_peer.unwrap().to_bytes().as_slice(),
+                std::cmp::Ordering::Equal => {
+                    p.to_bytes().as_slice() < best_peer.unwrap().to_bytes().as_slice()
+                }
             },
         };
 
@@ -80,7 +82,10 @@ pub mod candidates {
     /// Builds a **separate** list of peer IDs sorted by PeerId bytes for deterministic HRW.
     /// The underlying storage and any peer_indices mapping are never modified or sorted.
     /// Invalid peer ID strings are skipped (and logged).
-    pub fn get_hrw_candidates(dkg: &DkgStorage, connected_peers: Option<&std::collections::HashSet<PeerId>>) -> Result<Vec<PeerId>> {
+    pub fn get_hrw_candidates(
+        dkg: &DkgStorage,
+        connected_peers: Option<&std::collections::HashSet<PeerId>>,
+    ) -> Result<Vec<PeerId>> {
         // Read-only: get_all_peer_indices does not modify storage.
         let indices = dkg.get_all_peer_indices()?;
 
@@ -100,10 +105,7 @@ pub mod candidates {
                     }
                     peer_ids.push(pid);
                 }
-                Err(e) => tracing::warn!(
-                    "HRW candidates: skip invalid peer_id {:?}: {}",
-                    s, e
-                ),
+                Err(e) => tracing::warn!("HRW candidates: skip invalid peer_id {:?}: {}", s, e),
             }
         }
         // Sort only our local list; never write back to or sort the peer_id→index storage.
@@ -124,8 +126,9 @@ mod tests {
     fn peer_id_from_byte(b: u8) -> PeerId {
         let mut bytes = [0u8; 32];
         bytes[0] = b;
-        let kp = libp2p::identity::ed25519::Keypair::try_from_bytes(&mut bytes)
-            .unwrap_or_else(|_| libp2p::identity::ed25519::Keypair::generate());
+        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut bytes)
+            .expect("1-byte seed is always a valid ed25519 seed");
+        let kp = libp2p::identity::ed25519::Keypair::from(secret);
         PeerId::from_public_key(&libp2p::identity::Keypair::from(kp).public())
     }
 
