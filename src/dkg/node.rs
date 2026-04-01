@@ -385,10 +385,6 @@ impl DKGNode {
 
             self.storage.mark_share_received(&from_node_id).await?;
 
-            self.storage
-                .add_validation(&self.id, &from_node_id, true)
-                .await?;
-
             self.handle_share_validation(self.id.clone(), from_node_id.clone(), true, node_manager)
                 .await?;
 
@@ -512,5 +508,40 @@ mod tests {
         assert_eq!(retrieved["node1"].len(), 2);
         assert_eq!(retrieved["node1"][0], commitment1);
         assert_eq!(retrieved["node1"][1], commitment2);
+    }
+
+    #[tokio::test]
+    async fn test_qca_04_validation_deduplication() {
+        let (db, _temp_dir) = create_test_db();
+        let storage = DkgStorage::new(db);
+
+        // Simulate Node B validating Node A's share
+        storage.add_validation("A", "B", true).await.unwrap();
+
+        // Simulate duplicate gossip validation messages from B for A's share
+        storage.add_validation("A", "B", true).await.unwrap();
+        storage.add_validation("A", "B", true).await.unwrap();
+
+        let validations = storage.get_all_validations().await.unwrap();
+
+        let valid_validations: usize = validations
+            .values()
+            .map(|v| v.values().filter(|&&valid| valid).count())
+            .sum();
+
+        // Should securely deduplicate and only count 1 valid validation
+        assert_eq!(valid_validations, 1);
+
+        // Simulate Node B validating Node C's share
+        storage.add_validation("C", "B", true).await.unwrap();
+
+        let validations2 = storage.get_all_validations().await.unwrap();
+        let count2: usize = validations2
+            .values()
+            .map(|v| v.values().filter(|&&valid| valid).count())
+            .sum();
+
+        // Should be 2 distinct correctly counted validations
+        assert_eq!(count2, 2);
     }
 }
