@@ -151,62 +151,13 @@ impl<'a> TicsSigner<'a> {
 }
 
 impl SigningNode {
-    pub async fn fetch_tics_nonce(address: &str, chain_id: u64) -> Result<u64> {
-        let rpc_url = get_evm_rpc_url(chain_id)?;
-
-        let client = Client::new();
-        let payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_getTransactionCount",
-            "params": [address, "pending"],
-            "id": 1
-        });
-
-        info!(
-            "Fetching nonce for address {} on chain {} (pending)",
-            address, chain_id
-        );
-
-        let response = client
-            .post(rpc_url)
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let result: serde_json::Value = response.json().await?;
-            if let Some(error) = result.get("error") {
-                error!("❌ Failed to fetch nonce: {}", error);
-                return Err(anyhow!("Nonce fetch failed: {}", error));
-            }
-            if let Some(nonce_hex) = result.get("result") {
-                let nonce_str = nonce_hex.as_str().unwrap_or("0x0");
-                let nonce =
-                    u64::from_str_radix(nonce_str.strip_prefix("0x").unwrap_or(nonce_str), 16)?;
-                info!("✅ Fetched nonce {} for address {}", nonce, address);
-                Ok(nonce)
-            } else {
-                Err(anyhow!("No nonce result in response"))
-            }
-        } else {
-            let error_text = response.text().await?;
-            error!("❌ Failed to fetch nonce: {}", error_text);
-            Err(anyhow!("Nonce fetch failed: {}", error_text))
-        }
-    }
-
-    /// Helper: Fetch nonce for address and log with description
+    /// Helper: resolve and log the signing address for a given transaction type
     async fn fetch_nonce_and_log(
         address: &str,
-        chain_id: u64,
+        _chain_id: u64,
         description: &str,
     ) -> Result<String> {
-        let nonce = Self::fetch_tics_nonce(address, chain_id).await?;
-        info!(
-            "🔢 [SIGNING] {}: fetching nonce {} from address {}",
-            description, nonce, address
-        );
+        info!("🔢 [SIGNING] {}: using address {}", description, address);
         Ok(address.to_string())
     }
 
