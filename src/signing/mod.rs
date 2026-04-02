@@ -3509,10 +3509,25 @@ impl SigningNode {
         }
 
         btc_claim_pending.sort_by(|a, b| a.1.request_id.cmp(&b.1.request_id));
-        let btc_claim_to_process: Vec<_> = btc_claim_pending
-            .into_iter()
-            .take(max_btc_claim_reward_per_cycle)
-            .collect();
+        let mut btc_claim_to_process = Vec::new();
+        let mut seen_solvers = std::collections::HashSet::new();
+        for item in btc_claim_pending {
+            if seen_solvers.insert(item.1.solver_address.clone()) {
+                btc_claim_to_process.push(item);
+                if btc_claim_to_process.len() >= max_btc_claim_reward_per_cycle {
+                    break;
+                }
+            } else {
+                // Mark duplicate requests as "Failed" securely to remove them from the pipeline
+                let mut failed_req = item.1.clone();
+                failed_req.status = "Failed".to_string();
+                if let Err(e) = db.put_string(&item.0, &failed_req) {
+                    warn!("⚠️ [BTC_CLAIM_REWARD] Failed to mark duplicate request {} as Failed: {}", failed_req.request_id, e);
+                } else {
+                    info!("🚫 [BTC_CLAIM_REWARD] Marked duplicate request {} as Failed", failed_req.request_id);
+                }
+            }
+        }
 
         // Mark selected BTC claim rewards as "Batched" to prevent re-picking
         for (key, req) in &btc_claim_to_process {
@@ -4477,9 +4492,20 @@ impl SigningNode {
         let mut tics_batched = 0usize;
         let mut btc_updated = 0usize;
         let mut tics_claim_batch_requests: Vec<TicsClaimRewardBatchRequest> = Vec::new();
+        let mut seen_solvers = std::collections::HashSet::new();
 
         for (key, mut req) in all_claims {
             if req.status != "Pending" {
+                continue;
+            }
+
+            if !seen_solvers.insert(req.solver_address.clone()) {
+                req.status = "Failed".to_string();
+                if let Err(e) = db.put_string(&key, &req) {
+                    warn!("⚠️ [CLOCK][TICS_CLAIM] Failed to mark duplicate request {} as Failed: {}", req.request_id, e);
+                } else {
+                    info!("🚫 [CLOCK][TICS_CLAIM] Marked duplicate request {} as Failed", req.request_id);
+                }
                 continue;
             }
 
