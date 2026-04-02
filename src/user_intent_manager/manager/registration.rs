@@ -335,7 +335,8 @@ impl UserIntentManager {
 
         // Derive ETH and BTC addresses from the group key
         let derived_eth = crate::utils::get_eth_address_from_group_key(group_key);
-        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key);
+        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key)
+            .map_err(|e| e.to_string())?;
 
         // Log the derived addresses
         info!(
@@ -542,7 +543,8 @@ impl UserIntentManager {
         let serial = SerializablePoint(affine);
 
         let derived_eth = crate::utils::get_eth_address_from_group_key(group_key);
-        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key);
+        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key)
+            .map_err(|e| e.to_string())?;
 
         info!(
             "📬 [DB_ADMIN_REGISTRY] Derived ETH address for admin {}: {}",

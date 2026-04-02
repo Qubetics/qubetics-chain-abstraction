@@ -277,12 +277,11 @@ fn btc_address_from_generator() {
     let _ = mpc_node::types::network::init_network_type_from_env();
 
     let pubkey = ProjectivePoint::GENERATOR;
-    let addr = utils::get_btc_address_from_group_key(pubkey);
+    let addr = utils::get_btc_address_from_group_key(pubkey)
+        .expect("BTC address derivation from generator point should succeed");
 
     // Should be non-empty
     assert!(!addr.is_empty());
-    // Should not be an error string
-    assert!(!addr.contains("Error"));
 }
 
 #[test]
@@ -291,8 +290,10 @@ fn btc_address_deterministic() {
     let _ = mpc_node::types::network::init_network_type_from_env();
 
     let pubkey = ProjectivePoint::GENERATOR * Scalar::from(12345u64);
-    let addr1 = utils::get_btc_address_from_group_key(pubkey);
-    let addr2 = utils::get_btc_address_from_group_key(pubkey);
+    let addr1 = utils::get_btc_address_from_group_key(pubkey)
+        .expect("BTC address derivation should succeed");
+    let addr2 = utils::get_btc_address_from_group_key(pubkey)
+        .expect("BTC address derivation should succeed");
     assert_eq!(addr1, addr2);
 }
 
@@ -304,8 +305,10 @@ fn btc_address_different_keys_different_addresses() {
     let pk1 = ProjectivePoint::GENERATOR * Scalar::from(1u64);
     let pk2 = ProjectivePoint::GENERATOR * Scalar::from(2u64);
 
-    let addr1 = utils::get_btc_address_from_group_key(pk1);
-    let addr2 = utils::get_btc_address_from_group_key(pk2);
+    let addr1 = utils::get_btc_address_from_group_key(pk1)
+        .expect("BTC address derivation should succeed");
+    let addr2 = utils::get_btc_address_from_group_key(pk2)
+        .expect("BTC address derivation should succeed");
 
     assert_ne!(addr1, addr2);
 }

@@ -1321,7 +1321,13 @@ impl MpcNetworkLayer {
                             if intent.target_chain.eq_ignore_ascii_case("btc")
                                 || intent.target_chain.eq_ignore_ascii_case("bitcoin")
                             {
-                                crate::utils::get_btc_address_from_group_key(final_public)
+                                match crate::utils::get_btc_address_from_group_key(final_public) {
+                                    Ok(addr) => addr,
+                                    Err(e) => {
+                                        warn!("⚠️ [GOSSIP] Failed to derive network BTC address: {}", e);
+                                        String::new()
+                                    }
+                                }
                             } else {
                                 crate::utils::get_eth_address_from_group_key(final_public)
                             }
@@ -2020,8 +2026,13 @@ impl MpcNetworkLayer {
                             }
                         };
 
-                        let network_btc_address =
-                            crate::utils::get_btc_address_from_group_key(group_key);
+                        let network_btc_address = match crate::utils::get_btc_address_from_group_key(group_key) {
+                            Ok(addr) => addr,
+                            Err(e) => {
+                                error!("❌ [BATCH] Failed to derive network BTC address: {}", e);
+                                return Ok(());
+                            }
+                        };
 
                         info!(
                             "🏦 [BATCH] Using network BTC address: {}",
@@ -3252,7 +3263,13 @@ impl MpcNetworkLayer {
                     let network_btc_addr = match &self.dkg_node {
                         Some(dkg_node) => match dkg_node.get_final_public_key().await {
                             Some(group_key) => {
-                                Some(crate::utils::get_btc_address_from_group_key(group_key))
+                                match crate::utils::get_btc_address_from_group_key(group_key) {
+                                    Ok(addr) => Some(addr),
+                                    Err(e) => {
+                                        error!("❌ [BTC_UTV_BATCH] Failed to derive network BTC address: {}", e);
+                                        return Ok(());
+                                    }
+                                }
                             }
                             None => {
                                 warn!("❌ [BTC_UTV_BATCH] Network group key not available; cannot derive network BTC address");
@@ -3595,7 +3612,13 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+                let network_btc_address = match crate::utils::get_btc_address_from_group_key(group_key) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        error!("❌ [BTC_WITHDRAW] Failed to derive network BTC address: {}", e);
+                        return Ok(());
+                    }
+                };
 
                 info!(
                     "🏦 [BTC_WITHDRAW] Using network BTC address for withdraw batch: {}",
@@ -4111,7 +4134,13 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 };
-                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+                let network_btc_address = match crate::utils::get_btc_address_from_group_key(group_key) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_REWARD] Failed to derive network BTC address: {}", e);
+                        return Ok(());
+                    }
+                };
 
                 let is_testnet = crate::types::network::network_type().is_testnet();
                 let utxos = match crate::utils::transaction::fetch_bitcoin_utxos(
@@ -6089,9 +6118,13 @@ impl MpcNetworkLayer {
                         if let Some(dkg_node) = &self.dkg_node {
                             match dkg_node.get_final_public_key().await {
                                 Some(final_public) => {
-                                    let btc_addr =
-                                        crate::utils::get_btc_address_from_group_key(final_public);
-                                    (btc_addr, "btc", "network BTC address")
+                                    match crate::utils::get_btc_address_from_group_key(final_public) {
+                                        Ok(btc_addr) => (btc_addr, "btc", "network BTC address"),
+                                        Err(e) => {
+                                            warn!("⚠️ [PLATFORM_FEE] Failed to derive network BTC address: {}", e);
+                                            return Ok(());
+                                        }
+                                    }
                                 }
                                 None => {
                                     warn!(
@@ -6585,7 +6618,13 @@ impl MpcNetworkLayer {
                     }
                 };
 
-                let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+                let network_btc_address = match crate::utils::get_btc_address_from_group_key(group_key) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        error!("❌ [BTC_CLAIM_PLATFORM_FEE] Failed to derive network BTC address: {}", e);
+                        return Ok(());
+                    }
+                };
 
                 info!(
                     "🏦 [BTC_CLAIM_PLATFORM_FEE] Using network BTC address: {}",

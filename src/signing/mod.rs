@@ -2843,7 +2843,8 @@ impl SigningNode {
         let group_key = self
             .get_network_group_key_from_store_or_db()
             .ok_or_else(|| anyhow!("Network group key not available"))?;
-        let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+        let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key)
+            .map_err(|e| anyhow!("Failed to derive network BTC address: {}", e))?;
 
         let is_testnet = crate::types::network::network_type().is_testnet();
         let utxos = crate::utils::transaction::fetch_bitcoin_utxos(&network_btc_address, is_testnet)
@@ -2895,7 +2896,8 @@ impl SigningNode {
         let group_key = self
             .get_network_group_key_from_store_or_db()
             .ok_or_else(|| anyhow!("Network group key not available"))?;
-        let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key);
+        let network_btc_address = crate::utils::get_btc_address_from_group_key(group_key)
+            .map_err(|e| anyhow!("Failed to derive network BTC address: {}", e))?;
 
         let is_testnet = crate::types::network::network_type().is_testnet();
         let utxos = crate::utils::transaction::fetch_bitcoin_utxos(&network_btc_address, is_testnet)
@@ -3029,7 +3031,13 @@ impl SigningNode {
         // Derive liquidity operator addresses once per batch
         let lo_keys = self.get_vault_group_public_key().await.ok();
         let lo_eth = lo_keys.map(|k| crate::utils::get_eth_address_from_group_key(k));
-        let lo_btc = lo_keys.map(|k| crate::utils::get_btc_address_from_group_key(k));
+        let lo_btc = lo_keys.and_then(|k| match crate::utils::get_btc_address_from_group_key(k) {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                warn!("⚠️ [TICS_UTV_BATCH] Failed to derive LO BTC address: {}", e);
+                None
+            }
+        });
 
         let mut pending_with_input_counts = Vec::new();
         for (hash, intent, user_address) in pending {
@@ -3296,7 +3304,13 @@ impl SigningNode {
         // Derive liquidity operator addresses once per batch
         let lo_keys = self.get_vault_group_public_key().await.ok();
         let lo_eth = lo_keys.map(|k| crate::utils::get_eth_address_from_group_key(k));
-        let lo_btc = lo_keys.map(|k| crate::utils::get_btc_address_from_group_key(k));
+        let lo_btc = lo_keys.and_then(|k| match crate::utils::get_btc_address_from_group_key(k) {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                warn!("⚠️ [BTC_UTV_BATCH] Failed to derive LO BTC address: {}", e);
+                None
+            }
+        });
 
         let mut pending_with_input_counts = Vec::new();
         for (hash, intent, user_address) in pending {

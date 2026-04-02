@@ -1482,7 +1482,13 @@ pub(crate) async fn handle_user_mpc_deposit(
                     match dkg_storage.get_final_public().await {
                         Ok(Some(final_public)) => {
                             if dst_is_btc {
-                                crate::utils::get_btc_address_from_group_key(final_public)
+                                match crate::utils::get_btc_address_from_group_key(final_public) {
+                                    Ok(addr) => addr,
+                                    Err(e) => {
+                                        warn!("⚠️ [RPC] Failed to derive network BTC address: {}", e);
+                                        String::new()
+                                    }
+                                }
                             } else {
                                 crate::utils::get_eth_address_from_group_key(final_public)
                             }
@@ -3652,11 +3658,16 @@ pub(crate) async fn handle_get_network_addresses(
     let network_addresses = match dkg_storage.get_final_public().await {
         Ok(Some(final_public)) => {
             let eth_addr = crate::utils::get_eth_address_from_group_key(final_public);
-            let btc_addr = crate::utils::get_btc_address_from_group_key(final_public);
-            Some(crate::types::rpc_server::AddressInfo {
-                eth_address: eth_addr,
-                btc_address: btc_addr,
-            })
+            match crate::utils::get_btc_address_from_group_key(final_public) {
+                Ok(btc_addr) => Some(crate::types::rpc_server::AddressInfo {
+                    eth_address: eth_addr,
+                    btc_address: btc_addr,
+                }),
+                Err(e) => {
+                    error!("❌ [RPC] Failed to derive BTC address from network group key: {}", e);
+                    None
+                }
+            }
         }
         Ok(None) => {
             warn!("⚠️ [RPC] Final public key (network group key) not found");
@@ -3673,12 +3684,16 @@ pub(crate) async fn handle_get_network_addresses(
         Ok(Some(liquidity_operator_group_key)) => {
             let eth_addr =
                 crate::utils::get_eth_address_from_group_key(liquidity_operator_group_key);
-            let btc_addr =
-                crate::utils::get_btc_address_from_group_key(liquidity_operator_group_key);
-            Some(crate::types::rpc_server::AddressInfo {
-                eth_address: eth_addr,
-                btc_address: btc_addr,
-            })
+            match crate::utils::get_btc_address_from_group_key(liquidity_operator_group_key) {
+                Ok(btc_addr) => Some(crate::types::rpc_server::AddressInfo {
+                    eth_address: eth_addr,
+                    btc_address: btc_addr,
+                }),
+                Err(e) => {
+                    error!("❌ [RPC] Failed to derive BTC address from liquidity operator group key: {}", e);
+                    None
+                }
+            }
         }
         Ok(None) => {
             warn!("⚠️ [RPC] Liquidity operator group key not found");
@@ -4236,8 +4251,21 @@ pub(crate) async fn handle_claim_platform_fee(
             // BTC: derive network address from DKG group key
             match dkg_storage.get_final_public().await {
                 Ok(Some(final_public)) => {
-                    let btc_addr = crate::utils::get_btc_address_from_group_key(final_public);
-                    (btc_addr, "btc", "network BTC address")
+                    match crate::utils::get_btc_address_from_group_key(final_public) {
+                        Ok(btc_addr) => (btc_addr, "btc", "network BTC address"),
+                        Err(e) => {
+                            warn!("⚠️ [PLATFORM_FEE] Failed to derive BTC address from group key: {}", e);
+                            return Ok(warp::reply::json(&ClaimPlatformFeeResponse {
+                                status: "error".to_string(),
+                                request_id: None,
+                                amount: req.amount.clone(),
+                                tics_target_address: req.tics_target_address.clone(),
+                                btc_target_address: req.btc_target_address.clone(),
+                                message: "Network not ready: BTC address derivation failed".to_string(),
+                                error_message: Some(e.to_string()),
+                            }));
+                        }
+                    }
                 }
                 _ => {
                     warn!("⚠️ [PLATFORM_FEE] DKG key not available — cannot verify BTC balance");

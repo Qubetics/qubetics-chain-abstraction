@@ -355,10 +355,12 @@ impl DKGNode {
         }
 
         let eth_address = utils::get_eth_address_from_group_key(final_public_key);
-        let btc_address = utils::get_btc_address_from_group_key(final_public_key);
 
         info!("📬 TICS Address from Group Key: {}", eth_address);
-        info!("📬 Bitcoin Address from Group Key: {}", btc_address);
+        match utils::get_btc_address_from_group_key(final_public_key) {
+            Ok(ref btc_address) => info!("📬 Bitcoin Address from Group Key: {}", btc_address),
+            Err(ref e) => warn!("⚠️ [DKG] Failed to derive BTC address from group key: {}", e),
+        };
 
         // Use hmac_scalar_mod_n to safely reduce HMAC modulo curve order
         let vault_hmac_reduced = hmac_scalar_mod_n(&eth_address, &self.chain_code)
@@ -401,16 +403,22 @@ impl DKGNode {
         {
             Ok(vault_group_key) => {
                 let vault_eth = utils::get_eth_address_from_group_key(vault_group_key);
-                let vault_btc = utils::get_btc_address_from_group_key(vault_group_key);
-                info!("🏦 [DKG] Vault ETH address: {}", vault_eth);
-                info!("🏦 [DKG] Vault BTC address: {}", vault_btc);
+                match utils::get_btc_address_from_group_key(vault_group_key) {
+                    Ok(vault_btc) => {
+                        info!("🏦 [DKG] Vault ETH address: {}", vault_eth);
+                        info!("🏦 [DKG] Vault BTC address: {}", vault_btc);
 
-                if let Err(e) = self
-                    .storage
-                    .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
-                    .await
-                {
-                    warn!("⚠️ [DKG] Failed to store vault addresses: {}", e);
+                        if let Err(e) = self
+                            .storage
+                            .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
+                            .await
+                        {
+                            warn!("⚠️ [DKG] Failed to store vault addresses: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ [DKG] Failed to derive vault BTC address, skipping vault address storage: {}", e);
+                    }
                 }
 
                 if let Err(e) = self.storage.set_vault_group_key(vault_group_key).await {

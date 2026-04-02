@@ -1303,14 +1303,20 @@ impl MpcNetworkLayer {
 
                             // Derive and store liquidity operator ETH/BTC addresses
                             let vault_eth = crate::utils::get_eth_address_from_group_key(vault_pk);
-                            let vault_btc = crate::utils::get_btc_address_from_group_key(vault_pk);
-                            if let Err(e) = dkg_node
-                                .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
-                                .await
-                            {
-                                warn!("⚠️ [PEER_LIST] Failed to store liquidity operator addresses: {}", e);
-                            } else {
-                                info!("🏦 [PEER_LIST] Stored liquidity operator addresses (ETH: {}, BTC: {})", vault_eth, vault_btc);
+                            match crate::utils::get_btc_address_from_group_key(vault_pk) {
+                                Ok(vault_btc) => {
+                                    if let Err(e) = dkg_node
+                                        .set_liquidity_operator_addresses(&vault_eth, &vault_btc)
+                                        .await
+                                    {
+                                        warn!("⚠️ [PEER_LIST] Failed to store liquidity operator addresses: {}", e);
+                                    } else {
+                                        info!("🏦 [PEER_LIST] Stored liquidity operator addresses (ETH: {}, BTC: {})", vault_eth, vault_btc);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ [PEER_LIST] Failed to derive vault BTC address, skipping storage: {}", e);
+                                }
                             }
                         }
                     }
@@ -1327,8 +1333,8 @@ impl MpcNetworkLayer {
                             } else {
                                 let net_eth =
                                     crate::utils::get_eth_address_from_group_key(network_pk);
-                                let net_btc =
-                                    crate::utils::get_btc_address_from_group_key(network_pk);
+                                let net_btc = crate::utils::get_btc_address_from_group_key(network_pk)
+                                    .unwrap_or_else(|e| format!("<btc-error: {}>", e));
                                 info!("🔑 [PEER_LIST] Stored network group key from peer (ETH: {}, BTC: {})", net_eth, net_btc);
                             }
                         }

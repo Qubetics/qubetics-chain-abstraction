@@ -131,10 +131,9 @@ fn parse_nonzero_scalar(bytes: [u8; 32], label: &str) -> Result<Scalar> {
     Ok(scalar)
 }
 
-pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> String {
+pub fn get_btc_address_from_group_key(pubkey: ProjectivePoint) -> Result<String> {
     // Only generate P2PKH addresses (legacy)
     get_btc_address_from_group_key_p2pkh(pubkey)
-        .unwrap_or_else(|_| "Error generating P2PKH address".to_string())
 }
 
 /// Intent hash = Keccak256(serde_json::to_string(intent)).

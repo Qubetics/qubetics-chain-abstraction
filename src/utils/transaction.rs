@@ -1242,7 +1242,8 @@ async fn create_chain_transaction_from_deposit_intent_internal(
                 let group_key = group_public_key.ok_or_else(|| {
                     anyhow::anyhow!("Group public key required for NetworkToTarget transactions")
                 })?;
-                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key);
+                let btc_network_address = crate::utils::get_btc_address_from_group_key(group_key)
+                    .map_err(|e| anyhow::anyhow!("Failed to derive network BTC address: {}", e))?;
                 tracing::info!(
                     "💰 [TRANSACTION] Bitcoin network to target: {} -> {}",
                     btc_network_address,

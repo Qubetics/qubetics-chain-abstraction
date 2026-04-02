@@ -150,12 +150,9 @@ pub fn get_group_address_from_db(peer_id: &str) -> Result<(String, String)> {
     let serializable: SerializablePoint = bincode::deserialize(&value)
         .map_err(|e| anyhow!("Failed to deserialize DKG final public: {}", e))?;
     let pubkey = ProjectivePoint::from(serializable.0);
-    let btc_address = get_btc_address_from_group_key(pubkey);
+    let btc_address = get_btc_address_from_group_key(pubkey)
+        .map_err(|e| anyhow!("Failed to derive BTC address from group key: {}", e))?;
     let eth_address = get_eth_address_from_group_key(pubkey);
-
-    if btc_address.is_empty() {
-        return Err(anyhow!("Failed to generate address from group key"));
-    }
 
     println!("BTC Address Group Key: {}", btc_address);
     println!("ETH Address Group Key: {}", eth_address);

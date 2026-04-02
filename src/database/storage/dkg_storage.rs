@@ -588,7 +588,8 @@ impl DkgStorage {
 
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
-        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey)
+            .unwrap_or_else(|e| format!("<btc-error: {}>", e));
 
         info!(
             "✅ [DKG_STORAGE] Stored network share pubkey for peer: {}",
@@ -621,7 +622,8 @@ impl DkgStorage {
 
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
-        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey)
+            .unwrap_or_else(|e| format!("<btc-error: {}>", e));
 
         info!(
             "✅ [DKG_STORAGE] Stored vault share pubkey for peer: {}",
@@ -655,7 +657,8 @@ impl DkgStorage {
 
         // Derive and log ETH/BTC addresses
         let eth_addr = crate::utils::get_eth_address_from_group_key(*pubkey);
-        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey);
+        let btc_addr = crate::utils::get_btc_address_from_group_key(*pubkey)
+            .unwrap_or_else(|e| format!("<btc-error: {}>", e));
 
         info!(
             "✅ [DKG_STORAGE] Stored user share pubkey for peer: {} user: {}",
@@ -835,7 +838,8 @@ impl DkgStorage {
             // Network share pubkey
             if let Ok(Some(network_pubkey)) = self.get_network_share_pubkey(peer_id).await {
                 let eth_addr = get_eth_address_from_group_key(network_pubkey);
-                let btc_addr = get_btc_address_from_group_key(network_pubkey);
+                let btc_addr = get_btc_address_from_group_key(network_pubkey)
+                    .unwrap_or_else(|e| format!("<btc-error: {}>", e));
                 info!("  🔑 Network Share Pubkey:");
                 info!("     ETH Address: {}", eth_addr);
                 info!("     BTC Address: {}", btc_addr);
@@ -846,7 +850,8 @@ impl DkgStorage {
             // Vault share pubkey
             if let Ok(Some(vault_pubkey)) = self.get_vault_share_pubkey(peer_id).await {
                 let eth_addr = get_eth_address_from_group_key(vault_pubkey);
-                let btc_addr = get_btc_address_from_group_key(vault_pubkey);
+                let btc_addr = get_btc_address_from_group_key(vault_pubkey)
+                    .unwrap_or_else(|e| format!("<btc-error: {}>", e));
                 info!("  🔑 Vault Share Pubkey:");
                 info!("     ETH Address: {}", eth_addr);
                 info!("     BTC Address: {}", btc_addr);
@@ -860,7 +865,8 @@ impl DkgStorage {
                     info!("  🔑 User Share Pubkeys ({} users):", user_pubkeys.len());
                     for (user_addr, user_pubkey) in user_pubkeys.iter() {
                         let eth_addr = get_eth_address_from_group_key(*user_pubkey);
-                        let btc_addr = get_btc_address_from_group_key(*user_pubkey);
+                        let btc_addr = get_btc_address_from_group_key(*user_pubkey)
+                            .unwrap_or_else(|e| format!("<btc-error: {}>", e));
                         info!(
                             "     User: {} -> ETH: {}, BTC: {}",
                             user_addr, eth_addr, btc_addr
