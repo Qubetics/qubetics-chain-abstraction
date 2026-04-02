@@ -271,7 +271,6 @@ impl MpcNetworkLayer {
                     .mesh_outbound_min(1)
                     // .validate_messages()  // Enable async validation to prevent blocking
                     .build()
-                    .map_err(io::Error::other)
                     .map_err(io::Error::other)?;
 
                 let gossipsub = gossipsub::Behaviour::new(
