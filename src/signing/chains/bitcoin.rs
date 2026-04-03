@@ -1303,8 +1303,48 @@ impl SigningNode {
         if final_node_id != self.id {
             let has_signing_key = self.has_dkg_share().await;
             if has_signing_key {
-                self.send_btc_signatures_to_final_node(&final_node_id, round)
-                    .await?;
+                // Spawn so the gossipsub event loop stays free to process BtcWithdrawBatch
+                // while we wait for local signing to finish writing to btc_sigs_by_round (QCA-103).
+                let self_ref = self.self_ref.clone();
+                let final_node_id_clone = final_node_id.clone();
+                tokio::spawn(async move {
+                    if let Some(arc) = self_ref {
+                        // Poll until signatures are ready or timeout (3 s, 200 ms steps)
+                        let max_wait_ms = 3000u64;
+                        let poll_ms = 200u64;
+                        let mut waited_ms = 0u64;
+                        loop {
+                            let has_sigs = {
+                                let node = arc.lock().await;
+                                let map = node.btc_state.btc_sigs_by_round.read().await;
+                                map.contains_key(&round)
+                            };
+                            if has_sigs {
+                                break;
+                            }
+                            if waited_ms >= max_wait_ms {
+                                warn!(
+                                    "⚠️ [SIGNING] btc_sigs_by_round still empty for round {} after {}ms — sending anyway",
+                                    round, max_wait_ms
+                                );
+                                break;
+                            }
+                            tokio::time::sleep(tokio::time::Duration::from_millis(poll_ms)).await;
+                            waited_ms += poll_ms;
+                        }
+
+                        let mut node = arc.lock().await;
+                        if let Err(e) = node
+                            .send_btc_signatures_to_final_node(&final_node_id_clone, round)
+                            .await
+                        {
+                            error!(
+                                "❌ [SIGNING] Failed to send BTC signatures for round {} to {}: {}",
+                                round, final_node_id_clone, e
+                            );
+                        }
+                    }
+                });
             } else {
                 info!("ℹ️ [SIGNING] Node {} is an observer (no DKG share) - skipping BTC partial signature for round {}", self.id, round);
             }

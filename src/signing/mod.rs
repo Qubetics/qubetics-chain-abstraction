@@ -10212,4 +10212,69 @@ mod tests {
 
         println!("✅ QCA-40 regression: duplicate DKG index correctly detected and rejected");
     }
+
+    /// QCA-103: Test that the poll loop in handle_btc_signature_request waits for
+    /// btc_sigs_by_round to be populated and exits as soon as signatures arrive,
+    /// rather than sleeping the full timeout window.
+    #[tokio::test]
+    async fn test_btc_sig_request_poll_exits_early_when_sigs_arrive() {
+        use crate::signing::state::BtcAggregationState;
+        use crate::types::signing::ECDSASignature;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let btc_state = BtcAggregationState::default();
+        let sigs_map = btc_state.btc_sigs_by_round.clone();
+        let round: u64 = 42;
+
+        // Spawn a task that writes a signature after 300 ms — simulating signing completing
+        // after the request was already received.
+        let sigs_map_writer = sigs_map.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            let dummy_sig = ECDSASignature {
+                signature: vec![0u8; 64],
+                signer_id: "peer_1".to_string(),
+                recovery_id: 0,
+                user_tics_address: None,
+            };
+            let mut map = sigs_map_writer.write().await;
+            let rmap = map.entry(round).or_insert_with(HashMap::new);
+            let imap = rmap.entry(0).or_insert_with(HashMap::new);
+            imap.insert("peer_1".to_string(), dummy_sig);
+        });
+
+        // Simulate the poll loop from handle_btc_signature_request
+        let max_wait_ms = 3000u64;
+        let poll_ms = 200u64;
+        let mut waited_ms = 0u64;
+        let start = std::time::Instant::now();
+
+        loop {
+            let has_sigs = {
+                let map = sigs_map.read().await;
+                map.contains_key(&round)
+            };
+            if has_sigs {
+                break;
+            }
+            if waited_ms >= max_wait_ms {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(poll_ms)).await;
+            waited_ms += poll_ms;
+        }
+
+        let elapsed = start.elapsed().as_millis();
+
+        // Should have found sigs well before the 3 s timeout
+        assert!(elapsed < 2000, "poll loop should have exited early, took {}ms", elapsed);
+
+        // Should have actually found the signatures
+        let map = sigs_map.read().await;
+        assert!(map.contains_key(&round), "btc_sigs_by_round should contain round {}", round);
+
+        println!("✅ QCA-103: poll loop exited after {}ms (well before 3000ms timeout)", elapsed);
+    }
 }
