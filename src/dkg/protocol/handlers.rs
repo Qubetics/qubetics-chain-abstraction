@@ -102,6 +102,11 @@ impl DKGNode {
             return false;
         }
 
+        if share_index == 0 {
+            warn!("⚠️ [DKG] Rejected share verification with index 0 — would collapse polynomial to constant term");
+            return false;
+        }
+
         info!("🔍 [DKG] === SHARE VERIFICATION ===");
         info!("🔍 [DKG] Verifying share with index: {}", share_index);
         info!(
