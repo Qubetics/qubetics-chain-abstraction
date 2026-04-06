@@ -1,4 +1,4 @@
-mod bitcoin;
+pub(crate) mod bitcoin;
 pub mod bitcoin_batch;
 mod tics;
 
