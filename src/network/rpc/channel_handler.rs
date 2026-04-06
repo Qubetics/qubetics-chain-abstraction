@@ -3019,9 +3019,10 @@ impl MpcNetworkLayer {
                 if let Some(dkg) = &mut self.dkg_node {
                     // This should only be called for initial DKG with 3 nodes
                     let initial_dkg_complete = dkg.is_initial_dkg_complete().await;
+                    let is_completed = dkg.is_completed().await;
 
-                    if initial_dkg_complete {
-                        warn!("⚠️ [DKG] ScheduledDKGStart called but initial DKG already complete. This should not happen.");
+                    if initial_dkg_complete || is_completed {
+                        warn!("⚠️ [DKG] ScheduledDKGStart called but DKG already complete. This should not happen.");
                         return Ok(());
                     }
 
@@ -3040,6 +3041,9 @@ impl MpcNetworkLayer {
                         warn!("❌ [DKG] Invalid params for scheduled start: {}", e);
                         return Ok(());
                     }
+                    // SECURITY: reset() now only clears session-specific DKG data (shares, commitments, validations).
+                    // Active signing keys (final_secret, final_public, etc.) are explicitly PRESERVED
+                    // until the new DKG round successfully completes.
                     if let Err(e) = dkg.reset().await {
                         warn!("❌ [DKG] Failed to reset before scheduled start: {}", e);
                         return Ok(());

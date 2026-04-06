@@ -120,6 +120,14 @@ impl DKGNode {
         Ok(())
     }
 
+    /// Resets the DKG node state for a new round.
+    ///
+    /// SECURITY: This method only clears session-specific DKG data (shares, commitments, validations,
+    /// polynomial, and share tracking). It explicitly PRESERVES the final network signing keys
+    /// (final_secret, final_public, vault_tweaked_secret, and vault_group_key) to avoid permanent
+    /// loss of funds if a new DKG round fails or takes time to complete.
+    /// These keys are only overwritten when a new DKG round successfully completes and calls
+    /// generate_group_key().
     pub async fn reset(&mut self) -> Result<()> {
         let mut failures = Vec::new();
 
@@ -132,18 +140,6 @@ impl DKGNode {
         if let Err(e) = self.storage.clear_validations().await {
             failures.push(format!("clear validations: {e}"));
         }
-        if let Err(e) = self.storage.delete_final_secret().await {
-            failures.push(format!("delete final secret: {e}"));
-        }
-        if let Err(e) = self.storage.delete_final_public().await {
-            failures.push(format!("delete final public key: {e}"));
-        }
-        if let Err(e) = self.storage.delete_vault_tweaked_secret().await {
-            failures.push(format!("delete vault tweaked secret: {e}"));
-        }
-        if let Err(e) = self.storage.delete_vault_group_key().await {
-            failures.push(format!("delete vault group key: {e}"));
-        }
         if let Err(e) = self.storage.delete_polynomial().await {
             failures.push(format!("delete polynomial: {e}"));
         }
@@ -151,18 +147,23 @@ impl DKGNode {
             failures.push(format!("clear share tracking: {e}"));
         }
 
-        if failures.is_empty() {
-            self.transition_status(DKGStatus::New)?;
-            self.increment_round();
-            Ok(())
-        } else {
-            let message = failures.join("; ");
-            warn!("Failed to fully reset DKG node {}: {}", self.id, message);
-            self.transition_status(DKGStatus::Error {
-                kind: format!("reset_failed: {message}"),
-            })?;
-            Err(anyhow!("Failed to reset DKG node: {}", message))
+        self.transition_status(DKGStatus::New)?;
+        self.increment_round();
+
+        if !failures.is_empty() {
+            let message = failures.join(", ");
+            warn!(
+                "Failed to reset DKG session state for node {}: {}",
+                self.id, message
+            );
+            return Err(anyhow!("Failed to reset DKG session state: {}", message));
         }
+
+        info!(
+            "✅ [DKG] DKG session state reset for node {} (round advanced)",
+            self.id
+        );
+        Ok(())
     }
 
     /// Clear DKG secret/commitment state so this node can rejoin (same flow as new node).
