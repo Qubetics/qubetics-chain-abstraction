@@ -81,7 +81,7 @@ impl DKGNode {
             }
         }
 
-        self.distribute_shares_to_peers(shares, commitments.clone(), peer_indices)
+        self.distribute_shares_to_peers(shares, peer_indices)
             .await?;
 
         self.broadcast_commitments(commitments).await?;
@@ -92,7 +92,6 @@ impl DKGNode {
     async fn distribute_shares_to_peers(
         &self,
         shares: Vec<KeyShare>,
-        commitments: Vec<SerializablePoint>,
         peer_indices: HashMap<String, usize>,
     ) -> Result<()> {
         info!("🔐 [DKG-SECURE] === DISTRIBUTING SHARES VIA UNICAST ===");
@@ -136,7 +135,6 @@ impl DKGNode {
                     from_node_id: self.id.clone(),
                     share_index: share.index,
                     share_value: share.value.clone(),
-                    commitments: commitments.clone(),
                     retry_count: 0,
                 };
 

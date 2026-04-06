@@ -86,12 +86,11 @@ pub enum RPCRequest {
         batch_size: usize,
     },
 
-    /// Unicast a single DKG share to a specific participant (P2P, not broadcast)
+    /// Secure unicast share delivery to a specific peer bypassing gossipsub
     SendDKGShare {
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
     },
 
     /// Unicast an ECDSA signature to the final node (P2P, not broadcast)

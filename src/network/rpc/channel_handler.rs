@@ -1531,7 +1531,6 @@ impl MpcNetworkLayer {
                 from_node_id,
                 share_index,
                 share_value,
-                commitments,
                 retry_count,
             } => {
                 const MAX_RETRIES: u8 = 10;
@@ -1616,7 +1615,6 @@ impl MpcNetworkLayer {
                         from_node_id,
                         share_index,
                         share_value,
-                        commitments,
                         retry_count: retry_count + 1,
                     };
 
@@ -1659,7 +1657,6 @@ impl MpcNetworkLayer {
                             from_node_id: from_node_id.clone(),
                             share_index,
                             share_value: share_value.clone(),
-                            commitments: commitments.clone(),
                             retry_count,
                         };
                         tokio::spawn(async move {
@@ -1676,14 +1673,12 @@ impl MpcNetworkLayer {
                 // Clone values for retry registry before creating RPC request
                 let from_node_id_clone = from_node_id.clone();
                 let share_value_clone = share_value.clone();
-                let commitments_clone = commitments.clone();
 
                 // Create the RPC request
                 let request = RPCRequest::SendDKGShare {
                     from_node_id,
                     share_index,
                     share_value,
-                    commitments,
                 };
 
                 // Send via request-response protocol (unicast, not broadcast)
@@ -1700,7 +1695,6 @@ impl MpcNetworkLayer {
                         from_node_id: from_node_id_clone,
                         share_index,
                         share_value: share_value_clone,
-                        commitments: commitments_clone,
                     };
                     let entry = OutboundRetryEntry {
                         peer: peer_id,

@@ -11,7 +11,7 @@ use crate::database::keys;
 use crate::types::p2p::SerializablePeerId;
 use crate::types::signing::SigningMessage;
 use crate::types::{AdminRegistration, UserRegistration};
-use crate::types::{GossipsubMessage, PeerInfo, SerializablePoint, SerializableScalar};
+use crate::types::{GossipsubMessage, PeerInfo, SerializableScalar};
 
 use crate::database::VrfStorage;
 use crate::protocols::DKGStatus;
@@ -92,9 +92,15 @@ impl MpcNetworkLayer {
                 from_node_id,
                 share_index,
                 share_value,
-                commitments,
             } => {
-                self.handle_incoming_dkg_share(from_node_id, share_index, share_value, commitments)
+                if peer.to_string() != from_node_id {
+                    warn!("❌ [DKG-SECURE] Spoofing attack detected! Peer {} attempted to impersonate {}", peer, from_node_id);
+                    return RPCResponse::Error(
+                        "Unauthorized: Sender identity mismatch".to_string(),
+                    );
+                }
+
+                self.handle_incoming_dkg_share(from_node_id, share_index, share_value)
                     .await
             }
             RPCRequest::SendECDSASignature {
@@ -539,7 +545,6 @@ impl MpcNetworkLayer {
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
     ) -> RPCResponse {
         let dkg_node = match &mut self.dkg_node {
             Some(node) => node,
@@ -552,12 +557,12 @@ impl MpcNetworkLayer {
         let receiver_node_id = dkg_node.get_id().to_string();
 
         // Use the public method to process the share
+        // Note: Commitments are fetched internally by process_incoming_share from storage
         match dkg_node
             .process_incoming_share(
                 from_node_id.clone(),
                 share_index,
                 share_value,
-                commitments,
                 self.node_manager.clone(),
             )
             .await
@@ -1333,8 +1338,9 @@ impl MpcNetworkLayer {
                             } else {
                                 let net_eth =
                                     crate::utils::get_eth_address_from_group_key(network_pk);
-                                let net_btc = crate::utils::get_btc_address_from_group_key(network_pk)
-                                    .unwrap_or_else(|e| format!("<btc-error: {}>", e));
+                                let net_btc =
+                                    crate::utils::get_btc_address_from_group_key(network_pk)
+                                        .unwrap_or_else(|e| format!("<btc-error: {}>", e));
                                 info!("🔑 [PEER_LIST] Stored network group key from peer (ETH: {}, BTC: {})", net_eth, net_btc);
                             }
                         }

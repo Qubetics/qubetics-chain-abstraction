@@ -4,7 +4,7 @@ use crate::{
     types::{
         intent::{DepositIntent, TransactionType},
         rpc_server::{NodeStatus, PendingClaimRewardRequest, PendingWithdrawRequest},
-        secp::{SerializablePoint, SerializableScalar},
+        secp::SerializableScalar,
         signing::SigningMessage,
         vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse},
         ConsensusMessage,
@@ -383,13 +383,12 @@ pub enum ChannelMessage {
     PeerDiscoveryRetry {
         attempt: u8,
     },
-    /// Send a DKG share to a specific peer via P2P RPC unicast
+    /// Deliver DKG share specifically to one peer
     UnicastShareDKG {
         target_peer_id: String,
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
         retry_count: u8,
     },
     /// Unicast a critical gossip message via P2P RPC

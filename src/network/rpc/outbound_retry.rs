@@ -1,4 +1,4 @@
-use crate::types::{SerializablePoint, SerializableScalar};
+use crate::types::SerializableScalar;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,6 @@ pub enum RetryableUnicast {
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
     },
     UnicastCritical {
         target_peer_id: String,
