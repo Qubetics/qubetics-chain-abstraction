@@ -5879,6 +5879,53 @@ impl MpcNetworkLayer {
                     _ => {}
                 }
 
+                // ── Gossip-level signature verification ───────────────────────────────────
+                // Re-run the same check the RPC handler did. Every receiving node must
+                // independently confirm that the withdraw request was signed by the claimed
+                // solver before it is written to RocksDB and potentially included in a
+                // threshold-signed batch.  A rogue peer cannot bypass this by constructing
+                // a forged PendingWithdrawRequestBroadcast gossip message.
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                if request.signature.trim().is_empty() {
+                    warn!(
+                        "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: missing signature",
+                        request.request_id
+                    );
+                    return Ok(());
+                }
+                let (compact, v) = match normalize_eth_signature(&request.signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "🚫 [WITHDRAW_LIQUIDITY] Invalid signature format for gossip withdraw {}: {}",
+                            request.request_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+                let msg_bytes = request.message.as_bytes();
+                let recovered = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Failed to recover signer for gossip withdraw {}: personal_sign={}, raw={}",
+                                request.request_id, e1, e2
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
+                if recovered.to_lowercase() != request.solver_address.to_lowercase() {
+                    warn!(
+                        "🚫 [WITHDRAW_LIQUIDITY] Signature mismatch for gossip withdraw {}: recovered={}, claimed_solver={}",
+                        request.request_id, recovered, request.solver_address
+                    );
+                    return Ok(());
+                }
+                // ── End signature verification ────────────────────────────────────────────
+
                 // Persist only if this solver has no existing Pending/Batched request for the same asset (one in-flight per solver per asset).
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
@@ -5983,6 +6030,51 @@ impl MpcNetworkLayer {
                     },
                     _ => {} // already rejected above
                 }
+
+                // ── Gossip-level signature verification ───────────────────────────────────
+                // Every receiving node re-verifies that the request was signed by
+                // ADMIN_PUBLIC_ADDRESS before storing it.  This mirrors the RPC-level check
+                // in handle_claim_platform_fee and prevents a rogue peer from injecting a
+                // forged PendingClaimPlatformFeeRequestBroadcast.
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                let admin_public_address = crate::env_defaults::admin_public_address();
+                if admin_public_address.trim().is_empty() {
+                    warn!("🚫 [PLATFORM_FEE] ADMIN_PUBLIC_ADDRESS not configured; dropping gossip claim {}", request.request_id);
+                    return Ok(());
+                }
+                if request.signature.trim().is_empty() {
+                    warn!("🚫 [PLATFORM_FEE] Missing signature for gossip claim {}", request.request_id);
+                    return Ok(());
+                }
+                let (compact, v) = match normalize_eth_signature(&request.signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!("🚫 [PLATFORM_FEE] Invalid signature format for gossip claim {}: {}", request.request_id, e);
+                        return Ok(());
+                    }
+                };
+                let msg_bytes = request.message.as_bytes();
+                let recovered = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
+                            warn!(
+                                "🚫 [PLATFORM_FEE] Failed to recover signer for gossip claim {}: personal_sign={}, raw={}",
+                                request.request_id, e1, e2
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
+                if recovered.to_lowercase() != admin_public_address.trim().to_lowercase() {
+                    warn!(
+                        "🚫 [PLATFORM_FEE] Signature mismatch for gossip claim {}: recovered={}, expected ADMIN_PUBLIC_ADDRESS={}",
+                        request.request_id, recovered, admin_public_address
+                    );
+                    return Ok(());
+                }
+                // ── End signature verification ────────────────────────────────────────────
 
                 let key = format!("pending_claim_platform_fee:{}", request.request_id);
 
@@ -6238,6 +6330,52 @@ impl MpcNetworkLayer {
                         return Ok(());
                     }
                 }
+
+                // ── Gossip-level signature verification ───────────────────────────────────
+                // PendingClaimRewardRequest already carries `signature` (set by the RPC
+                // handler).  Every receiving node must independently recover the signer and
+                // confirm it matches the claimed `solver_address` before committing to
+                // RocksDB.  This mirrors the verification done in handle_claim_reward.
+                use crate::rpc_server::utils::{normalize_eth_signature, recover_eth_address_secp};
+                if request.signature.trim().is_empty() {
+                    warn!(
+                        "🚫 [CLAIM_REWARD] Missing signature for gossip claim {}, dropping",
+                        request.request_id
+                    );
+                    return Ok(());
+                }
+                let (compact, v) = match normalize_eth_signature(&request.signature) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        warn!(
+                            "🚫 [CLAIM_REWARD] Invalid signature format for gossip claim {}: {}",
+                            request.request_id, e
+                        );
+                        return Ok(());
+                    }
+                };
+                let msg_bytes = request.message.as_bytes();
+                let recovered = match recover_eth_address_secp(msg_bytes, &compact, v, true) {
+                    Ok(addr) => addr,
+                    Err(e1) => match recover_eth_address_secp(msg_bytes, &compact, v, false) {
+                        Ok(addr) => addr,
+                        Err(e2) => {
+                            warn!(
+                                "🚫 [CLAIM_REWARD] Failed to recover signer for gossip claim {}: personal_sign={}, raw={}",
+                                request.request_id, e1, e2
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
+                if recovered.to_lowercase() != request.solver_address.to_lowercase() {
+                    warn!(
+                        "🚫 [CLAIM_REWARD] Signature mismatch for gossip claim {}: recovered={}, claimed_solver={}",
+                        request.request_id, recovered, request.solver_address
+                    );
+                    return Ok(());
+                }
+                // ── End signature verification ────────────────────────────────────────────
 
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_claim_reward:{}:", solver_lower);

@@ -3238,6 +3238,9 @@ pub(crate) async fn handle_withdraw_liquidity(
         tics_address: req.tics_address.clone(),
         btc_address: req.btc_address.clone(),
         message: req.message.clone(),
+        // Carry the original signature so every gossip recipient can independently
+        // re-verify the solver's identity before storing this request in RocksDB.
+        signature: req.signature.clone(),
         tx_id: None,
         status: "Pending".to_string(),
     };
@@ -4373,6 +4376,9 @@ pub(crate) async fn handle_claim_platform_fee(
         tics_target_address: req.tics_target_address.clone(),
         btc_target_address: req.btc_target_address.clone(),
         message: req.message.clone(),
+        // Carry the admin signature so every gossip recipient can independently
+        // re-verify it matches ADMIN_PUBLIC_ADDRESS before storing in RocksDB.
+        signature: req.signature.clone(),
         tx_id: None,
         status: "Pending".to_string(),
     };
