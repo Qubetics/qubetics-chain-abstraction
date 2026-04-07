@@ -204,7 +204,7 @@ async fn tweaked_share_refresh_restores_from_dkg_secret() {
     let manager = UserIntentManager::new(db.clone(), chain_code);
 
     // Refresh tweaked shares
-    let refreshed = manager.refresh_all_user_tweaked_shares().await;
+    let refreshed = manager.refresh_missing_user_tweaked_shares().await;
     assert!(refreshed.is_ok());
 
     // Verify tweaked share is now present
@@ -232,7 +232,7 @@ async fn refresh_preserves_existing_tweaked_shares() {
     let manager = UserIntentManager::new(db.clone(), [0x29u8; 32]);
 
     // Refresh - should recompute (since it recomputes from HMAC + DKG secret)
-    let _ = manager.refresh_all_user_tweaked_shares().await;
+    let _ = manager.refresh_missing_user_tweaked_shares().await;
 
     let updated = user_storage.get_user(ADDR_1).await.unwrap().unwrap();
     assert!(updated.tweaked_secret_share.is_some());
@@ -256,7 +256,7 @@ async fn refresh_multiple_users_tweaked_shares() {
     }
 
     let manager = UserIntentManager::new(db.clone(), [0x29u8; 32]);
-    let result = manager.refresh_all_user_tweaked_shares().await;
+    let result = manager.refresh_missing_user_tweaked_shares().await;
     assert!(result.is_ok());
 
     // All users should now have tweaked shares
@@ -432,7 +432,7 @@ async fn state_sync_full_pipeline() {
 
     // Refresh on Node B
     let manager_b = UserIntentManager::new(db_b.clone(), [0x29u8; 32]);
-    let result = manager_b.refresh_all_user_tweaked_shares().await;
+    let result = manager_b.refresh_missing_user_tweaked_shares().await;
     assert!(result.is_ok());
 
     // Verify: user now has tweaked share computed from Node B's DKG secret
@@ -453,7 +453,7 @@ async fn refresh_with_no_users_succeeds() {
     let manager = UserIntentManager::new(db.clone(), [0x29u8; 32]);
 
     // No users registered — should succeed gracefully
-    let result = manager.refresh_all_user_tweaked_shares().await;
+    let result = manager.refresh_missing_user_tweaked_shares().await;
     assert!(result.is_ok());
 }
 
@@ -471,6 +471,6 @@ async fn refresh_without_dkg_secret_returns_error() {
     let manager = UserIntentManager::new(db.clone(), [0x29u8; 32]);
 
     // Refresh without DKG secret should return an error
-    let result = manager.refresh_all_user_tweaked_shares().await;
+    let result = manager.refresh_missing_user_tweaked_shares().await;
     assert!(result.is_err(), "Should error when DKG secret is not available");
 }

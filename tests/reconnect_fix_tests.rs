@@ -55,7 +55,7 @@ const TEST_NODE_ID: &str = "12D3KooWTestNode1";
 // ===================================================================
 
 /// Simulates the state-sync export stripping `tweaked_secret_share` and
-/// verifies that `refresh_all_user_tweaked_shares` restores it.
+/// verifies that `refresh_missing_user_tweaked_shares` restores it.
 #[tokio::test]
 async fn tweaked_share_survives_strip_and_refresh_cycle() {
     let (db, _tmp) = temp_db();
@@ -107,7 +107,7 @@ async fn tweaked_share_survives_strip_and_refresh_cycle() {
         .expect("set_final_secret should succeed");
 
     // -- Call the refresh function (the fix) --
-    uim.refresh_all_user_tweaked_shares()
+    uim.refresh_missing_user_tweaked_shares()
         .await
         .expect("refresh should succeed");
 
@@ -130,7 +130,7 @@ async fn tweaked_share_survives_strip_and_refresh_cycle() {
     );
 }
 
-/// When no DKG final secret exists, `refresh_all_user_tweaked_shares` should
+/// When no DKG final secret exists, `refresh_missing_user_tweaked_shares` should
 /// return an error rather than silently leaving shares as None.
 #[tokio::test]
 async fn refresh_fails_without_dkg_final_secret() {
@@ -144,7 +144,7 @@ async fn refresh_fails_without_dkg_final_secret() {
         .expect("register_user should succeed");
 
     // No final secret stored -> refresh should fail with a clear error.
-    let result = uim.refresh_all_user_tweaked_shares().await;
+    let result = uim.refresh_missing_user_tweaked_shares().await;
     assert!(
         result.is_err(),
         "refresh should fail when no DKG final secret is stored"
@@ -192,7 +192,7 @@ async fn refresh_handles_multiple_users() {
     // Store final secret and refresh.
     let dkg_storage = DkgStorage::new(db.clone());
     dkg_storage.set_final_secret(secret).await.unwrap();
-    uim.refresh_all_user_tweaked_shares().await.unwrap();
+    uim.refresh_missing_user_tweaked_shares().await.unwrap();
 
     // Verify all users got their shares back.
     for (addr, orig_bytes) in &original_shares {
@@ -566,7 +566,7 @@ async fn full_state_sync_simulation() {
     // Target node: store the same DKG final secret and refresh.
     let target_dkg = DkgStorage::new(target_db.clone());
     target_dkg.set_final_secret(secret).await.unwrap();
-    target_uim.refresh_all_user_tweaked_shares().await.unwrap();
+    target_uim.refresh_missing_user_tweaked_shares().await.unwrap();
 
     // Target node: tweaked share is now restored and matches source.
     let after = target_uim

@@ -537,78 +537,6 @@ impl SigningNode {
         Ok(())
     }
 
-    /// Send ECDSA signature directly to a specific peer via unicast
-    pub async fn send_ecdsa_signature_direct(
-        &self,
-        final_node_id: &str,
-        signature_data: &[u8],
-        round: u64,
-    ) -> Result<()> {
-        self.message_tx
-            .send(ChannelMessage::UnicastECDSASignature {
-                target_peer_id: final_node_id.to_string(),
-                from_node_id: self.id.clone(),
-                signature_data: signature_data.to_vec(),
-                round,
-                retry_count: 0,
-            })
-            .await?;
-
-        debug!(
-            "📤 [SIGNING-SECURE] Queued unicast ECDSA signature for round {} to final node {}",
-            round, final_node_id
-        );
-        Ok(())
-    }
-
-    /// Send transaction data directly to final node via unicast P2P RPC
-    pub async fn send_transaction_data_direct(
-        &self,
-        final_node_id: &str,
-        transaction_data: &[u8],
-        round: u64,
-    ) -> Result<()> {
-        self.message_tx
-            .send(ChannelMessage::UnicastTransactionData {
-                target_peer_id: final_node_id.to_string(),
-                from_node_id: self.id.clone(),
-                transaction_data: transaction_data.to_vec(),
-                round,
-                retry_count: 0,
-            })
-            .await?;
-
-        debug!(
-            "📤 [SIGNING-SECURE] Queued unicast transaction data for round {} to final node {}",
-            round, final_node_id
-        );
-        Ok(())
-    }
-
-    /// Send BTC signatures directly to a specific peer via unicast
-    pub async fn send_btc_signatures_direct(
-        &self,
-        final_node_id: &str,
-        signature_data: &[u8],
-        round: u64,
-    ) -> Result<()> {
-        self.message_tx
-            .send(ChannelMessage::UnicastBtcSignatures {
-                target_peer_id: final_node_id.to_string(),
-                from_node_id: self.id.clone(),
-                signature_data: signature_data.to_vec(),
-                round,
-                retry_count: 0,
-            })
-            .await?;
-
-        debug!(
-            "📤 [SIGNING-SECURE] Queued unicast BTC signatures for round {} to final node {}",
-            round, final_node_id
-        );
-        Ok(())
-    }
-
     /// DEPRECATED: This function uses fixed k which is a SECURITY VULNERABILITY!
     /// DO NOT USE - Use create_ecdsa_signature_with_nonce() instead.
     ///
@@ -6000,25 +5928,38 @@ impl SigningNode {
             return Ok(());
         }
 
-        // NOTE: With random nonces (coordinated nonces), partial signature verification
-        // via ECDSA public key recovery is not mathematically possible because all nodes
-        // use the same aggregated k⁻¹ and r values. The security comes from:
-        // 1. All nodes compute the same message digest
-        // 2. The final aggregated signature is verified against the group public key
-        // 3. Invalid partial signatures will result in an invalid aggregated signature
+        // Verify partial signature before storing.
         //
-        // For now, we log but don't fail on partial verification errors. The final
-        // aggregated signature verification provides the actual security guarantee.
-        if let Err(e) = self
+        // In this aggregated-nonce scheme all DKG nodes locally reconstruct the same
+        // shared nonce k and its inverse k⁻¹.  Each node then computes:
+        //
+        //   s_i = k⁻¹ · (z + r · x_i)   (z = message digest, x_i = private share)
+        //
+        // Because k is the same for every signer, (r, s_i) is a standard ECDSA
+        // signature verifiable against the node's share public key Q_i = x_i·G via:
+        //
+        //   recover_pubkey(r, s_i, z) == Q_i
+        //
+        // We therefore enforce this check as a hard rejection: signatures that do not
+        // correspond to the sender's registered partial public key for this round's
+        // transaction digest are dropped and never enter the aggregation pool.
+        match self
             .verify_signature_for_round(&from, &signature, round, Some(&slot_id))
             .await
         {
-            warn!(
-                "⚠️ [SIGNING] Slot {} partial verification failed for peer {} in round {} (expected with random nonces): {}",
-                slot_id, from, round, e
-            );
-            // Don't return error - with random nonces, partial verification is not possible.
-            // The final aggregated signature will be verified against the group public key.
+            Ok(()) => {
+                info!(
+                    "✅ [SIGNING] Slot {} partial signature verification passed for peer {} in round {}",
+                    slot_id, from, round
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "❌ [SIGNING] Slot {} partial signature verification FAILED for peer {} in round {} — rejecting: {}",
+                    slot_id, from, round, e
+                );
+                return Ok(());
+            }
         }
 
         {
@@ -6497,7 +6438,7 @@ impl SigningNode {
         use secp256k1::{ecdsa::RecoveryId, Message, Secp256k1};
 
         // Get tx data for this slot
-        let (btc_tx, user_eth) = {
+        let (btc_tx, user_eth, extras) = {
             let batch = self.pending.user_to_vault_btc_batch.read().await;
             let entries = batch.get(&round).ok_or_else(|| {
                 anyhow!(
@@ -6506,7 +6447,7 @@ impl SigningNode {
                     slot_id
                 )
             })?;
-            let (_, user_eth, chain_tx, _, _) = entries
+            let (_, user_eth, chain_tx, _, extras_opt) = entries
                 .iter()
                 .find(|(h, ..)| h == slot_id)
                 .ok_or_else(|| {
@@ -6526,7 +6467,10 @@ impl SigningNode {
                     ))
                 }
             };
-            (btc_tx, user_eth.clone())
+            let extras = extras_opt.clone().ok_or_else(|| {
+                anyhow!("[verify_btc_utv] Slot {} missing BtcRoundExtras", slot_id)
+            })?;
+            (btc_tx, user_eth.clone(), extras)
         };
 
         // Get input and compute digest
@@ -6549,6 +6493,9 @@ impl SigningNode {
             })?
             .script_pubkey
             .clone();
+
+        crate::signing::chains::bitcoin::validate_p2pkh_ownership(&prev_spk, &extras.signer_h160)
+            .map_err(|e| anyhow!("[verify_btc_utv] Slot {} input {}: {}", slot_id, input_index, e))?;
 
         let digest = self.compute_legacy_sighash_all_p2pkh(&btc_tx, input_index, &prev_spk)?;
 
@@ -7115,43 +7062,27 @@ impl SigningNode {
                 );
             }
 
-            // Validate script type against what was stored with the transaction.
-            match from_kind_hint {
-                SpendKind::P2WPKH => {
-                    if !is_p2wpkh {
-                        error!(
-                            "[handle_btc_signature_for_round] round {} input {} expected P2WPKH but got script_pubkey len={} prefix={:02x?}",
-                            round,
-                            idx,
-                            maybe_prev.script_pubkey.len(),
-                            maybe_prev.script_pubkey.get(0..2)
-                        );
-                        bail!("round {} input {} script is not P2WPKH", round, idx);
-                    }
-                }
-                SpendKind::P2PKH => {
-                    let spk = &maybe_prev.script_pubkey;
-                    let is_p2pkh = spk.len() == 25
-                        && spk[0] == 0x76
-                        && spk[1] == 0xA9
-                        && spk[2] == 0x14
-                        && spk[23] == 0x88
-                        && spk[24] == 0xAC;
-                    if !is_p2pkh {
-                        error!(
-                            "[handle_btc_signature_for_round] round {} input {} expected P2PKH but got len={} prefix={:02x?}",
-                            round,
-                            idx,
-                            spk.len(),
-                            spk.get(0..3)
-                        );
-                        bail!(
-                            "round {} input {} script is not canonical P2PKH",
-                            round,
-                            idx
-                        );
-                    }
-                }
+            // Validate script type (enforce P2PKH only).
+            let spk = &maybe_prev.script_pubkey;
+            let is_p2pkh = spk.len() == 25
+                && spk[0] == 0x76
+                && spk[1] == 0xA9
+                && spk[2] == 0x14
+                && spk[23] == 0x88
+                && spk[24] == 0xAC;
+            if !is_p2pkh {
+                error!(
+                    "[handle_btc_signature_for_round] round {} input {} expected P2PKH but got len={} prefix={:02x?}",
+                    round,
+                    idx,
+                    spk.len(),
+                    spk.get(0..3)
+                );
+                bail!(
+                    "round {} input {} script is not canonical P2PKH",
+                    round,
+                    idx
+                );
             }
 
             info!(
@@ -7172,20 +7103,8 @@ impl SigningNode {
                 maybe_prev.script_pubkey.clone()
             };
 
-            if prev_spk_owned.len() != 25
-                || !(prev_spk_owned[0] == 0x76
-                    && prev_spk_owned[1] == 0xA9
-                    && prev_spk_owned[2] == 0x14
-                    && prev_spk_owned[23] == 0x88
-                    && prev_spk_owned[24] == 0xAC)
-            {
-                error!("[handle_btc_signature_for_round] round {} input {} prev script not canonical P2PKH", round, idx);
-                bail!(
-                    "round {} input {} prev script not canonical P2PKH",
-                    round,
-                    idx
-                );
-            }
+            crate::signing::chains::bitcoin::validate_p2pkh_ownership(&prev_spk_owned, &group_h160)
+                .map_err(|e| anyhow!("[handle_btc_signature_for_round] round {} input {}: {}", round, idx, e))?;
 
             info!(
                 "🔍 [BTC-TX-DEBUG] Final node {} input {}: P2PKH prev_spk=0x{}",

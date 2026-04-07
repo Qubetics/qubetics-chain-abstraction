@@ -499,7 +499,6 @@ impl SigningNode {
         // Enforce that every input carries prevout data so all nodes hash the *same* preimage.
         // Missing witness_utxo data leads to some peers hashing a legacy path while others use
         // BIP143, which in turn produces an invalid aggregated signature on-chain.
-        let expected_kind = SpendKind::P2PKH;
         for (idx, inp) in tx.inputs.iter().enumerate() {
             let prev = inp.witness_utxo.as_ref().ok_or_else(|| {
                 error!(
@@ -509,39 +508,21 @@ impl SigningNode {
                 anyhow!("Input {} missing witness_utxo data", idx)
             })?;
 
-            match expected_kind {
-                SpendKind::P2WPKH => {
-                    let is_p2wpkh = prev.script_pubkey.len() == 22
-                        && prev.script_pubkey[0] == 0x00
-                        && prev.script_pubkey[1] == 0x14;
-                    if !is_p2wpkh {
-                        error!(
-                            "❌ [BTC-SIGNING] Input {} expected P2WPKH but script_pubkey is not v0 witness program (len={}, prefix={:02x?})",
-                            idx,
-                            prev.script_pubkey.len(),
-                            prev.script_pubkey.get(0..2)
-                        );
-                        bail!("Input {} script_pubkey is not P2WPKH", idx);
-                    }
-                }
-                SpendKind::P2PKH => {
-                    let spk = &prev.script_pubkey;
-                    let is_p2pkh = spk.len() == 25
-                        && spk[0] == 0x76
-                        && spk[1] == 0xa9
-                        && spk[2] == 0x14
-                        && spk[23] == 0x88
-                        && spk[24] == 0xac;
-                    if !is_p2pkh {
-                        error!(
-                            "❌ [BTC-SIGNING] Input {} expected P2PKH but script_pubkey is not canonical (len={}, prefix={:02x?})",
-                            idx,
-                            spk.len(),
-                            spk.get(0..3)
-                        );
-                        bail!("Input {} script_pubkey is not canonical P2PKH", idx);
-                    }
-                }
+            let spk = &prev.script_pubkey;
+            let is_p2pkh = spk.len() == 25
+                && spk[0] == 0x76
+                && spk[1] == 0xa9
+                && spk[2] == 0x14
+                && spk[23] == 0x88
+                && spk[24] == 0xac;
+            if !is_p2pkh {
+                error!(
+                    "❌ [BTC-SIGNING] Input {} expected P2PKH but script_pubkey is not canonical (len={}, prefix={:02x?})",
+                    idx,
+                    spk.len(),
+                    spk.get(0..3)
+                );
+                bail!("Input {} script_pubkey is not canonical P2PKH", idx);
             }
         }
 
@@ -617,15 +598,8 @@ impl SigningNode {
                 v
             };
 
-            if prev_spk.len() != 25
-                || !(prev_spk[0] == 0x76
-                    && prev_spk[1] == 0xa9
-                    && prev_spk[2] == 0x14
-                    && prev_spk[23] == 0x88
-                    && prev_spk[24] == 0xac)
-            {
-                anyhow::bail!("Input {}: prevout script is not canonical P2PKH", i);
-            }
+            validate_p2pkh_ownership(&prev_spk, &signer_h160)
+                .map_err(|e| anyhow::anyhow!("Input {}: {}", i, e))?;
 
             info!(
                 "🔍 [BTC-TX-DEBUG] Node {} input {}: P2PKH prev_spk=0x{}",
@@ -1625,5 +1599,57 @@ impl SigningNode {
             );
             Ok(Some(txid_hex))
         }
+    }
+}
+
+/// Helper function to perform pure ownership validation of a canonical P2PKH script.
+pub(crate) fn validate_p2pkh_ownership(
+    script_pubkey: &[u8],
+    expected_h160: &[u8],
+) -> anyhow::Result<()> {
+    if script_pubkey.len() != 25
+        || !(script_pubkey[0] == 0x76
+            && script_pubkey[1] == 0xa9
+            && script_pubkey[2] == 0x14
+            && script_pubkey[23] == 0x88
+            && script_pubkey[24] == 0xac)
+    {
+        anyhow::bail!("prevout script is not canonical P2PKH");
+    }
+
+    if script_pubkey[3..23] != *expected_h160 {
+        anyhow::bail!("prevout script P2PKH hash does not match expected signer_h160");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sign_bitcoin_transaction_rejects_foreign_p2pkh() {
+        let expected_hash = [0x55u8; 20];
+
+        // Valid canonical P2PKH script that matches our hash
+        let mut valid_script = vec![0x76, 0xa9, 0x14];
+        valid_script.extend_from_slice(&expected_hash);
+        valid_script.extend_from_slice(&[0x88, 0xac]);
+
+        // Malicious canonical P2PKH script (foreign hash)
+        let mut malicious_script = vec![0x76, 0xa9, 0x14];
+        malicious_script.extend_from_slice(&[0xaa; 20]); // foreign hash
+        malicious_script.extend_from_slice(&[0x88, 0xac]);
+
+        // Ensure valid matching script passes
+        assert!(validate_p2pkh_ownership(&valid_script, &expected_hash).is_ok());
+
+        // Ensure malicious script fails exactly as CertiK warned
+        let result = validate_p2pkh_ownership(&malicious_script, &expected_hash);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "prevout script P2PKH hash does not match expected signer_h160"
+        );
     }
 }

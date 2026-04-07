@@ -304,6 +304,12 @@ pub struct PendingWithdrawRequest {
     pub btc_address: Option<String>,
     /// Original signed message payload from the HTTP request
     pub message: String,
+    /// Solver's Ethereum signature over `message`.
+    /// Required for gossip-level re-verification: every receiving node recovers the signer
+    /// and checks it matches `solver_address` before writing to RocksDB.
+    /// `#[serde(default)]` keeps backward compatibility with records stored before this field.
+    #[serde(default)]
+    pub signature: String,
     /// Optional on-chain batch transaction ID once processed
     pub tx_id: Option<String>,
     /// Logical status of this withdraw request: "Pending", "Batched", "Completed", "Failed", etc.
@@ -458,6 +464,12 @@ pub struct PendingClaimPlatformFeeRequest {
     pub btc_target_address: Option<String>,
     /// Original signed message payload from the HTTP request.
     pub message: String,
+    /// Admin's Ethereum signature over `message` (signed by ADMIN_PUBLIC_ADDRESS).
+    /// Required for gossip-level re-verification: every receiving node recovers the signer
+    /// and checks it matches ADMIN_PUBLIC_ADDRESS before writing to RocksDB.
+    /// `#[serde(default)]` keeps backward compatibility with records stored before this field.
+    #[serde(default)]
+    pub signature: String,
     /// Optional on-chain transaction ID once the BTC transfer is broadcast (or TICS contract call).
     #[serde(default)]
     pub tx_id: Option<String>,
