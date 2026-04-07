@@ -460,13 +460,11 @@ impl MpcNetworkLayer {
                                     from_node_id,
                                     share_index,
                                     share_value,
-                                    commitments,
                                 } => ChannelMessage::UnicastShareDKG {
                                     target_peer_id,
                                     from_node_id,
                                     share_index,
                                     share_value,
-                                    commitments,
                                     retry_count: entry.retry_count + 1,
                                 },
                                 RetryableUnicast::UnicastCritical {

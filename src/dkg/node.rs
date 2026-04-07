@@ -317,7 +317,6 @@ impl DKGNode {
         from_node_id: String,
         share_index: usize,
         share_value: SerializableScalar,
-        commitments: Vec<SerializablePoint>,
         node_manager: Box<dyn NodeMembership>,
     ) -> Result<bool> {
         info!(
@@ -351,20 +350,19 @@ impl DKGNode {
             return Ok(false);
         }
 
-        // Use provided commitments or fallback to stored commitments from CommitmentBroadcast
-        let verification_commitments: Vec<SerializablePoint> = if !commitments.is_empty() {
-            commitments.clone()
-        } else {
-            // Try to get from storage (received via CommitmentBroadcast)
-            match self.storage.get_commitments_for(&from_node_id).await {
-                Ok(Some(stored)) => stored.into_iter().map(SerializablePoint).collect(),
-                _ => {
-                    warn!(
-                        "❌ [DKG-SECURE] No commitments available for verification from {}",
-                        from_node_id
-                    );
-                    return Ok(false);
-                }
+        // Enforce the use of strictly broadcast commitments from storage, preventing inline spoofing
+        let verification_commitments: Vec<SerializablePoint> = match self
+            .storage
+            .get_commitments_for(&from_node_id)
+            .await
+        {
+            Ok(Some(stored)) => stored.into_iter().map(SerializablePoint).collect(),
+            _ => {
+                warn!(
+                    "❌ [DKG-SECURE] No authenticated broadcast commitments available for {} (yet). Waiting for Gossipsub broadcast.",
+                    from_node_id
+                );
+                return Ok(false);
             }
         };
 
