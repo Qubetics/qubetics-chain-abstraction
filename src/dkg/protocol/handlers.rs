@@ -211,22 +211,26 @@ impl DKGNode {
             self.storage.get_all_validations().await?
         );
 
+        // Fetch the frozen expected shares list from RocksDB (set at DKG start, never changes).
+        // Use its length as the canonical total instead of the live node count, so that
+        // mid-DKG node drops cannot lower the completion threshold (QCA-55).
+        let received = self.storage.get_received_shares().await.unwrap_or_default();
+        let expected = self.storage.get_expected_shares().await.unwrap_or_default();
+        let frozen_total = expected.len();
+
         info!(
-            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}, valid validations: {}",
-            shares_len, validations_len, valid_validations
+            "🔍 [DKG] Checking DKG completion - shares: {}, validations: {}, valid validations: {}, frozen_total: {}",
+            shares_len, validations_len, valid_validations, frozen_total
         );
 
-        if valid_validations >= (node_manager.get_total_nodes()) * (node_manager.get_total_nodes())
-            && shares_len >= node_manager.get_total_nodes()
+        if valid_validations >= frozen_total * frozen_total
+            && shares_len >= frozen_total
         {
             info!(
                 "✅ [DKG] Required validations: {} and valid validations: {}",
-                (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
+                frozen_total * frozen_total,
                 valid_validations
             );
-
-            let received = self.storage.get_received_shares().await.unwrap_or_default();
-            let expected = self.storage.get_expected_shares().await.unwrap_or_default();
 
             let received_set: std::collections::HashSet<_> = received.iter().collect();
             let expected_set: std::collections::HashSet<_> = expected.iter().collect();
@@ -247,8 +251,8 @@ impl DKGNode {
         } else {
             info!(
                 "⏳ [DKG] DKG not yet complete - need {} validations and {} shares, have {} and {}",
-                (node_manager.get_total_nodes()) * (node_manager.get_total_nodes()),
-                node_manager.get_total_nodes(),
+                frozen_total * frozen_total,
+                frozen_total,
                 valid_validations,
                 shares_len
             );
