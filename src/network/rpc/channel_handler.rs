@@ -2505,13 +2505,7 @@ impl MpcNetworkLayer {
                         warn!("❌ [DKG] Invalid params for scheduled start: {}", e);
                         return Ok(());
                     }
-                    // SECURITY: reset() now only clears session-specific DKG data (shares, commitments, validations).
-                    // Active signing keys (final_secret, final_public, etc.) are explicitly PRESERVED
-                    // until the new DKG round successfully completes.
-                    if let Err(e) = dkg.reset().await {
-                        warn!("❌ [DKG] Failed to reset before scheduled start: {}", e);
-                        return Ok(());
-                    }
+
                     if let Some(arc) = &self.signing_node {
                     let mut signing_node = arc.lock().await;
                         // Align signing threshold with the node manager's configured threshold

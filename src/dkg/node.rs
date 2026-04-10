@@ -54,10 +54,6 @@ impl DKGNode {
         state.my_permanent_index = Some(index);
     }
 
-    fn increment_round(&self) {
-        self.state.write().unwrap().round += 1;
-    }
-
     pub(super) fn transition_status(&self, next: DKGStatus) -> Result<()> {
         fn is_valid_transition(current: &DKGStatus, next: &DKGStatus) -> bool {
             use DKGStatus::*;
@@ -120,62 +116,6 @@ impl DKGNode {
         Ok(())
     }
 
-    /// Resets the DKG node state for a new round.
-    ///
-    /// SECURITY: This method only clears session-specific DKG data (shares, commitments, validations,
-    /// polynomial, and share tracking). It explicitly PRESERVES the final network signing keys
-    /// (final_secret, final_public, vault_tweaked_secret, and vault_group_key) to avoid permanent
-    /// loss of funds if a new DKG round fails or takes time to complete.
-    /// These keys are only overwritten when a new DKG round successfully completes and calls
-    /// generate_group_key().
-    pub async fn reset(&mut self) -> Result<()> {
-        let mut failures = Vec::new();
-
-        if let Err(e) = self.storage.clear_shares().await {
-            failures.push(format!("clear shares: {e}"));
-        }
-        if let Err(e) = self.storage.clear_commitments().await {
-            failures.push(format!("clear commitments: {e}"));
-        }
-        if let Err(e) = self.storage.clear_validations().await {
-            failures.push(format!("clear validations: {e}"));
-        }
-        if let Err(e) = self.storage.delete_polynomial().await {
-            failures.push(format!("delete polynomial: {e}"));
-        }
-        if let Err(e) = self.storage.clear_share_tracking().await {
-            failures.push(format!("clear share tracking: {e}"));
-        }
-
-        self.transition_status(DKGStatus::New)?;
-        self.increment_round();
-
-        if !failures.is_empty() {
-            let message = failures.join(", ");
-            warn!(
-                "Failed to reset DKG session state for node {}: {}",
-                self.id, message
-            );
-            return Err(anyhow!("Failed to reset DKG session state: {}", message));
-        }
-
-        info!(
-            "✅ [DKG] DKG session state reset for node {} (round advanced)",
-            self.id
-        );
-        Ok(())
-    }
-
-    /// Clear DKG secret/commitment state so this node can rejoin (same flow as new node).
-    /// Does NOT delete our index: the network assigns the new index via PeerList and we overwrite
-    /// when the new-node flow completes (set_my_permanent_index).
-    pub async fn clear_state_for_reconnect(&mut self) -> Result<()> {
-        info!("🗑️ [RECONNECT] Clearing DKG secret/commitment state - index comes from network (PeerList)");
-        self.reset().await?;
-        self.storage.set_initial_dkg_complete(false).await?;
-        info!("✅ [RECONNECT] DKG state cleared - will use index assigned by network");
-        Ok(())
-    }
 
     /// Restore in-memory DKG status to Completed from persisted storage.
     /// Called when a main DKG node restarts and already has valid DKG data on disk.
