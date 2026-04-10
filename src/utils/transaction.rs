@@ -632,25 +632,49 @@ pub async fn create_tics_transaction(
     // Fetch nonce for the from address
     let nonce = fetch_tics_nonce(from_address, chain_id).await?;
 
+    let gas_limit: u64 = 300000; // Standard ETH transfer gas limit
+    
+    // Parse gas_price from hex string
+    let gas_price_u128 = if let Some(hex_part) = gas_price.strip_prefix("0x") {
+        u128::from_str_radix(hex_part, 16).unwrap_or(0)
+    } else {
+        gas_price.parse::<u128>().unwrap_or(0)
+    };
+
+    // Verify the sender's balance covers the transfer amount and maximum gas cost
+    let max_gas_cost = (gas_limit as u128).saturating_mul(gas_price_u128);
+    let required_balance = amount.saturating_add(max_gas_cost);
+    let current_balance = crate::rpc_server::utils::fetch_network_balance(from_address, chain_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch EVM balance for {}: {}", from_address, e))?;
+
+    if current_balance < required_balance {
+        return Err(anyhow::anyhow!(
+            "Insufficient EVM balance for transaction: have {}, need {} (amount: {}, gas limit: {}, gas price: {})",
+            current_balance, required_balance, amount, gas_limit, gas_price
+        ));
+    }
+
     info!(
         "🎁 [ETH_TX] Constructed Payload: \n\
          \tTo: {}\n\
          \tValue: {}\n\
          \tGas Price: {}\n\
          \tNonce: {}\n\
-         \tGas Limit: 21000\n\
+         \tGas Limit: {}\n\
          \tChain ID: {}",
         to_address,
         amount_to_hex_string(amount),
         gas_price,
         nonce,
+        gas_limit,
         chain_id
     );
 
     let tics_tx = TicsTransaction {
         to: to_address.to_string(),
         value: amount_to_hex_string(amount),
-        gas_limit: 300000, // Standard ETH transfer gas limit
+        gas_limit,
         gas_price,
         nonce,
         data: None, // No calldata for simple ETH transfer
