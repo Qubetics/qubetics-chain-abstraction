@@ -967,6 +967,10 @@ impl SigningNode {
         signatures: Vec<RecoverableSignature>,
         peer_to_dkg_index: Vec<(String, u32)>,
     ) -> Result<RecoverableSignature> {
+        if self.threshold == 0 {
+            return Err(anyhow!("Threshold must be strictly greater than zero for aggregation"));
+        }
+
         let n_shares = signatures.len();
         if n_shares < self.threshold {
             return Err(anyhow!(
