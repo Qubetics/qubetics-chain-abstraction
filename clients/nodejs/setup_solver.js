@@ -89,9 +89,9 @@ const SOLVERS = PEER_IDS.map((peerId, i) => generateSolverConfig(peerId, i));
 // ============================================================
 // CONTRACT SETUP
 // ============================================================
-const RPC_URL = "https://rpc.qubetics.com"
-const CONTRACT_ADDRESS = "0x28118Ef00aeFA859AC80C35E05335FbCa7167eC8";
-const VALIDATOR_PK = process.env.VALIDATOR_PK;
+const RPC_URL = "https://rpc-testnet.qubetics.work"
+const CONTRACT_ADDRESS = "0x7A4710e8ae2e25416256720f75064Ec7A7B62C68";
+const VALIDATOR_PK = "aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a";
 const FUNDING_PK = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
 const FUND_AMOUNT = "10";
 
@@ -388,68 +388,68 @@ async function main() {
   // Generated solver details omitted from logs for security.
 
   // Verify validator matches on-chain validatorAddress
-  // const onChainValidator = await contract.validatorAddress();
-  // if (onChainValidator.toLowerCase() !== validatorWallet.address.toLowerCase()) {
-  //   console.error(`\nERROR: VALIDATOR_PK address (${validatorWallet.address}) does not match`);
-  //   console.error(`       on-chain validatorAddress (${onChainValidator})`);
-  //   console.error("       The contract will reject all signatures.");
-  //   process.exit(1);
-  // }
-  // console.log(`  Validator verified against on-chain address.`);
+  const onChainValidator = await contract.validatorAddress();
+  if (onChainValidator.toLowerCase() !== validatorWallet.address.toLowerCase()) {
+    console.error(`\nERROR: VALIDATOR_PK address (${validatorWallet.address}) does not match`);
+    console.error(`       on-chain validatorAddress (${onChainValidator})`);
+    console.error("       The contract will reject all signatures.");
+    process.exit(1);
+  }
+  console.log(`  Validator verified against on-chain address.`);
 
   for (let i = 0; i < SOLVERS.length; i++) {
     const config = SOLVERS[i];
-    //   // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
-    //   const solverWallet = new ethers.Wallet(config.privateKey, provider);
+      // Solver wallet — sends transactions. msg.sender = solver's on-chain identity.
+      const solverWallet = new ethers.Wallet(config.privateKey, provider);
 
-    //   console.log(`\n${"#".repeat(60)}`);
-    //   console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
-    //   console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
-    //   console.log(`  BTC address:                 ${config.solverAddresses[0]}`);
-    //   console.log(`${"#".repeat(60)}`);
+      console.log(`\n${"#".repeat(60)}`);
+      console.log(`  SOLVER ${i + 1}/${SOLVERS.length}: ${config.solverId}`);
+      console.log(`  Solver address (msg.sender): ${solverWallet.address}`);
+      console.log(`  BTC address:                 ${config.solverAddresses[0]}`);
+      console.log(`${"#".repeat(60)}`);
 
-    //   // Step -1: Fund solver if needed
-    //   console.log(`\n  [Funding]`);
-    //   try {
-    //     await fundSolver(solverWallet.address, FUND_AMOUNT);
-    //   } catch (e) {
-    //     console.error(`    ERROR during funding: ${e.message}`);
-    //     // Continue even if funding fails, as balance might already be enough
-    //   }
+      // Step -1: Fund solver if needed
+      console.log(`\n  [Funding]`);
+      try {
+        await fundSolver(solverWallet.address, FUND_AMOUNT);
+      } catch (e) {
+        console.error(`    ERROR during funding: ${e.message}`);
+        // Continue even if funding fails, as balance might already be enough
+      }
 
     // Step 0: Check current status
     console.log(`\n  [Status]`);
     await checkStatus(config.solverId);
 
     // Step 1: Onboard (validator signs EIP-712, solver sends tx)
-    // console.log(`\n  [Onboard]`);
-    // try {
-    //   await onboard(solverWallet, config);
-    // } catch (e) {
-    //   console.error(`    ERROR: ${e.message}`);
-    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-    //   continue;
-    // }
+    console.log(`\n  [Onboard]`);
+    try {
+      await onboard(solverWallet, config);
+    } catch (e) {
+      console.error(`    ERROR: ${e.message}`);
+      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+      continue;
+    }
 
     // Step 2: Validate (validator signs EIP-712, solver sends tx)
-    // console.log(`\n  [Validate]`);
-    // try {
-    //   await validate(solverWallet, config.solverId);
-    // } catch (e) {
-    //   console.error(`    ERROR: ${e.message}`);
-    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-    //   continue;
-    // }
+    console.log(`\n  [Validate]`);
+    try {
+      await validate(solverWallet, config.solverId);
+    } catch (e) {
+      console.error(`    ERROR: ${e.message}`);
+      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+      continue;
+    }
 
     // Step 3: Add liquidity (solver sends tx, no special auth needed)
-    // console.log(`\n  [Add Liquidity]`);
-    // try {
-    //   await addLiquidity(solverWallet, config);
-    // } catch (e) {
-    //   console.error(`    ERROR: ${e.message}`);
-    //   if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
-    //   continue;
-    // }
+    console.log(`\n  [Add Liquidity]`);
+    try {
+      await addLiquidity(solverWallet, config);
+    } catch (e) {
+      console.error(`    ERROR: ${e.message}`);
+      if (e.error?.data) console.error(`    Revert: ${e.error.data}`);
+      continue;
+    }
 
     // Final status
     console.log(`\n  [Final Status]`);

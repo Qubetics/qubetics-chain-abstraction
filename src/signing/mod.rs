@@ -5409,10 +5409,7 @@ impl SigningNode {
                 );
 
                 // Get chain_id from environment variable for v calculation
-                let chain_id_for_v = std::env::var("MPC_TICS_CHAIN_ID")
-                    .ok()
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id()); // Default: Qubetics chain ID from MPC_TICS_CHAIN_ID env var
+                let chain_id_for_v = crate::env_defaults::tics_chain_id();
 
                 // Perform aggregation
                 match self
@@ -6003,10 +6000,7 @@ impl SigningNode {
         // TICS UserToVault only - BTC UTV uses dedicated handler with multi-input support
         let slot_kind = SlotKind::TicsUserToVault;
 
-        let chain_id = std::env::var("MPC_TICS_CHAIN_ID")
-            .ok()
-            .and_then(|id| id.parse::<u64>().ok())
-            .unwrap_or_else(|| crate::env_defaults::mpc_tics_chain_id());
+        let chain_id = crate::env_defaults::tics_chain_id();
 
         let mut sorted: Vec<_> = round_slot_signatures.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));

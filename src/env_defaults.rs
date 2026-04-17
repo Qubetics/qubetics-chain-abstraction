@@ -4,43 +4,43 @@
 pub const DEFAULT_RPC_PORT: u16 = 80;
 
 /// Default SolverManager / TICS RPC URL.
-pub const DEFAULT_SOLVER_CONTRACT_RPC_URL: &str = "https://rpc.qubetics.com";
+pub const DEFAULT_SOLVER_CONTRACT_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
 /// Default SolverManager contract address.
-pub const DEFAULT_SOLVER_CONTRACT_ADDRESS: &str = "0x28D2cac6f86004439d9B9C9f2D12c3643E4097C3";
+pub const DEFAULT_SOLVER_CONTRACT_ADDRESS: &str = "0x7A4710e8ae2e25416256720f75064Ec7A7B62C68";
 /// Default IntentManager contract address.
-pub const DEFAULT_INTENT_MANAGER_CONTRACT_ADDRESS: &str = "0x06B7C1f42890731eE5579b7285B928978b0Dd37C";
+pub const DEFAULT_INTENT_MANAGER_CONTRACT_ADDRESS: &str = "0xcf5746BC1b491210CbbFF7067d52B9B9e9723c27";
 /// Default Treasury Vault contract address.
-pub const DEFAULT_TREASURY_VAULT_CONTRACT_ADDRESS: &str = "0x7FcB0878C58D8C0cae1E4EB43e9BD059EB3cEcb8";
+pub const DEFAULT_TREASURY_VAULT_CONTRACT_ADDRESS: &str = "0x2De20Bf0acE8e031E7d3259953f9a4A490D9654B";
 /// Default SolverManager chain ID.
-pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9030";
+pub const DEFAULT_SOLVER_CONTRACT_CHAIN_ID: &str = "9029";
 
 /// Default MPC Ethereum RPC URL.
-pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc.qubetics.com";
+pub const DEFAULT_MPC_ETHEREUM_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
 /// Default MPC Bitcoin broadcast API URL.
 pub const DEFAULT_MPC_BITCOIN_RPC_URL: &str =
-    "https://crypto-api.ticssolver.com/api/v1/tx/broadcast";
+    "https://stage-crypto-api.qubetics.work/api/v1/tx/broadcast";
 /// Default backend API base URL.
-pub const DEFAULT_BACKEND_API_URL: &str = "https://crypto-api.ticssolver.com";
+pub const DEFAULT_BACKEND_API_URL: &str = "https://stage-crypto-api.qubetics.work";
 /// Default BTC UTXO API base URL.
-pub const DEFAULT_BTC_UTXO_API_BASE: &str = "https://crypto-api.ticssolver.com";
+pub const DEFAULT_BTC_UTXO_API_BASE: &str = "https://stage-crypto-api.qubetics.work";
 /// Default RPC API key (for auth).
 pub const DEFAULT_RPC_API_KEY: &str = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 /// Default chain code hex (BIP32 chain code).
 pub const DEFAULT_CHAIN_CODE_HEX: &str = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194abe4";
 /// Default network type.
-pub const DEFAULT_NETWORK_TYPE: &str = "mainnet";
+pub const DEFAULT_NETWORK_TYPE: &str = "testnet";
 /// Default DB encryption key (32-byte hex).
 pub const DEFAULT_QUBETICS_DB_ENCRYPTION_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 /// Default global clock interval in seconds.
 pub const DEFAULT_GLOBAL_CLOCK_INTERVAL_SECONDS: &str = "30";
 /// Default max BTC withdraw entries per cycle.
-pub const DEFAULT_MAX_BTC_WITHDRAW_PER_CYCLE: &str = "10";
+pub const DEFAULT_MAX_BTC_WITHDRAW_PER_CYCLE: &str = "15";
 /// Default max intents per cycle.
-pub const DEFAULT_MAX_INTENTS_PER_CYCLE: &str = "13";
+pub const DEFAULT_MAX_INTENTS_PER_CYCLE: &str = "8";
 /// Default verification address (solver add_liquidity verification).
 pub const DEFAULT_VERIFICATION_ADDRESS: &str = "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9";
 /// Default admin Ethereum address (for register_admin / platform fee signing).
-pub const DEFAULT_ADMIN_PUBLIC_ADDRESS: &str = "0x3317aDd512177663544374cBaCA25814A6C4957c";
+pub const DEFAULT_ADMIN_PUBLIC_ADDRESS: &str = "0x88c8045Fd96b88394B67fcA04FC92172CF7E6940";
 /// Default max TICS UserToVault intents per signing batch.
 pub const DEFAULT_MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH: &str = "10";
 /// Default max BTC UserToVault intents per signing batch.
@@ -49,12 +49,10 @@ pub const DEFAULT_MAX_BTC_USER_TO_VAULT_INTENTS_PER_BATCH: &str = "10";
 pub const DEFAULT_MAX_BTC_CLAIM_REWARD_PER_CYCLE: &str = "10";
 /// Default max add-liquidity requests per batch.
 pub const DEFAULT_MAX_ADD_LIQUIDITY_BATCH: &str = "10";
-/// Chain ID used for TICS EVM signing (mainnet).
-pub const DEFAULT_MPC_TICS_CHAIN_ID: &str = "9030";
 /// RPC URL for the TICS chain (platform-fee & TICS-chain contract calls).
-pub const DEFAULT_TICS_CHAIN_RPC_URL: &str = "https://rpc.qubetics.com";
-/// Chain ID for TICS chain contract calls (platform fee, etc.) — mainnet.
-pub const DEFAULT_TICS_CHAIN_ID: &str = "9030";
+pub const DEFAULT_TICS_CHAIN_RPC_URL: &str = "https://rpc-testnet.qubetics.work";
+/// Chain ID for the TICS chain (used for both EVM signing and contract calls) — testnet.
+pub const DEFAULT_TICS_CHAIN_ID: &str = "9029";
 /// Bitcoin fee rate in satoshis per vByte.
 pub const DEFAULT_BTC_FEE_RATE_SAT_VB: &str = "2";
 
@@ -186,14 +184,6 @@ pub fn max_add_liquidity_batch() -> usize {
 }
 
 #[inline]
-pub fn mpc_tics_chain_id() -> u64 {
-    std::env::var("MPC_TICS_CHAIN_ID")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| DEFAULT_MPC_TICS_CHAIN_ID.parse().unwrap())
-}
-
-#[inline]
 pub fn tics_chain_rpc_url() -> String {
     std::env::var("TICS_CHAIN_RPC_URL").unwrap_or_else(|_| DEFAULT_TICS_CHAIN_RPC_URL.to_string())
 }
@@ -204,6 +194,12 @@ pub fn tics_chain_id() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| DEFAULT_TICS_CHAIN_ID.parse().unwrap())
+}
+
+/// Alias for [`tics_chain_id`] — signing and contract calls use the same chain.
+#[inline]
+pub fn mpc_tics_chain_id() -> u64 {
+    tics_chain_id()
 }
 
 #[inline]
@@ -243,9 +239,8 @@ pub fn log_env_config() {
     tracing::info!("  MAX_BTC_USER_TO_VAULT_INTENTS_PER_BATCH  = {}  [{}]", max_btc_user_to_vault_intents_per_batch(), src("MAX_BTC_USER_TO_VAULT_INTENTS_PER_BATCH"));
     tracing::info!("  MAX_BTC_CLAIM_REWARD_PER_CYCLE           = {}  [{}]", max_btc_claim_reward_per_cycle(), src("MAX_BTC_CLAIM_REWARD_PER_CYCLE"));
     tracing::info!("  MAX_ADD_LIQUIDITY_BATCH                  = {}  [{}]", max_add_liquidity_batch(), src("MAX_ADD_LIQUIDITY_BATCH"));
-    tracing::info!("  MPC_TICS_CHAIN_ID                        = {}  [{}]", mpc_tics_chain_id(), src("MPC_TICS_CHAIN_ID"));
-    tracing::info!("  TICS_CHAIN_RPC_URL                       = {}  [{}]", tics_chain_rpc_url(), src("TICS_CHAIN_RPC_URL"));
     tracing::info!("  TICS_CHAIN_ID                            = {}  [{}]", tics_chain_id(), src("TICS_CHAIN_ID"));
+    tracing::info!("  TICS_CHAIN_RPC_URL                       = {}  [{}]", tics_chain_rpc_url(), src("TICS_CHAIN_RPC_URL"));
     tracing::info!("  BTC_FEE_RATE_SAT_VB                      = {}  [{}]", btc_fee_rate_sat_vb(), src("BTC_FEE_RATE_SAT_VB"));
     tracing::info!("  VERIFICATION_ADDRESS                     = {}  [{}]", verification_address(), src("VERIFICATION_ADDRESS"));
     tracing::info!("  ADMIN_PUBLIC_ADDRESS                     = {}  [{}]", admin_public_address(), src("ADMIN_PUBLIC_ADDRESS"));

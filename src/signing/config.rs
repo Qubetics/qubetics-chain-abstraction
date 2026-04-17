@@ -117,10 +117,8 @@ impl BroadcastConfig {
                 .expect("Unable to determine MPC_ETHEREUM_RPC_URL for Qubetics chain");
         }
 
-        if let Ok(chain_id) = std::env::var("MPC_TICS_CHAIN_ID") {
-            if let Some(eth_config) = config.chain_configs.get_mut("tics") {
-                eth_config.chain_id = chain_id.parse().unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
-            }
+        if let Some(eth_config) = config.chain_configs.get_mut("tics") {
+            eth_config.chain_id = crate::env_defaults::tics_chain_id();
         }
 
         if let Some(btc_config) = config.chain_configs.get_mut("bitcoin") {
