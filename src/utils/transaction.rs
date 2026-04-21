@@ -645,7 +645,8 @@ pub async fn create_tics_transaction(
     let max_gas_cost = (gas_limit as u128).saturating_mul(gas_price_u128);
     let required_balance = amount.saturating_add(max_gas_cost);
     // The balance API uses "eth" for all EVM-compatible chains (including qubetics/tics)
-    let balance_api_chain = match chain_name.to_lowercase().as_str() {
+    let chain_name_lower = chain_name.to_lowercase();
+    let balance_api_chain = match chain_name_lower.as_str() {
         "qubetics" | "tics" => "eth",
         other => other,
     };
