@@ -94,6 +94,108 @@ impl Database {
         Ok(())
     }
 
+    /// Write `value` under `key` only if no key with `conflict_prefix` currently exists.
+    ///
+    /// Returns `Ok(true)` if the write happened, `Ok(false)` if a conflicting key already
+    /// exists under `conflict_prefix`.
+    ///
+    /// Although RocksDB does not expose a native compare-and-swap, it serialises all
+    /// concurrent writes through its internal mutex. Because both the prefix scan and
+    /// the subsequent put happen inside a single `spawn_blocking` call (i.e. on one
+    /// OS thread), no other writer can interleave between them on the same process.
+    /// Cross-node races are handled by gossip-level guards in the callers.
+    pub fn put_string_if_absent<V>(
+        &self,
+        key: &str,
+        value: &V,
+        conflict_prefix: &str,
+    ) -> Result<bool>
+    where
+        V: Serialize,
+    {
+        let prefix_bytes = conflict_prefix.as_bytes();
+        let iter = self.db.iterator(rocksdb::IteratorMode::From(
+            prefix_bytes,
+            rocksdb::Direction::Forward,
+        ));
+
+        for item in iter {
+            let (k, _) = item.map_err(|e| anyhow!("Iterator error: {}", e))?;
+            if k.starts_with(prefix_bytes) {
+                debug!(
+                    "🚫 [DATABASE] put_string_if_absent: conflict found for prefix '{}'",
+                    conflict_prefix
+                );
+                return Ok(false);
+            }
+            break; // First key does not match prefix — prefix range is empty
+        }
+
+        let value_bytes =
+            bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
+        self.db
+            .put(key.as_bytes(), &value_bytes)
+            .map_err(|e| anyhow!("Failed to put data: {}", e))?;
+
+        debug!(
+            "✅ [DATABASE] put_string_if_absent: wrote key '{}' (no conflict for prefix '{}')",
+            key, conflict_prefix
+        );
+        Ok(true)
+    }
+
+    /// Async wrapper for [`Database::put_string_if_absent`].
+    /// Runs the scan + conditional write on a Tokio blocking thread so the
+    /// async runtime is not stalled.
+    pub async fn put_string_if_absent_async<V>(
+        &self,
+        key: &str,
+        value: &V,
+        conflict_prefix: &str,
+    ) -> Result<bool>
+    where
+        V: Serialize + Send + Sync + 'static,
+    {
+        let db = self.clone();
+        let key = key.to_owned();
+        let conflict_prefix = conflict_prefix.to_owned();
+        // Pre-serialise so the closure is `Send`
+        let value_bytes =
+            bincode::serialize(value).map_err(|e| anyhow!("Failed to serialize value: {}", e))?;
+
+        task::spawn_blocking(move || {
+            let prefix_bytes = conflict_prefix.as_bytes();
+            let iter = db.db.iterator(rocksdb::IteratorMode::From(
+                prefix_bytes,
+                rocksdb::Direction::Forward,
+            ));
+
+            for item in iter {
+                let (k, _) = item.map_err(|e| anyhow!("Iterator error: {}", e))?;
+                if k.starts_with(prefix_bytes) {
+                    debug!(
+                        "🚫 [DATABASE] put_string_if_absent_async: conflict found for prefix '{}'",
+                        conflict_prefix
+                    );
+                    return Ok(false);
+                }
+                break;
+            }
+
+            db.db
+                .put(key.as_bytes(), &value_bytes)
+                .map_err(|e| anyhow!("Failed to put data: {}", e))?;
+
+            debug!(
+                "✅ [DATABASE] put_string_if_absent_async: wrote key '{}' (no conflict for prefix '{}')",
+                key, conflict_prefix
+            );
+            Ok(true)
+        })
+        .await
+        .map_err(|e| anyhow!("Join error during put_string_if_absent_async: {}", e))?
+    }
+
     /// Get a value by key where both key and value are deserializable
     pub fn get<K, V>(&self, key: &K) -> Result<Option<V>>
     where

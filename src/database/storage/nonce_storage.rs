@@ -3,6 +3,9 @@ use crate::types::nonce::{NonceGenState, NoncePoolMetrics, NonceTuple};
 use crate::types::secp::SerializablePoint;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
 /// Storage for nonce tuples and generation state.
 ///
 /// This module handles persistence of:
@@ -13,11 +16,19 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct NonceStorage {
     db: Database,
+    /// Serialises all read-modify-write operations on the `NONCE_AVAILABLE_IDS` list.
+    /// Without this lock, two concurrent async tasks can both read the same list,
+    /// each modify it independently, and the second write clobbers the first —
+    /// leaving a consumed nonce ID in the available pool or losing a valid one.
+    ids_lock: Arc<Mutex<()>>,
 }
 
 impl NonceStorage {
     pub fn new(db: Database) -> Self {
-        Self { db }
+        Self {
+            db,
+            ids_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     // ============================================================
@@ -117,8 +128,11 @@ impl NonceStorage {
             .map(|opt| opt.unwrap_or_default())
     }
 
-    /// Add a tuple ID to the available list
+    /// Add a tuple ID to the available list.
+    /// Holds `ids_lock` for the full read-modify-write to prevent concurrent
+    /// writers from clobbering each other's updates.
     async fn add_to_available_ids(&self, tuple_id: &str) -> Result<()> {
+        let _guard = self.ids_lock.lock().await;
         let mut ids = self.get_available_ids().await?;
         if !ids.contains(&tuple_id.to_string()) {
             ids.push(tuple_id.to_string());
@@ -127,8 +141,10 @@ impl NonceStorage {
         Ok(())
     }
 
-    /// Remove a tuple ID from the available list (internal use by consume_nonce_tuple)
+    /// Remove a tuple ID from the available list (internal use by consume_nonce_tuple).
+    /// Holds `ids_lock` for the full read-modify-write.
     async fn remove_from_available_ids(&self, tuple_id: &str) -> Result<()> {
+        let _guard = self.ids_lock.lock().await;
         let mut ids = self.get_available_ids().await?;
         ids.retain(|id| id != tuple_id);
         self.db.put_string(keys::NONCE_AVAILABLE_IDS, &ids)?;
@@ -142,8 +158,13 @@ impl NonceStorage {
     /// calls within the same epoch (e.g. processBatchIntents contract call
     /// vs per-intent UserToVault signing). The nonce data remains in storage
     /// so that all nodes can still look it up by ID via `acquire_specific_nonce()`.
+    /// Holds `ids_lock` for the full read-modify-write.
     pub async fn remove_from_available_ids_public(&self, tuple_id: &str) -> Result<()> {
-        self.remove_from_available_ids(tuple_id).await
+        let _guard = self.ids_lock.lock().await;
+        let mut ids = self.get_available_ids().await?;
+        ids.retain(|id| id != tuple_id);
+        self.db.put_string(keys::NONCE_AVAILABLE_IDS, &ids)?;
+        Ok(())
     }
 
     /// Delete old consumed nonces to free storage
@@ -186,8 +207,9 @@ impl NonceStorage {
             }
         }
 
-        // Remove deleted IDs from available list
+        // Remove deleted IDs from available list — hold ids_lock for the RMW.
         if !stale_ids.is_empty() {
+            let _guard = self.ids_lock.lock().await;
             let mut available_ids = self.get_available_ids().await?;
             let original_len = available_ids.len();
             available_ids.retain(|id| !stale_ids.contains(id));

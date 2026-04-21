@@ -5958,16 +5958,28 @@ impl MpcNetworkLayer {
                     solver_lower, request.request_id
                 );
 
-                if let Err(e) = self.db.put_string_async(&key, &request).await {
-                    warn!(
-                        "⚠️ [WITHDRAW_LIQUIDITY] Failed to persist PendingWithdrawRequest request_id={} from gossip: {}",
-                        request.request_id, e
-                    );
-                } else {
-                    info!(
-                        "✅ [WITHDRAW_LIQUIDITY] Stored PendingWithdrawRequest from gossip (request_id={}, solver={})",
-                        request.request_id, request.solver_address
-                    );
+                // Use put_string_if_absent_async so that a duplicate gossip delivery of the
+                // same request_id is a no-op rather than overwriting an already-stored record
+                // (e.g. one that may have progressed to Batched on this node).
+                match self.db.put_string_if_absent_async(&key, &request, &key).await {
+                    Ok(true) => {
+                        info!(
+                            "✅ [WITHDRAW_LIQUIDITY] Stored PendingWithdrawRequest from gossip (request_id={}, solver={})",
+                            request.request_id, request.solver_address
+                        );
+                    }
+                    Ok(false) => {
+                        info!(
+                            "ℹ️ [WITHDRAW_LIQUIDITY] Duplicate gossip withdraw {}: already stored, skipping overwrite",
+                            request.request_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [WITHDRAW_LIQUIDITY] Failed to persist PendingWithdrawRequest request_id={} from gossip: {}",
+                            request.request_id, e
+                        );
+                    }
                 }
             }
             GossipsubMessage::PendingClaimPlatformFeeRequestBroadcast { request } => {
@@ -6408,16 +6420,27 @@ impl MpcNetworkLayer {
                     solver_lower, request.request_id
                 );
 
-                if let Err(e) = self.db.put_string_async(&key, &request).await {
-                    warn!(
-                        "⚠️ [CLAIM_REWARD] Failed to persist PendingClaimRewardRequest request_id={} from gossip: {}",
-                        request.request_id, e
-                    );
-                } else {
-                    info!(
-                        "✅ [CLAIM_REWARD] Stored PendingClaimRewardRequest from gossip (request_id={}, solver={})",
-                        request.request_id, request.solver_address
-                    );
+                // Use put_string_if_absent_async so that a duplicate gossip delivery of the
+                // same request_id is a no-op rather than overwriting an already-stored record.
+                match self.db.put_string_if_absent_async(&key, &request, &key).await {
+                    Ok(true) => {
+                        info!(
+                            "✅ [CLAIM_REWARD] Stored PendingClaimRewardRequest from gossip (request_id={}, solver={})",
+                            request.request_id, request.solver_address
+                        );
+                    }
+                    Ok(false) => {
+                        info!(
+                            "ℹ️ [CLAIM_REWARD] Duplicate gossip claim reward {}: already stored, skipping overwrite",
+                            request.request_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ [CLAIM_REWARD] Failed to persist PendingClaimRewardRequest request_id={} from gossip: {}",
+                            request.request_id, e
+                        );
+                    }
                 }
             }
             GossipsubMessage::TransactionFailure {

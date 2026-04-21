@@ -290,6 +290,74 @@ pub struct WithdrawLiquidityResponse {
     pub error_message: Option<String>,
 }
 
+/// Valid lifecycle states for all pending solver requests (withdraw, claim-reward, platform-fee).
+///
+/// The only legal forward progressions are:
+///   Pending → Batched → Completed
+///   Batched → Pending  (revert on signing failure)
+///   Any     → Failed   (permanent unrecoverable error)
+///
+/// `RequestStatus` serialises to/from the exact strings already stored in RocksDB
+/// ("Pending", "Batched", "Completed", "Failed") so existing records are compatible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum RequestStatus {
+    Pending,
+    Batched,
+    Completed,
+    Failed,
+}
+
+impl RequestStatus {
+    /// Returns `Ok(next)` if transitioning from `self` to `next` is a valid progression,
+    /// or `Err` with a human-readable message if the transition is illegal.
+    pub fn try_transition(&self, next: &RequestStatus) -> Result<(), String> {
+        use RequestStatus::*;
+        match (self, next) {
+            // Forward progression
+            (Pending, Batched) => Ok(()),
+            (Batched, Completed) => Ok(()),
+            // Retry revert
+            (Batched, Pending) => Ok(()),
+            // Terminal failure from any live state
+            (Pending | Batched, Failed) => Ok(()),
+            // Everything else is illegal
+            _ => Err(format!(
+                "invalid status transition: {:?} → {:?}",
+                self, next
+            )),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RequestStatus::Pending => "Pending",
+            RequestStatus::Batched => "Batched",
+            RequestStatus::Completed => "Completed",
+            RequestStatus::Failed => "Failed",
+        }
+    }
+}
+
+impl std::fmt::Display for RequestStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<&str> for RequestStatus {
+    type Error = String;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "Pending" => Ok(RequestStatus::Pending),
+            "Batched" => Ok(RequestStatus::Batched),
+            "Completed" => Ok(RequestStatus::Completed),
+            "Failed" => Ok(RequestStatus::Failed),
+            other => Err(format!("unknown request status: '{}'", other)),
+        }
+    }
+}
+
 /// Internal representation of a queued withdraw-liquidity request.
 /// Stored in RocksDB under keys with prefix "pending_withdraw_liquidity:".
 #[derive(Debug, Clone, Serialize, Deserialize)]

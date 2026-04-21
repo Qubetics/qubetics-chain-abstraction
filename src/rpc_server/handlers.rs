@@ -2748,6 +2748,63 @@ pub(crate) async fn handle_claim_reward(
         status: "Pending".to_string(),
     };
 
+    // Write to the local DB *before* broadcasting, mirroring the withdraw_liquidity pattern.
+    // This closes the window where two concurrent RPC calls both pass the in-flight guard
+    // and then race to be the first gossip write.  The gossip loopback on this node will
+    // see the key already present and skip the redundant write (C-4 fix).
+    let db_key = format!(
+        "pending_claim_reward:{}:{}",
+        normalized_address.to_lowercase(),
+        request_id
+    );
+    let conflict_prefix = format!(
+        "pending_claim_reward:{}:",
+        normalized_address.to_lowercase()
+    );
+    let db = user_intent_manager.get_database();
+    match db.put_string_if_absent_async(&db_key, &pending, &conflict_prefix).await {
+        Ok(true) => {
+            info!(
+                "🔒 [CLAIM_REWARD] Atomically reserved request {} for solver {}",
+                request_id, normalized_address
+            );
+        }
+        Ok(false) => {
+            warn!(
+                "🚫 [CLAIM_REWARD] Atomic reserve rejected for solver {}: concurrent claim detected",
+                normalized_address
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "A claim reward request is already in progress. Wait for it to complete.".to_string(),
+                error_message: Some("Concurrent request detected".to_string()),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ [CLAIM_REWARD] DB error during atomic reserve for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "Failed to reserve claim reward request slot".to_string(),
+                error_message: Some(format!("Database error: {}", e)),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
+    }
+
     let broadcast = ChannelMessage::PendingClaimRewardRequestBroadcast {
         request: pending.clone(),
     };
@@ -3245,7 +3302,81 @@ pub(crate) async fn handle_withdraw_liquidity(
         status: "Pending".to_string(),
     };
 
-    // Broadcast via channel; storage happens only in gossip handler (for this node and all others).
+    // --- Atomic pre-write (closes TOCTOU between the guard check above and this write) ---
+    //
+    // The earlier guard (line ~3185) read the DB to confirm no Pending/Batched request exists.
+    // Between that read and this write, a concurrent RPC call on this node (or a gossip message
+    // arriving from another node) could also pass the guard and create a second request for the
+    // same solver+asset.  Writing to the DB *before* broadcasting closes this local-node window:
+    // if another call raced in, put_string_if_absent_async will find the prefix occupied and abort.
+    //
+    // put_string_if_absent_async wraps the prefix scan AND the conditional write inside a single
+    // spawn_blocking closure, preventing the Tokio runtime from yielding between the two steps.
+    // Using the synchronous variant would block the async runtime thread and still allow a race
+    // on multi-threaded Tokio schedulers.  Cross-node races are bounded by gossip propagation
+    // and resolved by Guard 2 in the gossip handler (gossipsub_handler.rs:5946).
+    let db_key = format!(
+        "pending_withdraw_liquidity:{}:{}",
+        normalized_address.to_lowercase(),
+        request_id
+    );
+    let conflict_prefix = format!(
+        "pending_withdraw_liquidity:{}:",
+        normalized_address.to_lowercase()
+    );
+    let db = user_intent_manager.get_database();
+    match db.put_string_if_absent_async(&db_key, &pending, &conflict_prefix).await {
+        Ok(true) => {
+            info!(
+                "🔒 [WITHDRAW_LIQUIDITY] Atomically reserved request {} for solver {} (asset={}, amount={})",
+                request_id, normalized_address, asset, amount
+            );
+        }
+        Ok(false) => {
+            // A concurrent request slipped in between the earlier guard check and this write.
+            warn!(
+                "🚫 [WITHDRAW_LIQUIDITY] Atomic reserve rejected for solver {}: a {} request already exists (concurrent race detected)",
+                normalized_address, asset
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: liquidity_btc_str,
+                liquidity_tics: liquidity_tics_str,
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                tics_withdraw_tx_id: None,
+                btc_withdraw_tx_id: None,
+                message: format!(
+                    "A {} withdraw request is already pending. Wait for it to complete.",
+                    asset
+                ),
+                error_message: Some("Concurrent request detected".to_string()),
+            }));
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ [WITHDRAW_LIQUIDITY] DB error during atomic reserve for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: liquidity_btc_str,
+                liquidity_tics: liquidity_tics_str,
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                tics_withdraw_tx_id: None,
+                btc_withdraw_tx_id: None,
+                message: "Failed to reserve withdraw request slot".to_string(),
+                error_message: Some(format!("Database error: {}", e)),
+            }));
+        }
+    }
+
+    // Record is now in this node's DB.  Broadcast to peers so they also store it.
+    // The gossip handler on *this* node will see the record already present (Guard 2) and
+    // skip it; peer nodes will accept and persist it via the normal gossip path.
     let broadcast = ChannelMessage::PendingWithdrawRequestBroadcast {
         request: pending.clone(),
     };

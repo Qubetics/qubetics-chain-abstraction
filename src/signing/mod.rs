@@ -2598,18 +2598,129 @@ impl SigningNode {
                     .collect();
 
                 if !requests.is_empty() {
+                    use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
                     use crate::signing::chains::bitcoin_batch::BatchOutput;
+                    use ethers::types::Address;
+
+                    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+                    let contract_address_str = crate::env_defaults::solver_contract_address();
+                    let chain_id = crate::env_defaults::solver_contract_chain_id()
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
+                    let contract_configured =
+                        contract_address_str != "0x0000000000000000000000000000000000000000"
+                            && !contract_address_str.trim().is_empty();
+
+                    // Helper: mark a request as "Failed" in the DB so the solver's
+                    // in-flight slot is released and they can submit a new request.
+                    // Only used for conditions that are permanently unrecoverable.
+                    let mark_failed =
+                        |key: &str, req: &crate::types::rpc_server::PendingWithdrawRequest, reason: &str| {
+                            let mut failed = req.clone();
+                            failed.status = "Failed".to_string();
+                            if let Err(e) = db.put_string(key, &failed) {
+                                warn!(
+                                    "⚠️ [BTC_WITHDRAW] Failed to mark request {} as Failed ({}): {}",
+                                    req.request_id, reason, e
+                                );
+                            } else {
+                                warn!(
+                                    "🚫 [BTC_WITHDRAW] Marked request {} (solver {}) as Failed: {}",
+                                    req.request_id, req.solver_address, reason
+                                );
+                            }
+                        };
 
                     let mut batch_outputs: Vec<BatchOutput> = Vec::new();
-                    for (_, req) in &btc_to_process {
+                    for (key, req) in &btc_to_process {
                         let btc_addr = match &req.btc_address {
                             Some(addr) if !addr.trim().is_empty() => addr.clone(),
-                            _ => continue,
+                            _ => {
+                                // Missing address cannot self-heal — validated at creation time.
+                                mark_failed(key, req, "missing or empty btc_address");
+                                continue;
+                            }
                         };
                         let amount_sats: u64 = match req.amount.parse() {
                             Ok(amt) if amt >= 546 => amt,
-                            _ => continue,
+                            _ => {
+                                // Sub-dust amount cannot self-heal — validated at creation time.
+                                mark_failed(key, req, "amount below Bitcoin dust limit (546 sats)");
+                                continue;
+                            }
                         };
+
+                        // Re-validate the stored withdrawal amount against the current
+                        // on-chain BTC balance.  The balance was checked at request-creation
+                        // time; it may have decreased since then (e.g. slashing, other
+                        // settlement).  Skip this request if the contract confirms the solver
+                        // no longer holds enough liquidity to cover the requested amount.
+                        // On any contract-call failure, include the request and let the
+                        // contract revert if necessary (fail-safe rather than fail-closed).
+                        if contract_configured {
+                            enum CheckResult { Include, SkipRetry, FailPermanent(String) }
+                            let outcome: CheckResult = async {
+                                let contract_addr = match contract_address_str.parse::<Address>() {
+                                    Ok(a) => a,
+                                    Err(_) => return CheckResult::SkipRetry,
+                                };
+                                let config = ContractConfig {
+                                    rpc_url: rpc_url.clone(),
+                                    contract_address: contract_addr,
+                                    chain_id,
+                                };
+                                let client = match ContractClient::new(config.clone()) {
+                                    Ok(c) => c,
+                                    Err(_) => return CheckResult::SkipRetry,
+                                };
+                                let contract = match SolverManagerContract::new(&config, client.provider()) {
+                                    Ok(c) => c,
+                                    Err(_) => return CheckResult::SkipRetry,
+                                };
+                                let solver_evm = match req.solver_address.parse::<Address>() {
+                                    Ok(a) => a,
+                                    Err(_) => return CheckResult::FailPermanent("invalid solver EVM address".to_string()),
+                                };
+                                let solver_id = match contract.get_solver_id(solver_evm).await {
+                                    Ok(id) => id,
+                                    Err(_) => return CheckResult::SkipRetry,
+                                };
+                                if solver_id.trim().is_empty() {
+                                    // Solver de-registered from contract — permanent failure.
+                                    return CheckResult::FailPermanent(
+                                        "solver is no longer registered on the contract".to_string(),
+                                    );
+                                }
+                                let amounts = match contract.get_all_chain_amounts(&solver_id).await {
+                                    Ok(a) => a,
+                                    Err(_) => return CheckResult::SkipRetry,
+                                };
+                                // Index 0 = BTC
+                                let on_chain_btc = amounts.first().copied().unwrap_or_default();
+                                let on_chain_sats = on_chain_btc.as_u64();
+                                if amount_sats > on_chain_sats {
+                                    warn!(
+                                        "⚠️ [BTC_WITHDRAW] Skipping request {} for solver {}: stored amount {} sats exceeds current on-chain balance {} sats",
+                                        req.request_id, req.solver_address, amount_sats, on_chain_sats
+                                    );
+                                    // Balance may recover (e.g. more liquidity added) — skip, don't fail.
+                                    CheckResult::SkipRetry
+                                } else {
+                                    CheckResult::Include
+                                }
+                            }
+                            .await;
+
+                            match outcome {
+                                CheckResult::Include => {}
+                                CheckResult::SkipRetry => continue,
+                                CheckResult::FailPermanent(reason) => {
+                                    mark_failed(key, req, &reason);
+                                    continue;
+                                }
+                            }
+                        }
+
                         batch_outputs.push(BatchOutput {
                             address: btc_addr,
                             amount: amount_sats,

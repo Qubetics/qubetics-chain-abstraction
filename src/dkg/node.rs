@@ -19,7 +19,6 @@ struct DKGState {
     status: DKGStatus,
     threshold: usize,
     total_nodes: usize,
-    round: u64,
     my_permanent_index: Option<usize>, // Index assigned during initial DKG, never changes
 }
 
@@ -94,7 +93,6 @@ impl DKGNode {
             status: DKGStatus::New,
             threshold,
             total_nodes,
-            round: 0,
             my_permanent_index: None,
         };
         Self {
