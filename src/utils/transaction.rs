@@ -644,7 +644,12 @@ pub async fn create_tics_transaction(
     // Verify the sender's balance covers the transfer amount and maximum gas cost
     let max_gas_cost = (gas_limit as u128).saturating_mul(gas_price_u128);
     let required_balance = amount.saturating_add(max_gas_cost);
-    let current_balance = crate::rpc_server::utils::fetch_network_balance(from_address, chain_name)
+    // The balance API uses "eth" for all EVM-compatible chains (including qubetics/tics)
+    let balance_api_chain = match chain_name.to_lowercase().as_str() {
+        "qubetics" | "tics" => "eth",
+        other => other,
+    };
+    let current_balance = crate::rpc_server::utils::fetch_network_balance(from_address, balance_api_chain)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch EVM balance for {}: {}", from_address, e))?;
 
