@@ -954,6 +954,19 @@ impl MpcNetworkLayer {
                                     );
                                     continue;
                                 }
+                                // Do not revert if the vault tx was already submitted (tx_id in DB).
+                                let already_submitted = user_intent_manager
+                                    .get_intent_transaction_ids(h)
+                                    .await
+                                    .map(|ids| ids.user_to_network_tx_id.is_some())
+                                    .unwrap_or(false);
+                                if already_submitted && transaction_type != "intent_rejected" {
+                                    warn!(
+                                        "⚠️ [NETWORK] Intent {} already has UserToVault tx_id, skipping Pending revert",
+                                        h
+                                    );
+                                    continue;
+                                }
                                 let new_status = if transaction_type == "intent_rejected" {
                                     IntentStatus::Rejected
                                 } else {
@@ -2972,6 +2985,20 @@ impl MpcNetworkLayer {
                                 if matches!(current, Some(IntentStatus::Solved)) {
                                     continue;
                                 }
+                                // Do not revert if the vault tx was already submitted (tx_id in DB).
+                                // The tx may still confirm on-chain; reverting here would cause a double debit.
+                                let already_submitted = user_intent_manager
+                                    .get_intent_transaction_ids(intent_hash)
+                                    .await
+                                    .map(|ids| ids.user_to_network_tx_id.is_some())
+                                    .unwrap_or(false);
+                                if already_submitted {
+                                    warn!(
+                                        "⚠️ [TICS_UTV_BATCH] Intent {} already has UserToVault tx_id, skipping Pending revert",
+                                        intent_hash
+                                    );
+                                    continue;
+                                }
                                 if let Err(revert_err) = user_intent_manager
                                     .update_intent_status(
                                         user_eth_addr,
@@ -3409,6 +3436,19 @@ impl MpcNetworkLayer {
                                     .get_intent_status(user_eth_addr, intent_hash)
                                     .await;
                                 if matches!(current, Some(IntentStatus::Solved)) {
+                                    continue;
+                                }
+                                // Do not revert if the vault tx was already submitted (tx_id in DB).
+                                let already_submitted = user_intent_manager
+                                    .get_intent_transaction_ids(intent_hash)
+                                    .await
+                                    .map(|ids| ids.user_to_network_tx_id.is_some())
+                                    .unwrap_or(false);
+                                if already_submitted {
+                                    warn!(
+                                        "⚠️ [BTC_UTV_BATCH] Intent {} already has UserToVault tx_id, skipping Pending revert",
+                                        intent_hash
+                                    );
                                     continue;
                                 }
                                 if let Err(revert_err) = user_intent_manager

@@ -608,6 +608,11 @@ impl SigningNode {
             is_claim_reward_round
         );
 
+        // True when this call is for a UTV batch slot (one slot = one tx = one intent).
+        // Used below to bypass intent_hashes_by_round, which belongs to the N2T path
+        // and shares the same round number — using it here would broadcast to the wrong intents.
+        let is_batch_slot = intent_hash_override.is_some();
+
         let (intent_hash, transaction_type, retrieved_solver_address) = match txn_network {
             TransactionNetwork::TICS => {
                 if is_withdraw_round {
@@ -879,13 +884,18 @@ impl SigningNode {
                     }
                 };
 
-                // For batch transactions (BTC and TICS NetworkToTarget), check if there are multiple intent_hashes
-                // stored in intent_hashes_by_round. If so, broadcast with all intent_hashes so each one
-                // gets its network_to_target_tx_id updated.
-                let intent_hashes_to_broadcast = {
+                // UTV batch slots: each slot is one tx for one intent — broadcast only that intent's hash.
+                // Do NOT consult intent_hashes_by_round here: the same round number is also used by
+                // the N2T contract batch, which writes its own (unrelated) intent list there.
+                // Mixing the two would send UTV tx_ids to N2T intents and lose the UTV slot's tx_id.
+                //
+                // intent_hashes_by_round is only correct for N2T/IntentStatusUpdate batches where a
+                // single contract call covers multiple intents and all of them need the same tx_id.
+                let intent_hashes_to_broadcast = if is_batch_slot {
+                    vec![intent_hash.to_string()]
+                } else {
                     let intent_map = self.pending.intent_hashes_by_round.read().await;
                     if let Some(batch_intent_hashes) = intent_map.get(&round) {
-                        // If this is a batch transaction with multiple intent_hashes, use all of them
                         if batch_intent_hashes.len() > 1 {
                             info!(
                                 "📦 [SIGNING] Detected batch transaction with {} intent hashes for round {}",
@@ -894,11 +904,9 @@ impl SigningNode {
                             );
                             batch_intent_hashes.clone()
                         } else {
-                            // Single intent transaction, use the primary intent_hash
                             vec![intent_hash.to_string()]
                         }
                     } else {
-                        // Fallback to single intent_hash if not found in map
                         vec![intent_hash.to_string()]
                     }
                 };

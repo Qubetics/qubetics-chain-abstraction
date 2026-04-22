@@ -6,7 +6,7 @@ use crate::types::{
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Database-backed user storage
 #[derive(Clone)]
@@ -260,6 +260,23 @@ impl UserStorage {
         intent_hash: &str,
         status: IntentStatus,
     ) -> Result<()> {
+        // Solved is a terminal state — refuse any backward transition.
+        if !matches!(status, IntentStatus::Solved) {
+            let user_key = key_utils::user_key(tics_address);
+            if let Some(user) = self.get_user(tics_address).await? {
+                if matches!(
+                    user.intent_hashes.get(intent_hash),
+                    Some(IntentStatus::Solved)
+                ) {
+                    warn!(
+                        "⚠️ [USER_STORAGE] Refusing to overwrite Solved intent {} for user {} with {:?}",
+                        intent_hash, tics_address, status
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         // Update the separate intent status record
         let intent_key = key_utils::user_intent_key(tics_address, intent_hash);
         self.db.put_string(&intent_key, &status)?;
