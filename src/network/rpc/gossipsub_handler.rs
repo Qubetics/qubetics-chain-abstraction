@@ -3625,13 +3625,14 @@ impl MpcNetworkLayer {
                     };
 
                 // Build a lookup map keyed by (request_id, solver_address_lower)
+                // Value is (db_key, request) so we can update status on drop
                 let mut withdraw_map: std::collections::HashMap<
                     (String, String),
-                    PendingWithdrawRequest,
+                    (String, PendingWithdrawRequest),
                 > = std::collections::HashMap::new();
-                for (_key, req) in all_withdraws {
+                for (db_key, req) in all_withdraws {
                     let key = (req.request_id.clone(), req.solver_address.to_lowercase());
-                    withdraw_map.insert(key, req);
+                    withdraw_map.insert(key, (db_key, req));
                 }
 
                 // Build BatchOutput list from BTC withdraw requests
@@ -3640,7 +3641,7 @@ impl MpcNetworkLayer {
 
                 for (request_id, solver_address) in &requests {
                     let key = (request_id.clone(), solver_address.to_lowercase());
-                    if let Some(req) = withdraw_map.get(&key) {
+                    if let Some((_, req)) = withdraw_map.get(&key) {
                         // Only process BTC withdraws that are in Pending or Batched state and have no tx_id
                         if req.asset.to_uppercase() != "BTC"
                             || (req.status != "Pending" && req.status != "Batched")
@@ -3671,11 +3672,30 @@ impl MpcNetworkLayer {
                             }
                         };
 
-                        if amount_sats < 546 {
+                        // 830 = dust(546) + min_fee(base 100 + 1 output 34 + 1 input 150)
+                        const BTC_MIN_SATS: u64 = 830;
+                        if amount_sats < BTC_MIN_SATS {
                             warn!(
-                                "⚠️ [BTC_WITHDRAW] Withdraw request {} amount {} sats is below dust threshold, skipping",
-                                request_id, amount_sats
+                                "🚫 [BTC_WITHDRAW] Withdraw request {} amount {} sats is below minimum \
+                                {} sats (dust=546 + min_fee=284). Marking as Failed.",
+                                request_id, amount_sats, BTC_MIN_SATS
                             );
+                            let map_key = (request_id.clone(), solver_address.to_lowercase());
+                            if let Some((db_key, req)) = withdraw_map.get(&map_key) {
+                                let mut failed_req = req.clone();
+                                failed_req.status = "Failed".to_string();
+                                match db.put_string(db_key, &failed_req) {
+                                    Ok(_) => info!(
+                                        "🚫 [BTC_WITHDRAW] Marked request {} as Failed \
+                                        (amount={} sats, required={} sats = dust 546 + min_fee 284)",
+                                        request_id, amount_sats, BTC_MIN_SATS
+                                    ),
+                                    Err(e) => warn!(
+                                        "⚠️ [BTC_WITHDRAW] Failed to mark request {} as Failed in DB: {}",
+                                        request_id, e
+                                    ),
+                                }
+                            }
                             continue;
                         }
 
@@ -3825,7 +3845,8 @@ impl MpcNetworkLayer {
                 for (idx, output) in batch_outputs.into_iter().enumerate() {
                     let req_tuple = used_requests[idx].clone();
 
-                    if output.amount > fee_per_solver + policy.dust_threshold {
+                    let required_sats = fee_per_solver + policy.dust_threshold;
+                    if output.amount > required_sats {
                         valid_outputs.push(BatchOutput {
                             address: output.address,
                             amount: output.amount - fee_per_solver,
@@ -3833,9 +3854,28 @@ impl MpcNetworkLayer {
                         valid_requests.push(req_tuple);
                     } else {
                         warn!(
-                            "⚠️ [BTC_WITHDRAW] Dropping request {} because amount {} cannot cover fee {} + dust {}",
-                            req_tuple.0, output.amount, fee_per_solver, policy.dust_threshold
+                            "🚫 [BTC_WITHDRAW] Rejecting request {} (solver={}): {} sats < required {} sats \
+                            (fee_per_output={} + dust={}). Marking as Failed.",
+                            req_tuple.0, req_tuple.1, output.amount, required_sats,
+                            fee_per_solver, policy.dust_threshold
                         );
+                        let map_key = (req_tuple.0.clone(), req_tuple.1.to_lowercase());
+                        if let Some((db_key, req)) = withdraw_map.get(&map_key) {
+                            let mut failed_req = req.clone();
+                            failed_req.status = "Failed".to_string();
+                            match db.put_string(db_key, &failed_req) {
+                                Ok(_) => info!(
+                                    "🚫 [BTC_WITHDRAW] Marked request {} as Failed \
+                                    (amount={} sats, required={} sats = fee {} + dust {})",
+                                    req_tuple.0, output.amount, required_sats,
+                                    fee_per_solver, policy.dust_threshold
+                                ),
+                                Err(e) => warn!(
+                                    "⚠️ [BTC_WITHDRAW] Failed to mark request {} as Failed in DB: {}",
+                                    req_tuple.0, e
+                                ),
+                            }
+                        }
                     }
                 }
 

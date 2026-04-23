@@ -3188,6 +3188,41 @@ pub(crate) async fn handle_withdraw_liquidity(
         None
     };
 
+    // Reject BTC withdrawals that cannot cover fee + dust
+    if let Some(ref btc_amount_str) = withdraw_btc_amount {
+        const BTC_DUST_SATS: u64 = 546;
+        // Minimum fee: base_overhead(100) + 1 output(34) + 1 input(150)
+        const BTC_MIN_FEE_SATS: u64 = 284;
+        const BTC_MIN_WITHDRAW_SATS: u64 = BTC_DUST_SATS + BTC_MIN_FEE_SATS; // 830
+        let amount_sats: u64 = btc_amount_str.parse().unwrap_or(0);
+        if amount_sats < BTC_MIN_WITHDRAW_SATS {
+            let msg = format!(
+                "BTC withdraw rejected: {} sats is below the required minimum of {} sats \
+                (dust threshold: {} sats + estimated minimum fee: {} sats). \
+                Please submit at least {} sats.",
+                amount_sats, BTC_MIN_WITHDRAW_SATS, BTC_DUST_SATS, BTC_MIN_FEE_SATS,
+                BTC_MIN_WITHDRAW_SATS
+            );
+            info!(
+                "🚫 [WITHDRAW_LIQUIDITY] BTC amount too low for solver {}: {} sats < required {} sats \
+                (dust={} + min_fee={})",
+                normalized_address, amount_sats, BTC_MIN_WITHDRAW_SATS, BTC_DUST_SATS, BTC_MIN_FEE_SATS
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address.clone(),
+                liquidity_btc: liquidity_btc_str.clone(),
+                liquidity_tics: liquidity_tics_str.clone(),
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                tics_withdraw_tx_id: None,
+                btc_withdraw_tx_id: None,
+                message: msg.clone(),
+                error_message: Some(msg),
+            }));
+        }
+    }
+
     if withdraw_tics_amount.is_some() && withdraw_btc_amount.is_some() {
         let msg =
             "Only one liquidity type can be withdrawn per request. Provide amount_tics or amount_btc."
