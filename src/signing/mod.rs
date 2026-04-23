@@ -8056,6 +8056,11 @@ impl SigningNode {
         let (expected_digest, transaction_type, user_tics_address) =
             self.get_message_and_type_for_round(round, slot_id).await?;
 
+        // For ClaimPlatformFee TICS, the admin address is not stored in the pending store but
+        // is carried in the incoming signature message — fall back to it when needed.
+        let user_tics_address = user_tics_address
+            .or_else(|| signature.user_tics_address.clone());
+
         info!(
             "🔍 [SIGNING] Expected digest for round {}: 0x{}",
             round,

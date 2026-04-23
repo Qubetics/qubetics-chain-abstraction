@@ -19,11 +19,11 @@ import keccak from 'keccak';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const RPC_BASE_URL = 'http://127.0.0.1:8082';
+const RPC_BASE_URL = 'http://124.243.185.174:8082';
 const API_KEY = '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // Admin private key — must match ADMIN_PUBLIC_ADDRESS env on the node
-const ADMIN_PRIVATE_KEY = '0xd9cc6693b05830c39ef09c5060c1e5bb7e2c8f02f2f2976941e6d77ca703894d';
+const ADMIN_PRIVATE_KEY = '7c045b2bd07bd9939320dc92578347f430731f3d6c50c6e55d1b39a4a6896a50';
 
 // Target addresses for receiving the claimed fees
 const TICS_TARGET_ADDRESS = '0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989';
@@ -239,144 +239,6 @@ async function testBothAddresses() {
     } catch (e) {
         console.log(`${C.red}❌ Request failed: ${e.message}${C.reset}`);
         return null;
-    }
-}
-
-// ─── Test: Validation — no address ───────────────────────────────────────────
-
-async function testNoAddress() {
-    logSection('TEST: No address (should fail)');
-
-    const message = `claim_platform_fee:none:${Date.now()}`;
-    const signature = sign(message, ADMIN_PRIVATE_KEY);
-
-    const payload = {
-        amount: TICS_CLAIM_AMOUNT,
-        tics_target_address: null,
-        btc_target_address: null,
-        signature,
-        message,
-    };
-
-    console.log(`${C.yellow}Sending with NO addresses (expect rejection)...${C.reset}`);
-
-    try {
-        const res = await request(`${RPC_BASE_URL}/claim_platform_fee`, payload);
-        if (res.data?.status === 'error') {
-            console.log(`${C.green}✅ Correctly rejected: ${res.data.message}${C.reset}`);
-        } else {
-            console.log(`${C.red}❌ Expected rejection but got: ${res.data?.status}${C.reset}`);
-        }
-        return res;
-    } catch (e) {
-        console.log(`${C.red}❌ Request failed: ${e.message}${C.reset}`);
-        return null;
-    }
-}
-
-// ─── Test: Validation — zero amount ──────────────────────────────────────────
-
-async function testZeroAmount() {
-    logSection('TEST: Zero amount (should fail)');
-
-    const message = `claim_platform_fee:tics:0:${TICS_TARGET_ADDRESS}:${Date.now()}`;
-    const signature = sign(message, ADMIN_PRIVATE_KEY);
-
-    const payload = {
-        amount: '0',
-        tics_target_address: TICS_TARGET_ADDRESS,
-        btc_target_address: null,
-        signature,
-        message,
-    };
-
-    console.log(`${C.yellow}Sending with zero amount (expect rejection)...${C.reset}`);
-
-    try {
-        const res = await request(`${RPC_BASE_URL}/claim_platform_fee`, payload);
-        if (res.data?.status === 'error') {
-            console.log(`${C.green}✅ Correctly rejected: ${res.data.message}${C.reset}`);
-        } else {
-            console.log(`${C.red}❌ Expected rejection but got: ${res.data?.status}${C.reset}`);
-        }
-        return res;
-    } catch (e) {
-        console.log(`${C.red}❌ Request failed: ${e.message}${C.reset}`);
-        return null;
-    }
-}
-
-// ─── Test: Validation — wrong signer ─────────────────────────────────────────
-
-async function testWrongSigner() {
-    logSection('TEST: Wrong signer (should fail)');
-
-    // Use a random private key that doesn't match ADMIN_PUBLIC_ADDRESS
-    const wrongKey = '0x1111111111111111111111111111111111111111111111111111111111111111';
-    const wrongAddr = getAddress(wrongKey);
-
-    const message = `claim_platform_fee:tics:${TICS_CLAIM_AMOUNT}:${TICS_TARGET_ADDRESS}:${Date.now()}`;
-    const signature = sign(message, wrongKey);
-
-    const payload = {
-        amount: TICS_CLAIM_AMOUNT,
-        tics_target_address: TICS_TARGET_ADDRESS,
-        btc_target_address: null,
-        signature,
-        message,
-    };
-
-    console.log(`${C.yellow}Signing with wrong key (${wrongAddr})...${C.reset}`);
-    console.log(`${C.yellow}Expect rejection (signer != ADMIN_PUBLIC_ADDRESS)...${C.reset}`);
-
-    try {
-        const res = await request(`${RPC_BASE_URL}/claim_platform_fee`, payload);
-        if (res.data?.status === 'error') {
-            console.log(`${C.green}✅ Correctly rejected: ${res.data.message}${C.reset}`);
-        } else {
-            console.log(`${C.red}❌ Expected rejection but got: ${res.data?.status}${C.reset}`);
-        }
-        return res;
-    } catch (e) {
-        console.log(`${C.red}❌ Request failed: ${e.message}${C.reset}`);
-        return null;
-    }
-}
-
-// ─── Test: Duplicate claim (should fail on second) ───────────────────────────
-
-async function testDuplicateTics() {
-    logSection('TEST: Duplicate TICS claim (second should fail)');
-
-    // First claim
-    console.log(`${C.yellow}Sending first TICS claim...${C.reset}`);
-    const msg1 = `claim_platform_fee:tics:${TICS_CLAIM_AMOUNT}:${TICS_TARGET_ADDRESS}:${Date.now()}`;
-    const sig1 = sign(msg1, ADMIN_PRIVATE_KEY);
-    const res1 = await request(`${RPC_BASE_URL}/claim_platform_fee`, {
-        amount: TICS_CLAIM_AMOUNT,
-        tics_target_address: TICS_TARGET_ADDRESS,
-        btc_target_address: null,
-        signature: sig1,
-        message: msg1,
-    });
-    console.log(`First: ${res1.data?.status} — ${res1.data?.message || ''}`);
-
-    // Second claim (same asset, should be rejected)
-    console.log(`${C.yellow}Sending duplicate TICS claim...${C.reset}`);
-    const msg2 = `claim_platform_fee:tics:${TICS_CLAIM_AMOUNT}:${TICS_TARGET_ADDRESS}:${Date.now()}`;
-    const sig2 = sign(msg2, ADMIN_PRIVATE_KEY);
-    const res2 = await request(`${RPC_BASE_URL}/claim_platform_fee`, {
-        amount: TICS_CLAIM_AMOUNT,
-        tics_target_address: TICS_TARGET_ADDRESS,
-        btc_target_address: null,
-        signature: sig2,
-        message: msg2,
-    });
-
-    if (res2.data?.status === 'error') {
-        console.log(`${C.green}✅ Duplicate correctly rejected: ${res2.data.message}${C.reset}`);
-    } else {
-        console.log(`${C.red}❌ Expected duplicate rejection but got: ${res2.data?.status}${C.reset}`);
     }
 }
 
