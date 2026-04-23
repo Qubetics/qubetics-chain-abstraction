@@ -40,7 +40,7 @@ pub const DEFAULT_MAX_INTENTS_PER_CYCLE: &str = "8";
 /// Default verification address (solver add_liquidity verification).
 pub const DEFAULT_VERIFICATION_ADDRESS: &str = "0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9";
 /// Default admin Ethereum address (for register_admin / platform fee signing).
-pub const DEFAULT_ADMIN_PUBLIC_ADDRESS: &str = "0x88c8045Fd96b88394B67fcA04FC92172CF7E6940";
+pub const DEFAULT_ADMIN_PUBLIC_ADDRESS: &str = "0xF081639bf0d9e9d09E37dFA11c51442294948f4e";
 /// Default max TICS UserToVault intents per signing batch.
 pub const DEFAULT_MAX_TICS_USER_TO_VAULT_INTENTS_PER_BATCH: &str = "10";
 /// Default max BTC UserToVault intents per signing batch.

@@ -3197,10 +3197,7 @@ pub(crate) async fn handle_withdraw_liquidity(
         let amount_sats: u64 = btc_amount_str.parse().unwrap_or(0);
         if amount_sats < BTC_MIN_WITHDRAW_SATS {
             let msg = format!(
-                "BTC withdraw rejected: {} sats is below the required minimum of {} sats \
-                (dust threshold: {} sats + estimated minimum fee: {} sats). \
-                Please submit at least {} sats.",
-                amount_sats, BTC_MIN_WITHDRAW_SATS, BTC_DUST_SATS, BTC_MIN_FEE_SATS,
+                "Minimum BTC withdraw amount is 0.0000083 BTC ({} sats).",
                 BTC_MIN_WITHDRAW_SATS
             );
             info!(
