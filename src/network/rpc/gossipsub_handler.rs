@@ -917,7 +917,9 @@ impl MpcNetworkLayer {
                     }
                 }
 
-                // --- Revert IntentStatus-based intents (user_to_vault, network_to_target, etc.) ---
+                // --- Revert IntentStatus-based intents (user_to_vault, intent_rejected, etc.) ---
+                // N2T errors (network_to_target) do NOT update intent status — intents are retried
+                // naturally by get_intents_awaiting_network_fulfillment in the next epoch.
                 if let Some(user_intent_manager) = &self.user_intent_manager {
                     if !intent_hashes.is_empty() {
                         for h in &intent_hashes {
@@ -939,9 +941,16 @@ impl MpcNetworkLayer {
                                 );
                             }
 
-                            // Revert intent from Batched back to Pending so all nodes
-                            // stay in sync and the intent can be re-batched next cycle.
-                            // NEVER revert from Solved — that is a terminal state.
+                            // N2T errors: no status change — intent stays intact and is retried
+                            // in the next epoch via get_intents_awaiting_network_fulfillment.
+                            if transaction_type == "network_to_target" {
+                                debug!(
+                                    "⏭️ [NETWORK] N2T error for intent {} — no status change, will retry in next epoch",
+                                    h
+                                );
+                                continue;
+                            }
+
                             if let Some(user) = user_intent_manager.get_user_by_intent_hash(h).await
                             {
                                 let current_status = user_intent_manager
@@ -949,43 +958,122 @@ impl MpcNetworkLayer {
                                     .await;
                                 if matches!(current_status, Some(IntentStatus::Solved)) {
                                     debug!(
-                                        "⏭️ [NETWORK] Skipping revert for intent {} — already Solved",
+                                        "⏭️ [NETWORK] Skipping status update for intent {} — already Solved",
                                         h
                                     );
                                     continue;
                                 }
-                                // Do not revert if the vault tx was already submitted (tx_id in DB).
+                                // Invariant: once UTV tx_id is stored the intent is committed —
+                                // no broadcast (including intent_rejected) can mark it Rejected.
                                 let already_submitted = user_intent_manager
                                     .get_intent_transaction_ids(h)
                                     .await
                                     .map(|ids| ids.user_to_network_tx_id.is_some())
                                     .unwrap_or(false);
-                                if already_submitted && transaction_type != "intent_rejected" {
+                                if already_submitted {
                                     warn!(
-                                        "⚠️ [NETWORK] Intent {} already has UserToVault tx_id, skipping Pending revert",
-                                        h
+                                        "⚠️ [NETWORK] Intent {} already has UserToVault tx_id, ignoring {} broadcast",
+                                        h, transaction_type
                                     );
                                     continue;
                                 }
-                                let new_status = if transaction_type == "intent_rejected" {
-                                    IntentStatus::Rejected
-                                } else {
-                                    IntentStatus::Pending
-                                };
 
-                                if let Err(e) = user_intent_manager
-                                    .update_intent_status(&user.tics_address, h, new_status.clone())
-                                    .await
-                                {
-                                    warn!(
-                                        "⚠️ [NETWORK] Failed to transition intent {} to {:?}: {}",
-                                        h, new_status, e
-                                    );
+                                if transaction_type == "intent_rejected" {
+                                    // Each node independently validates balance before accepting
+                                    // the rejection — never blindly trust the broadcaster's result.
+                                    let should_reject = if let Some(intent) =
+                                        user_intent_manager.get_intent(h).await
+                                    {
+                                        match intent.amount.trim().parse::<u128>() {
+                                            Ok(source_amount) if source_amount > 0 => {
+                                                let is_btc =
+                                                    intent.source_chain.eq_ignore_ascii_case("btc")
+                                                    || intent.source_chain.eq_ignore_ascii_case("bitcoin");
+                                                let source_blockchain =
+                                                    if is_btc { "btc" } else { "eth" };
+                                                let estimated_tx_fee: u128 =
+                                                    if is_btc { 1_000 } else { 300_000_000_000_000 };
+                                                let fee_bps =
+                                                    crate::contract::fetch_dynamic_fee_bps().await;
+                                                let dynamic_fee_buffer =
+                                                    (source_amount * fee_bps) / 10000;
+                                                let required_balance = source_amount
+                                                    + dynamic_fee_buffer
+                                                    + estimated_tx_fee;
+                                                match crate::rpc_server::utils::fetch_network_balance(
+                                                    &intent.source_address,
+                                                    source_blockchain,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(user_balance) => {
+                                                        if user_balance >= required_balance {
+                                                            warn!(
+                                                                "⚠️ [NETWORK] Intent {} rejected by peer {} but local balance check shows sufficient funds ({} >= {}), ignoring rejection",
+                                                                h, node_id, user_balance, required_balance
+                                                            );
+                                                            false
+                                                        } else {
+                                                            true
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        // Balance fetch failed — conservatively accept rejection
+                                                        warn!(
+                                                            "⚠️ [NETWORK] Balance check failed for intent {} ({}), accepting rejection from peer {}",
+                                                            h, e, node_id
+                                                        );
+                                                        true
+                                                    }
+                                                }
+                                            }
+                                            _ => true, // Invalid amount — accept rejection
+                                        }
+                                    } else {
+                                        true // Intent not found locally — accept rejection
+                                    };
+
+                                    if !should_reject {
+                                        continue;
+                                    }
+                                    if let Err(e) = user_intent_manager
+                                        .update_intent_status(
+                                            &user.tics_address,
+                                            h,
+                                            IntentStatus::Rejected,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "⚠️ [NETWORK] Failed to mark intent {} as Rejected: {}",
+                                            h, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "🔄 [NETWORK] Marked intent {} as Rejected (balance confirmed insufficient, synced from node {})",
+                                            h, node_id
+                                        );
+                                    }
                                 } else {
-                                    info!(
-                                        "🔄 [NETWORK] Transitioned intent {} to {:?} for user {} (synced from node {})",
-                                        h, new_status, user.tics_address, node_id
-                                    );
+                                    // user_to_vault and other types: revert to Pending for retry
+                                    if let Err(e) = user_intent_manager
+                                        .update_intent_status(
+                                            &user.tics_address,
+                                            h,
+                                            IntentStatus::Pending,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "⚠️ [NETWORK] Failed to revert intent {} to Pending: {}",
+                                            h, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "🔄 [NETWORK] Reverted intent {} to Pending for user {} (synced from node {})",
+                                            h, user.tics_address, node_id
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2572,51 +2660,10 @@ impl MpcNetworkLayer {
                                     )
                                     .await
                                 {
-                                    warn!("❌ [TICS_BATCH] TICS NetworkToTarget batch signing failed for round {}: {}", round, e);
-
-                                    // Revert intents locally (never revert Solved)
-                                    if let Some(uim) = &self.user_intent_manager {
-                                        for h in &intent_hashes {
-                                            if let Some(user) = uim.get_user_by_intent_hash(h).await
-                                            {
-                                                let current = uim
-                                                    .get_intent_status(&user.tics_address, h)
-                                                    .await;
-                                                if matches!(current, Some(IntentStatus::Solved)) {
-                                                    continue;
-                                                }
-                                                let _ = uim
-                                                    .update_intent_status(
-                                                        &user.tics_address,
-                                                        h,
-                                                        IntentStatus::Pending,
-                                                    )
-                                                    .await;
-                                                info!(
-                                                    "🔄 [TICS_BATCH] Reverted intent {} to Pending",
-                                                    h
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Broadcast error so other nodes also revert
-                                    let error_msg = GossipsubMessage::TransactionErrorBroadcast {
-                                        intent_hashes: intent_hashes.clone(),
-                                        error_message: format!("TICS NetworkToTarget batch signing failed for round {}: {}", round, e),
-                                        transaction_type: "network_to_target".to_string(),
-                                        solver_address: None,
-                                        node_id: self.local_peer_id.to_string(),
-                                    };
-                                    if let Ok(data) = serde_json::to_vec(&error_msg) {
-                                        let _ = self
-                                            .message_tx
-                                            .send(ChannelMessage::Broadcast {
-                                                topic: "transaction-sync".to_string(),
-                                                data,
-                                            })
-                                            .await;
-                                    }
+                                    // Intents are NOT reverted on N2T signing failure — they retain
+                                    // their current status and will be retried automatically by
+                                    // get_intents_awaiting_network_fulfillment in the next epoch.
+                                    warn!("❌ [TICS_BATCH] TICS NetworkToTarget batch signing failed for round {}: {} — intents will retry in next epoch", round, e);
                                 } else {
                                     info!(
                                         "✅ [TICS_BATCH] Submitted processBatchIntents contract transaction into MPC signing flow ({} intents, nonce: {:?})",
@@ -2800,7 +2847,7 @@ impl MpcNetworkLayer {
                                     Ok(user_balance) => {
                                         if user_balance < required_balance {
                                             tracing::warn!(
-                                                "⚠️ [TICS_UTV_BATCH] Insufficient balance for intent in batch {}: has {}, needs {}. Rejecting locally.",
+                                                "⚠️ [TICS_UTV_BATCH] Insufficient balance for intent {}: has {}, needs {}. Rejecting and broadcasting.",
                                                 intent_hash, user_balance, required_balance
                                             );
                                             if let Err(e) = user_intent_manager
@@ -2812,6 +2859,26 @@ impl MpcNetworkLayer {
                                                 .await
                                             {
                                                 tracing::error!("Failed to update intent status to Rejected for {}: {}", intent_hash, e);
+                                            }
+                                            // Broadcast rejection so all nodes reach consensus on Rejected status
+                                            let rejection_msg = GossipsubMessage::TransactionErrorBroadcast {
+                                                intent_hashes: vec![intent_hash.clone()],
+                                                error_message: format!(
+                                                    "Insufficient balance: has {}, needs {}",
+                                                    user_balance, required_balance
+                                                ),
+                                                transaction_type: "intent_rejected".to_string(),
+                                                solver_address: None,
+                                                node_id: self.local_peer_id.to_string(),
+                                            };
+                                            if let Ok(data) = serde_json::to_vec(&rejection_msg) {
+                                                let _ = self
+                                                    .message_tx
+                                                    .send(ChannelMessage::Broadcast {
+                                                        topic: "transaction-sync".to_string(),
+                                                        data,
+                                                    })
+                                                    .await;
                                             }
                                             continue;
                                         }

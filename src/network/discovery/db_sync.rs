@@ -364,21 +364,37 @@ impl MpcNetworkLayer {
                         );
                         skipped += 1;
 
-                        // However, merge intent_hashes from the peer that might be newer
+                        // Merge intent_hashes from the peer: add new intents AND update
+                        // statuses of existing ones so restarted nodes converge to the
+                        // network's current state. Solved is terminal — never overwrite it.
                         match bincode::deserialize::<UserRegistration>(&entry.value) {
                             Ok(incoming_user) => {
                                 let mut merged_user = existing_user;
                                 let mut intents_added = 0usize;
-                                for (hash, status) in incoming_user.intent_hashes {
-                                    if !merged_user.intent_hashes.contains_key(&hash) {
-                                        merged_user.intent_hashes.insert(hash, status);
-                                        intents_added += 1;
+                                let mut intents_updated = 0usize;
+                                for (hash, peer_status) in incoming_user.intent_hashes {
+                                    use crate::types::user_intent::IntentStatus;
+                                    match merged_user.intent_hashes.get(&hash) {
+                                        None => {
+                                            // New intent not yet known locally — add it
+                                            merged_user.intent_hashes.insert(hash, peer_status);
+                                            intents_added += 1;
+                                        }
+                                        Some(IntentStatus::Solved) => {
+                                            // Solved is terminal — never overwrite
+                                        }
+                                        Some(local_status) if *local_status != peer_status => {
+                                            // Peer has a different (fresher) status — converge to it
+                                            merged_user.intent_hashes.insert(hash, peer_status);
+                                            intents_updated += 1;
+                                        }
+                                        _ => {} // Same status — nothing to do
                                     }
                                 }
-                                if intents_added > 0 {
+                                if intents_added > 0 || intents_updated > 0 {
                                     info!(
-                                        "📋 [STATE_SYNC] Merged {} new intent(s) for existing user {}",
-                                        intents_added, key_str
+                                        "📋 [STATE_SYNC] Merged intent(s) for existing user {}: {} added, {} status-updated",
+                                        key_str, intents_added, intents_updated
                                     );
                                     if let Ok(merged_bytes) = bincode::serialize(&merged_user) {
                                         new_entries.push((entry.key, merged_bytes));

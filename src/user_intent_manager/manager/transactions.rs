@@ -525,8 +525,10 @@ impl UserIntentManager {
 
         for (tics_address, user) in &users {
             for (intent_hash, status) in &user.intent_hashes {
-                // Only target intents still in Pending or Batched
-                if !matches!(status, IntentStatus::Pending | IntentStatus::Batched) {
+                // Only target truly stuck Pending intents.
+                // Batched intents are under active UTV signing — the UTV failure handler
+                // reverts them to Pending if signing fails, so TTL must not cancel them.
+                if !matches!(status, IntentStatus::Pending) {
                     continue;
                 }
 
