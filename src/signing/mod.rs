@@ -8056,11 +8056,6 @@ impl SigningNode {
         let (expected_digest, transaction_type, user_tics_address) =
             self.get_message_and_type_for_round(round, slot_id).await?;
 
-        // For ClaimPlatformFee TICS, the admin address is not stored in the pending store but
-        // is carried in the incoming signature message — fall back to it when needed.
-        let user_tics_address = user_tics_address
-            .or_else(|| signature.user_tics_address.clone());
-
         info!(
             "🔍 [SIGNING] Expected digest for round {}: 0x{}",
             round,
@@ -9312,23 +9307,40 @@ impl SigningNode {
                     tics.contains_key(&round)
                 };
                 if is_tics_round {
-                    // TICS platform fee: admin-specific user-share pubkey
-                    if let Some(admin_addr) = user_tics_address {
-                        dkg_storage
-                            .get_user_share_pubkey(peer_id, admin_addr)
-                            .await?
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "Admin share pubkey not found for peer {} and admin {} (ClaimPlatformFee TICS round {})",
-                                    peer_id, admin_addr, round
-                                )
-                            })
+                    // TICS platform fee: admin-specific user-share pubkey.
+                    // Resolve the admin registration address from DB when not forwarded
+                    // by the signing peer, so verification never depends on the sender.
+                    let resolved_owned: String;
+                    let admin_addr: &str = if let Some(addr) = user_tics_address {
+                        addr
+                    } else if let Some(db) = &self.database {
+                        use crate::database::storage::UserStorage;
+                        let user_storage = UserStorage::new(db.as_ref().clone());
+                        match user_storage.get_all_admins().await {
+                            Ok(admins) if !admins.is_empty() => {
+                                resolved_owned = admins.into_keys().next().unwrap();
+                                &resolved_owned
+                            }
+                            _ => return Err(anyhow!(
+                                "No admin registered in DB — cannot verify ClaimPlatformFee TICS share pubkey for peer {} round {}",
+                                peer_id, round
+                            )),
+                        }
                     } else {
-                        Err(anyhow!(
-                            "ClaimPlatformFee TICS round {} requires admin tics_address for share pubkey verification (peer: {})",
-                            round, peer_id
-                        ))
-                    }
+                        return Err(anyhow!(
+                            "Database unavailable — cannot resolve admin for ClaimPlatformFee TICS share pubkey for peer {} round {}",
+                            peer_id, round
+                        ));
+                    };
+                    dkg_storage
+                        .get_user_share_pubkey(peer_id, admin_addr)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Admin share pubkey not found for peer {} and admin {} (ClaimPlatformFee TICS round {})",
+                                peer_id, admin_addr, round
+                            )
+                        })
                 } else {
                     // BTC platform fee: network share (existing behavior)
                     dkg_storage
