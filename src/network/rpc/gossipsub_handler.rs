@@ -6061,8 +6061,10 @@ impl MpcNetworkLayer {
                 }
 
                 let key = format!(
-                    "pending_withdraw_liquidity:{}:{}",
-                    solver_lower, request.request_id
+                    "pending_withdraw_liquidity:{}:{}:{}",
+                    solver_lower,
+                    request.asset.to_lowercase(),
+                    request.request_id
                 );
 
                 // Use put_string_if_absent_async so that a duplicate gossip delivery of the

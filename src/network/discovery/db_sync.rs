@@ -377,6 +377,10 @@ impl MpcNetworkLayer {
                                     match merged_user.intent_hashes.get(&hash) {
                                         None => {
                                             // New intent not yet known locally — add it
+                                            info!(
+                                                "📋 [STATE_SYNC] Intent {} added for user {} (peer status: {:?})",
+                                                hash, key_str, peer_status
+                                            );
                                             merged_user.intent_hashes.insert(hash, peer_status);
                                             intents_added += 1;
                                         }
@@ -385,6 +389,10 @@ impl MpcNetworkLayer {
                                         }
                                         Some(local_status) if *local_status != peer_status => {
                                             // Peer has a different (fresher) status — converge to it
+                                            info!(
+                                                "🔄 [STATE_SYNC] Intent {} status overridden for user {}: {:?} → {:?} (peer)",
+                                                hash, key_str, local_status, peer_status
+                                            );
                                             merged_user.intent_hashes.insert(hash, peer_status);
                                             intents_updated += 1;
                                         }

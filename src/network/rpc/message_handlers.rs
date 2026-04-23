@@ -239,7 +239,7 @@ impl MpcNetworkLayer {
 
             let db = &self.db;
             let key = format!(
-                "pending_withdraw_liquidity:{}:{}",
+                "pending_withdraw_liquidity:{}:btc:{}",
                 solver_address.to_lowercase(),
                 req_id
             );
@@ -297,19 +297,26 @@ impl MpcNetworkLayer {
             let solver_lower = solver_address.to_lowercase();
 
             if let Some(req_id) = request_id {
-                // Batch: update only the specific request
-                let key = format!("pending_withdraw_liquidity:{}:{}", solver_lower, req_id);
-                let maybe_req: Option<PendingWithdrawRequest> = match db
-                    .get_string::<PendingWithdrawRequest>(&key)
+                // Batch: update only the specific request.
+                // Asset is not known at call time (a BTC request can appear in a TICS batch),
+                // so locate the record via solver prefix scan and match on request_id.
+                let solver_prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);
+                let all_entries: Vec<(String, PendingWithdrawRequest)> = match db
+                    .get_values_with_prefix(&solver_prefix)
                 {
                     Ok(v) => v,
                     Err(e) => {
                         warn!(
-                                "⚠️ [TICS_WITHDRAW] Failed to load pending withdraw {} for solver {} when applying txid {}: {}",
-                                req_id, solver_address, transaction_id, e
-                            );
+                            "⚠️ [TICS_WITHDRAW] Failed to load pending withdraws for solver {} when applying txid {}: {}",
+                            solver_address, transaction_id, e
+                        );
                         return Ok(());
                     }
+                };
+                let found = all_entries.into_iter().find(|(_, r)| r.request_id == req_id);
+                let (key, maybe_req) = match found {
+                    Some((k, r)) => (k, Some(r)),
+                    None => (String::new(), None),
                 };
 
                 if let Some(mut req) = maybe_req {

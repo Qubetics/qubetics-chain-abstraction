@@ -2762,14 +2762,37 @@ pub(crate) async fn handle_claim_reward(
         normalized_address.to_lowercase()
     );
     let db = user_intent_manager.get_database();
-    match db.put_string_if_absent_async(&db_key, &pending, &conflict_prefix).await {
-        Ok(true) => {
+
+    // Status-aware atomic reserve: only conflict on Pending/Batched records.
+    // Completed records are ignored so a finished claim never blocks the next one.
+    let db_clone = db.clone();
+    let pending_clone = pending.clone();
+    let db_key_clone = db_key.clone();
+    let conflict_prefix_clone = conflict_prefix.clone();
+    let reserve_result = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let existing = db_clone
+            .get_values_with_prefix::<crate::types::rpc_server::PendingClaimRewardRequest>(
+                &conflict_prefix_clone,
+            )?;
+        let has_active = existing
+            .iter()
+            .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+        if has_active {
+            return Ok(false);
+        }
+        db_clone.put_string(&db_key_clone, &pending_clone)?;
+        Ok(true)
+    })
+    .await;
+
+    match reserve_result {
+        Ok(Ok(true)) => {
             info!(
                 "🔒 [CLAIM_REWARD] Atomically reserved request {} for solver {}",
                 request_id, normalized_address
             );
         }
-        Ok(false) => {
+        Ok(Ok(false)) => {
             warn!(
                 "🚫 [CLAIM_REWARD] Atomic reserve rejected for solver {}: concurrent claim detected",
                 normalized_address
@@ -2786,7 +2809,7 @@ pub(crate) async fn handle_claim_reward(
                 btc_reward_tx_id: None,
             }));
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!(
                 "⚠️ [CLAIM_REWARD] DB error during atomic reserve for solver {}: {}",
                 normalized_address, e
@@ -2799,6 +2822,23 @@ pub(crate) async fn handle_claim_reward(
                 reward_tics: None,
                 message: "Failed to reserve claim reward request slot".to_string(),
                 error_message: Some(format!("Database error: {}", e)),
+                tics_reward_tx_id: None,
+                btc_reward_tx_id: None,
+            }));
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ [CLAIM_REWARD] Task error during atomic reserve for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&ClaimRewardResponse {
+                status: "error".to_string(),
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                reward_btc: None,
+                reward_tics: None,
+                message: "Failed to reserve claim reward request slot".to_string(),
+                error_message: Some(format!("Task error: {}", e)),
                 tics_reward_tx_id: None,
                 btc_reward_tx_id: None,
             }));
@@ -3315,25 +3355,54 @@ pub(crate) async fn handle_withdraw_liquidity(
     // Using the synchronous variant would block the async runtime thread and still allow a race
     // on multi-threaded Tokio schedulers.  Cross-node races are bounded by gossip propagation
     // and resolved by Guard 2 in the gossip handler (gossipsub_handler.rs:5946).
+    // Key is scoped to solver+asset so a pending TICS withdraw does not block a BTC
+    // withdraw and vice versa.
     let db_key = format!(
-        "pending_withdraw_liquidity:{}:{}",
+        "pending_withdraw_liquidity:{}:{}:{}",
         normalized_address.to_lowercase(),
+        asset.to_lowercase(),
         request_id
     );
     let conflict_prefix = format!(
-        "pending_withdraw_liquidity:{}:",
-        normalized_address.to_lowercase()
+        "pending_withdraw_liquidity:{}:{}:",
+        normalized_address.to_lowercase(),
+        asset.to_lowercase()
     );
     let db = user_intent_manager.get_database();
-    match db.put_string_if_absent_async(&db_key, &pending, &conflict_prefix).await {
-        Ok(true) => {
+
+    // Status-aware atomic reserve: scan the per-asset prefix and only conflict on
+    // Pending/Batched records.  Completed records are ignored so a finished withdraw
+    // never blocks the next one.  Runs inside spawn_blocking so the scan+write pair
+    // has no async yield point, preserving the same TOCTOU safety as before.
+    let db_clone = db.clone();
+    let pending_clone = pending.clone();
+    let db_key_clone = db_key.clone();
+    let conflict_prefix_clone = conflict_prefix.clone();
+    let reserve_result = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let existing = db_clone
+            .get_values_with_prefix::<crate::types::rpc_server::PendingWithdrawRequest>(
+                &conflict_prefix_clone,
+            )?;
+        let has_active = existing
+            .iter()
+            .any(|(_, r)| r.status == "Pending" || r.status == "Batched");
+        if has_active {
+            return Ok(false);
+        }
+        db_clone.put_string(&db_key_clone, &pending_clone)?;
+        Ok(true)
+    })
+    .await;
+
+    match reserve_result {
+        Ok(Ok(true)) => {
             info!(
                 "🔒 [WITHDRAW_LIQUIDITY] Atomically reserved request {} for solver {} (asset={}, amount={})",
                 request_id, normalized_address, asset, amount
             );
         }
-        Ok(false) => {
-            // A concurrent request slipped in between the earlier guard check and this write.
+        Ok(Ok(false)) => {
+            // A concurrent Pending/Batched request exists for the same solver+asset.
             warn!(
                 "🚫 [WITHDRAW_LIQUIDITY] Atomic reserve rejected for solver {}: a {} request already exists (concurrent race detected)",
                 normalized_address, asset
@@ -3354,7 +3423,7 @@ pub(crate) async fn handle_withdraw_liquidity(
                 error_message: Some("Concurrent request detected".to_string()),
             }));
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!(
                 "⚠️ [WITHDRAW_LIQUIDITY] DB error during atomic reserve for solver {}: {}",
                 normalized_address, e
@@ -3370,6 +3439,24 @@ pub(crate) async fn handle_withdraw_liquidity(
                 btc_withdraw_tx_id: None,
                 message: "Failed to reserve withdraw request slot".to_string(),
                 error_message: Some(format!("Database error: {}", e)),
+            }));
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ [WITHDRAW_LIQUIDITY] Task error during atomic reserve for solver {}: {}",
+                normalized_address, e
+            );
+            return Ok(warp::reply::json(&WithdrawLiquidityResponse {
+                status: "error".to_string(),
+                solver_address: normalized_address,
+                liquidity_btc: liquidity_btc_str,
+                liquidity_tics: liquidity_tics_str,
+                tics_address: req.tics_address.clone(),
+                btc_address: req.btc_address.clone(),
+                tics_withdraw_tx_id: None,
+                btc_withdraw_tx_id: None,
+                message: "Failed to reserve withdraw request slot".to_string(),
+                error_message: Some(format!("Task error: {}", e)),
             }));
         }
     }
