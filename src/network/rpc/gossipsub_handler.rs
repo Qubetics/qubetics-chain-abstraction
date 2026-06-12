@@ -6073,6 +6073,196 @@ impl MpcNetworkLayer {
                 }
                 // ── End signature verification ────────────────────────────────────────────
 
+                // ── On-chain liquidity + minimum validation ───────────────────────────────
+                // Every receiving node independently re-validates the requested amount
+                // against live on-chain state so a rogue peer cannot bypass the RPC
+                // handler's checks by broadcasting a forged gossip message directly.
+                {
+                    use crate::contract::{ContractClient, ContractConfig, SolverManagerContract};
+                    use ethers::types::{Address, U256};
+
+                    let rpc_url = crate::env_defaults::solver_contract_rpc_url();
+                    let contract_address_env = crate::env_defaults::solver_contract_address();
+                    let chain_id = crate::env_defaults::solver_contract_chain_id()
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| crate::env_defaults::mpc_tics_chain_id());
+
+                    if contract_address_env == "0x0000000000000000000000000000000000000000"
+                        || contract_address_env.trim().is_empty()
+                    {
+                        warn!(
+                            "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: solver contract not configured",
+                            request.request_id
+                        );
+                        return Ok(());
+                    }
+
+                    let contract_addr = match contract_address_env.parse::<Address>() {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid contract address: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    let solver_evm_addr = match request.solver_address.parse::<Address>() {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid solver address: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    let config = ContractConfig {
+                        rpc_url,
+                        contract_address: contract_addr,
+                        chain_id,
+                    };
+
+                    let client = match ContractClient::new(config.clone()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: failed to create contract client: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    let contract = match SolverManagerContract::new(&config, client.provider()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: failed to init contract: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    // Resolve solver ID — confirms solver is registered
+                    let solver_id = match contract.get_solver_id(solver_evm_addr).await {
+                        Ok(id) if !id.trim().is_empty() => id,
+                        Ok(_) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: solver {} not registered on contract",
+                                request.request_id, request.solver_address
+                            );
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: getSolverId failed: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    // Fetch on-chain balances and validate requested amount does not exceed available
+                    let amounts = match contract.get_all_chain_amounts(&solver_id).await {
+                        Ok(a) => a,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: getSolverAllChainAmounts failed: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    // index 0 = BTC, index 1 = TICS (same convention as RPC handler)
+                    let available: U256 = match request.asset.to_uppercase().as_str() {
+                        "BTC" => amounts.get(0).copied().unwrap_or(U256::zero()),
+                        "TICS" => amounts.get(1).copied().unwrap_or(U256::zero()),
+                        _ => U256::zero(),
+                    };
+
+                    let requested = match U256::from_dec_str(&request.amount) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: invalid amount '{}': {}",
+                                request.request_id, request.amount, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    if requested > available {
+                        warn!(
+                            "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: requested {} exceeds on-chain {} balance {} for solver {}",
+                            request.request_id, requested, request.asset, available, request.solver_address
+                        );
+                        return Ok(());
+                    }
+
+                    // Check node vs non-node status and enforce correct minimum remaining
+                    let is_node_solver = match contract.is_solver_id_validated(&solver_id).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(
+                                "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: isSolverIdValidated failed: {}",
+                                request.request_id, e
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    let (btc_minimum, tics_minimum, btc_node_minimum, tics_node_minimum) =
+                        match contract.get_minimum_liquidities().await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                warn!(
+                                    "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: getMinimumLiquidities failed: {}",
+                                    request.request_id, e
+                                );
+                                return Ok(());
+                            }
+                        };
+
+                    let min_required: U256 = match request.asset.to_uppercase().as_str() {
+                        "BTC" => {
+                            if is_node_solver {
+                                btc_node_minimum
+                            } else {
+                                btc_minimum
+                            }
+                        }
+                        "TICS" => {
+                            if is_node_solver {
+                                tics_node_minimum
+                            } else {
+                                tics_minimum
+                            }
+                        }
+                        _ => U256::zero(),
+                    };
+
+                    // Remaining after withdrawal must be zero (full withdraw) or >= minimum
+                    let remaining = available.saturating_sub(requested);
+                    if !remaining.is_zero() && remaining < min_required {
+                        warn!(
+                            "🚫 [WITHDRAW_LIQUIDITY] Rejecting gossip withdraw {}: withdrawal would leave {} {} remaining, below {} minimum for solver {} (is_node={})",
+                            request.request_id, remaining, request.asset, min_required, request.solver_address, is_node_solver
+                        );
+                        return Ok(());
+                    }
+
+                    info!(
+                        "✅ [WITHDRAW_LIQUIDITY] Gossip withdraw {} passed on-chain validation: solver={}, asset={}, amount={}, available={}, is_node={}",
+                        request.request_id, request.solver_address, request.asset, requested, available, is_node_solver
+                    );
+                }
+                // ── End on-chain validation ───────────────────────────────────────────────
+
                 // Persist only if this solver has no existing Pending/Batched request for the same asset (one in-flight per solver per asset).
                 let solver_lower = request.solver_address.to_lowercase();
                 let prefix = format!("pending_withdraw_liquidity:{}:", solver_lower);

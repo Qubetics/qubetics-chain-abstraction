@@ -2968,7 +2968,7 @@ pub(crate) async fn handle_withdraw_liquidity(
 
     // All solver and liquidity checks below use the SolverManager contract only (no DB).
     // Contract config: SOLVER_CONTRACT_ADDRESS, SOLVER_CONTRACT_RPC_URL, SOLVER_CONTRACT_CHAIN_ID.
-    // Liquidity and minimums are fetched via get_solver_id, get_all_chain_amounts, get_minimum_liquidity_*.
+    // Liquidity and minimums are fetched via get_solver_id, get_all_chain_amounts, get_minimum_liquidities.
     let (liquidity_btc_str, liquidity_tics_str) =
         match fetch_solver_liquidity_from_contract(&normalized_address).await {
             Ok((btc, tics)) => (btc, tics),
@@ -3089,11 +3089,71 @@ pub(crate) async fn handle_withdraw_liquidity(
                 }
             };
 
-        let min_tics = if wants_tics {
-            Some(match solver_contract.get_minimum_liquidity_tics().await {
+        // Resolve solver ID from EVM address to check node-runner status
+        let solver_addr_parsed = match normalized_address.parse::<Address>() {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("Failed to parse solver address: {e}");
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+        };
+
+        let solver_id_for_min = match solver_contract.get_solver_id(solver_addr_parsed).await {
+            Ok(id) if !id.trim().is_empty() => id,
+            Ok(_) => {
+                let msg = "Solver not registered on contract".to_string();
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+            Err(e) => {
+                let msg = format!("Failed to resolve solver ID: {e}");
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+        };
+
+        let is_node_solver = match solver_contract
+            .is_solver_id_validated(&solver_id_for_min)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("Failed to check solver validation status: {e}");
+                return Ok(warp::reply::json(&withdraw_error_response(
+                    normalized_address.clone(),
+                    &liquidity_btc_str,
+                    &liquidity_tics_str,
+                    &req,
+                    msg.clone(),
+                    Some(msg),
+                )));
+            }
+        };
+
+        let (btc_minimum, tics_minimum, btc_node_minimum, tics_node_minimum) =
+            match solver_contract.get_minimum_liquidities().await {
                 Ok(v) => v,
                 Err(e) => {
-                    let msg = format!("Failed to fetch minimum TICS liquidity: {e}");
+                    let msg = format!("Failed to fetch minimum liquidities: {e}");
                     return Ok(warp::reply::json(&withdraw_error_response(
                         normalized_address.clone(),
                         &liquidity_btc_str,
@@ -3103,25 +3163,30 @@ pub(crate) async fn handle_withdraw_liquidity(
                         Some(msg),
                     )));
                 }
+            };
+
+        info!(
+            "🔍 [WITHDRAW_LIQUIDITY] Solver {} is_node_runner={} — using {} minimums",
+            normalized_address,
+            is_node_solver,
+            if is_node_solver { "node" } else { "standard" }
+        );
+
+        let min_tics = if wants_tics {
+            Some(if is_node_solver {
+                tics_node_minimum
+            } else {
+                tics_minimum
             })
         } else {
             None
         };
 
         let min_btc = if wants_btc {
-            Some(match solver_contract.get_minimum_liquidity_btc().await {
-                Ok(v) => v,
-                Err(e) => {
-                    let msg = format!("Failed to fetch minimum BTC liquidity: {e}");
-                    return Ok(warp::reply::json(&withdraw_error_response(
-                        normalized_address.clone(),
-                        &liquidity_btc_str,
-                        &liquidity_tics_str,
-                        &req,
-                        msg.clone(),
-                        Some(msg),
-                    )));
-                }
+            Some(if is_node_solver {
+                btc_node_minimum
+            } else {
+                btc_minimum
             })
         } else {
             None

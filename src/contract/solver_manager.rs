@@ -16,8 +16,7 @@ abigen!(
         function getActiveSolvers() view returns (string[] solverIds)
         function get_solver_evm_address(string solverId) view returns (address)
         function getSolverId(address solver) view returns (string)
-        function getMinimumLiquidityBTC() view returns (uint256)
-        function getMinimumLiquidityTICS() view returns (uint256)
+        function getMinimumLiquidities() view returns (uint256 btcMinimum, uint256 ticsMinimum, uint256 btcNodeMinimum, uint256 ticsNodeMinimum)
         function getSolversUnclaimedRewards(string[] solverIds) view returns ((string solverId, uint256 btcUnclaimed, uint256 ticsUnclaimed)[] rewards)
         function isSolverActive(string solverId) view returns (bool)
         function isSolverIdValidated(string solverId) view returns (bool)
@@ -81,20 +80,22 @@ impl SolverManagerContract {
         Ok(solver_id)
     }
 
-    pub async fn get_minimum_liquidity_btc(&self) -> Result<ethers::types::U256> {
+    /// Returns (btcMinimum, ticsMinimum, btcNodeMinimum, ticsNodeMinimum).
+    /// Use btcNodeMinimum/ticsNodeMinimum for validated (node-running) solvers,
+    /// btcMinimum/ticsMinimum for non-node solvers.
+    pub async fn get_minimum_liquidities(
+        &self,
+    ) -> Result<(
+        ethers::types::U256,
+        ethers::types::U256,
+        ethers::types::U256,
+        ethers::types::U256,
+    )> {
         self.inner
-            .get_minimum_liquidity_btc()
+            .get_minimum_liquidities()
             .call()
             .await
-            .map_err(|e| anyhow!("contract call failed: {}", e))
-    }
-
-    pub async fn get_minimum_liquidity_tics(&self) -> Result<ethers::types::U256> {
-        self.inner
-            .get_minimum_liquidity_tics()
-            .call()
-            .await
-            .map_err(|e| anyhow!("contract call failed: {}", e))
+            .map_err(|e| anyhow!("getMinimumLiquidities call failed: {}", e))
     }
 
     /// Returns (solver_id, btc_unclaimed, tics_unclaimed) per solver.
