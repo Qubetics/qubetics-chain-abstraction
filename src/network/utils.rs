@@ -1,0 +1,202 @@
+use anyhow::Result;
+use libp2p::identity::Keypair;
+use libp2p::PeerId;
+use std::sync::Arc;
+use tracing::{info, warn};
+
+use crate::database::{keys, KeyStore};
+
+use crate::network::transport::types::MpcNetworkLayer;
+
+impl MpcNetworkLayer {
+    /// Load existing keypair from keystore or create a new one
+    ///
+    /// Accepts a KeyStore implementation (e.g., Database, remote KMS) to allow
+    /// the MPC stack to control the identity lifecycle and swap storage backends
+    /// without changing keypair management logic.
+    pub async fn load_or_create_keypair(keystore: Arc<dyn KeyStore>) -> Result<(Keypair, PeerId)> {
+        // Try to load existing keypair
+        if let Some(keypair_bytes) = keystore.get_keypair(keys::PEER_KEYPAIR)? {
+            match Keypair::from_protobuf_encoding(&keypair_bytes) {
+                Ok(keypair) => {
+                    let peer_id = PeerId::from(keypair.public());
+                    info!("🔄 Loaded existing keypair - Peer ID: {}", peer_id);
+                    return Ok((keypair, peer_id));
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️ Failed to decode existing keypair: {}. Generating new one.",
+                        e
+                    );
+                }
+            }
+        } else {
+            info!("🆕 No existing keypair found. Generating new one.");
+        }
+
+        // Generate new keypair
+        let keypair = Keypair::generate_ed25519();
+        let peer_id = PeerId::from(keypair.public());
+
+        // Save keypair to keystore
+        let keypair_bytes = keypair
+            .to_protobuf_encoding()
+            .map_err(|e| anyhow::anyhow!("Failed to encode keypair: {}", e))?;
+        keystore.put_keypair(keys::PEER_KEYPAIR, &keypair_bytes)?;
+
+        info!("✅ Generated and saved new keypair - Peer ID: {}", peer_id);
+        Ok((keypair, peer_id))
+    }
+
+    /// Broadcast a user registration to all other nodes in the P2P network
+    pub async fn broadcast_user_registration(
+        &self,
+        tics_address: &str,
+        node_id: &str,
+    ) -> Result<()> {
+        use crate::types::{ChannelMessage, GossipsubMessage};
+
+        let registration_msg = GossipsubMessage::UserRegistration {
+            tics_address: tics_address.to_string(),
+            timestamp: chrono::Utc::now().timestamp(),
+            node_id: node_id.to_string(),
+        };
+
+        let msg_bytes = serde_json::to_vec(&registration_msg)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize user registration: {}", e))?;
+
+        // Send via the message channel to be broadcast by the swarm
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: "user-operations".to_string(),
+                data: msg_bytes,
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send user registration broadcast: {}", e))?;
+
+        info!(
+            "📡 Broadcasted user registration for {} from node {} to P2P network",
+            tics_address, node_id
+        );
+        Ok(())
+    }
+
+    /// Broadcast a message to a specific topic
+    pub async fn broadcast(&self, topic: &str, data: &[u8]) -> Result<()> {
+        use crate::types::ChannelMessage;
+
+        self.message_tx
+            .send(ChannelMessage::Broadcast {
+                topic: topic.to_string(),
+                data: data.to_vec(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Get the appropriate signing key based on the user eth address
+    pub(crate) async fn get_signing_key_for_user(
+        &self,
+        user_tics_address: Option<&String>,
+    ) -> Option<k256::Scalar> {
+        if let Some(eth_address) = user_tics_address {
+            // Use user-specific tweaked share
+            info!(
+                "🔑 [NETWORK] Using user-specific tweaked share for signing - User: {}",
+                eth_address
+            );
+
+            if let Some(user_intent_manager) = &self.user_intent_manager {
+                match user_intent_manager.get_user_by_address(eth_address).await {
+                    Some(user) => {
+                        if let Some(tweaked_share) = &user.tweaked_secret_share {
+                            let share_scalar = tweaked_share.0;
+                            let share_bytes = share_scalar.to_bytes();
+                            // Derive pubkey and ETH address from this scalar for debug
+                            let secp = secp256k1::Secp256k1::new();
+                            let sk = secp256k1::SecretKey::from_slice(&share_bytes).unwrap_or_else(
+                                |_| secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap(),
+                            );
+                            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                            let pk_uncompressed = pk.serialize_uncompressed();
+                            let pk_hash = {
+                                use sha3::Digest;
+                                let mut hasher = sha3::Keccak256::new();
+                                hasher.update(&pk_uncompressed[1..]);
+                                hasher.finalize()
+                            };
+                            let derived_addr = format!("0x{}", hex::encode(&pk_hash[12..]));
+
+                            info!(
+                                "✅ [NETWORK] Found tweaked share for user {}: hmac_constant=0x{}, derived_signing_addr={}",
+                                eth_address,
+                                hex::encode(&user.hmac_constant[..8]),
+                                derived_addr
+                            );
+                            if let Some(ref expected_derived) = user.derived_eth_address {
+                                info!(
+                                    "🔍 [NETWORK] User {} expected derived address: {}, signing key derives to: {}",
+                                    eth_address, expected_derived, derived_addr
+                                );
+                            }
+
+                            Some(share_scalar)
+                        } else {
+                            warn!(
+                                "⚠️ [NETWORK] User {} has NO tweaked_secret_share (None) — signing will be skipped",
+                                eth_address
+                            );
+                            None
+                        }
+                    }
+                    None => {
+                        warn!("❌ [NETWORK] User {} not found in registry", eth_address);
+                        None
+                    }
+                }
+            } else {
+                warn!("❌ [NETWORK] User registry not available");
+                None
+            }
+        } else {
+            // Use network's original DKG share
+            info!("🔑 [NETWORK] Using network's original DKG share for signing");
+
+            if let Some(dkg_node) = &self.dkg_node {
+                if let Some(secret_share) = dkg_node.get_final_secret_share().await {
+                    info!("✅ [NETWORK] Found network's DKG share");
+                    Some(secret_share)
+                } else {
+                    warn!("❌ [NETWORK] DKG not completed yet, no secret share available");
+                    None
+                }
+            } else {
+                warn!("❌ [NETWORK] DKG node not available");
+                None
+            }
+        }
+    }
+}
+
+/// Parse semantic version string into (major, minor, patch)
+pub fn parse_semantic_version(version: &str) -> Result<(u32, u32, u32)> {
+    use anyhow::anyhow;
+
+    let parts: Vec<&str> = version.split('.').collect();
+
+    if parts.len() != 3 {
+        return Err(anyhow!("Invalid semantic version format: {}", version));
+    }
+
+    Ok((
+        parts[0]
+            .parse()
+            .map_err(|e| anyhow!("Invalid major version: {}", e))?,
+        parts[1]
+            .parse()
+            .map_err(|e| anyhow!("Invalid minor version: {}", e))?,
+        parts[2]
+            .parse()
+            .map_err(|e| anyhow!("Invalid patch version: {}", e))?,
+    ))
+}

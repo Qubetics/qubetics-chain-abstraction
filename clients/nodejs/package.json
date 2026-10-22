@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "deposit-simple": "node simple_deposit_intent.js"
+    "deposit-simple": "node simple_deposit_intent.js",
+    "broadcast-btc": "node broadcast_bitcoin_transaction.js",
+    "broadcast-example": "node broadcast_example.js",
+    "node-id": "node get_node_id.js",
+    "get-reward-solver": "node get_reward_solver.js",
+    "test-add-liquidity": "node test_add_liquidity.js"
   },
   "keywords": [],
   "author": "",
@@ -19,12 +24,18 @@
     "@libp2p/tcp": "^10.1.10",
     "@multiformats/multiaddr": "^12.4.0",
     "axios": "^1.6.0",
+    "bitcoinjs-lib": "^6.1.7",
     "cbor-x": "^1.6.0",
+    "dotenv": "^17.2.3",
+    "ecpair": "^3.0.0",
     "ethereum-cryptography": "^3.2.0",
-    "ethers": "^6.15.0",
+    "ethers": "^5.8.0",
     "it-pipe": "^3.0.1",
+    "keccak": "^3.0.4",
     "libp2p": "^2.8.5",
+    "node-fetch": "^3.3.2",
     "secp256k1": "^5.0.1",
+    "tiny-secp256k1": "^2.2.4",
     "uint8arrays": "^5.1.0"
   },
   "description": ""

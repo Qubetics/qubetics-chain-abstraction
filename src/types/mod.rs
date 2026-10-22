@@ -1,61 +1,50 @@
-use libp2p::{Multiaddr, PeerId};
-use serde::{Deserialize, Serialize};
-
-mod secp;
-pub use secp::{SerializablePoint, SerializableScalar};
-
+pub mod chain;
+pub mod consensus;
+pub mod deterministic_selection;
 pub mod dkg;
+pub mod intent;
+pub mod messaging;
+pub mod network;
+pub mod nonce;
 pub mod p2p;
 pub mod rpc;
+pub mod rpc_server;
+pub mod secp;
+pub mod signing;
+pub mod user_intent;
+pub mod vrf;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PeerInfo {
-    pub addresses: Vec<Multiaddr>,
-    pub connected: bool,
-}
+pub use chain::bitcoin::{
+    BitcoinInput, BitcoinOutput, BitcoinSignature, BitcoinTransaction, BitcoinUtxo, BitcoinWitness,
+    BitcoinWitnessInput, BitcoinWitnessUtxo, SpendKind, UtxoStatus,
+};
+pub use chain::tics::{encode_hex_to_bytes, RlpEncoder};
+pub use consensus::{ConsensusMessage, ConsensusResult};
+pub use deterministic_selection::{
+    DeterministicSelectionMessage, DeterministicSelectionResult, FinalNodeSelection,
+    RequestMetadata, RequestSelectionPolicy, RoundSeed, SelectRequestMessage,
+    SequencerSelectionState, SequencerType,
+};
+pub use intent::{
+    BatchIntentInput, BatchType, ContractTransaction, DepositIntent, DepositIntentResponse,
+    DummyTransaction, TransactionNetwork, TransactionResponse, TransactionType,
+};
+pub use messaging::{ChannelMessage, GossipsubMessage, KeyShare};
+pub use p2p::{PeerInfo, SerializablePeerId};
+pub use secp::{SerializablePoint, SerializableScalar};
+pub use signing::{
+    BtcIndexedSignature, ECDSASignature, SignedMessage, SigningMessage, ThresholdSignature,
+    ThresholdSignatureShare,
+};
+pub use user_intent::{
+    AdminRegistration, IntentRegistry, IntentStatus, IntentTransactionIds, TransactionStatus,
+    UserRegistration,
+};
+pub use vrf::{NodeSelectionResult, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage};
 
-#[derive(Debug, Clone)]
-pub enum ChannelMessage {
-    Broadcast {
-        topic: String,
-        data: Vec<u8>,
-    },
-    Unicast {
-        peer_id: String,
-        data: Vec<u8>,
-    },
-    LocalTransaction {
-        transaction: crate::rpc_server::DummyTransaction,
-    },
-    DepositIntent {
-        intent: crate::rpc_server::DepositIntent,
-        intent_id: String,
-    },
-    ScheduledDKGStart,
-}
+pub use nonce::{NonceGenState, NonceGenStatus, NoncePoolConfig, NoncePoolMetrics, NonceTuple};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeyShare {
-    pub index: usize,
-    pub value: SerializableScalar,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GossipsubMessage {
-    DKG(crate::dkg::DKGMessage),
-    Signing(crate::signing::SigningMessage),
-    Command(crate::commands::Command),
-    Consensus(crate::consensus::ConsensusMessage),
-    VrfSelection(crate::vrf::VrfSelectionMessage),
-    VrfSelectedNodes(crate::vrf::VrfSelectedNodesBroadcast),
-    PeerDiscovered {
-        peer: PeerId,
-        sequence: Option<u64>,
-    },
-    Transaction(crate::rpc_server::DummyTransaction),
-    DepositIntent {
-        intent: crate::rpc_server::DepositIntent,
-        intent_id: String,
-    },
-    DKGCommand(crate::types::rpc::RPCRequest),
-}
+pub use network::{
+    init_network_type_from_env, is_testnet, network_type, qubetics_rpc_url_from_env, NetworkType,
+    ETH_RPC_ENV_KEY, NETWORK_ENV_KEY,
+};

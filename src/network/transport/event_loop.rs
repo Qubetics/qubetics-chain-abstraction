@@ -1,0 +1,550 @@
+/// Main event loop for network layer
+/// Handles swarm events, channel messages, and periodic tasks
+use anyhow::Result;
+use futures::StreamExt;
+use libp2p::{Multiaddr, PeerId};
+use std::time::Duration;
+use tracing::{debug, error, info, warn};
+
+use super::types::{MpcNetworkBehaviour, MpcNetworkLayer};
+
+impl MpcNetworkLayer {
+    /// Start the network event loop
+    pub async fn start(&mut self) -> Result<()> {
+        let mut swarm = self.build_swarm()?;
+
+        // Check if this is an existing node with DKG data - if so, subscribe to topics immediately
+        self.subscribe_to_default_topics(&mut swarm)?;
+
+        info!("Starting Kademlia bootstrap...");
+
+        // Node manager will determine if this is the first node
+        self.node_manager
+            .add_node(self.local_peer_id)
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        // Bootstrap with the configured nodes
+        if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+            warn!("Failed to start bootstrap: {:?}", e);
+        }
+
+        // Start a task to check if this is the first node after bootstrap attempts
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        });
+
+        let mut bootstrap_timer = tokio::time::interval(Duration::from_secs(300));
+        let mut discovery_timer = tokio::time::interval(Duration::from_secs(300));
+        let mut dkg_status_timer = tokio::time::interval(Duration::from_secs(300));
+        let mut peerlist_logger = tokio::time::interval(Duration::from_secs(300));
+        let mut reconnect_timer = tokio::time::interval(Duration::from_secs(3600)); // 1 hour
+        let mut ban_sweep_timer = tokio::time::interval(Duration::from_secs(60)); // sweep expired bans every 60s
+
+        // Global clock timer - reads interval from environment variable
+        let clock_interval_secs = crate::env_defaults::global_clock_interval_seconds()
+            .parse::<u64>()
+            .unwrap_or_else(|_| {
+                info!("GLOBAL_CLOCK_INTERVAL_SECONDS invalid, defaulting to 60 seconds");
+                60
+            });
+
+        // Calculate next epoch-aligned trigger time for synchronized global clock
+        // This ensures all nodes trigger at the same wall-clock time regardless of startup time
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("System time before Unix epoch");
+        let current_epoch_secs = now.as_secs();
+        let next_trigger_epoch =
+            ((current_epoch_secs / clock_interval_secs) + 1) * clock_interval_secs;
+        let wait_duration = Duration::from_secs(next_trigger_epoch - current_epoch_secs);
+
+        info!(
+            "⏰ [CLOCK] Synchronizing global clock to epoch boundaries - interval: {}s, first trigger in {}s",
+            clock_interval_secs,
+            wait_duration.as_secs()
+        );
+
+        let first_tick = tokio::time::Instant::now() + wait_duration;
+        let mut global_clock_timer =
+            tokio::time::interval_at(first_tick, Duration::from_secs(clock_interval_secs));
+        global_clock_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        info!("🌐 [P2P] Starting P2P server...");
+        info!("🔑 [P2P] Local Peer ID: {}", self.local_peer_id);
+
+        swarm.listen_on("/ip4/0.0.0.0/tcp/4001".parse()?)?;
+        swarm.listen_on("/ip4/0.0.0.0/udp/4002/quic-v1".parse()?)?;
+
+        info!("⏳ [P2P] Waiting for listen addresses to be assigned...");
+
+        self.dial_seed_addresses(&mut swarm);
+        // Dial command-line provided addresses
+        self.dial_command_line_addresses(&mut swarm);
+
+        loop {
+            tokio::select! {
+                event = swarm.select_next_some() => {
+                    // 🛡️ Error recovery for swarm events - prevent node crashes
+                    if let Err(e) = self.handle_swarm_event(event, &mut swarm).await {
+                        error!("❌ [NETWORK] Swarm event handling failed: {}", e);
+                        error!("🛡️ [NETWORK] Node continues operating despite swarm event failure");
+                        error!("🔍 [NETWORK] Error details: {:?}", e);
+                        // Continue processing other events
+                    }
+                }
+
+                // only hit when there is anything on the mpsc channel
+                msg = self.message_rx.recv() => {
+                    if let Some(msg) = msg {
+                        // 🛡️ Error recovery for channel messages - prevent node crashes
+                        if let Err(e) = self.handle_channel_message(msg, &mut swarm).await {
+                            error!("❌ [NETWORK] Channel message handling failed: {}", e);
+                            error!("🛡️ [NETWORK] Node continues operating despite message handling failure");
+                            error!("🔍 [NETWORK] Error details: {:?}", e);
+                            // Continue processing other messages
+                        }
+                    }
+                }
+
+                _ = peerlist_logger.tick() => {
+                    self.log_peer_list_snapshot();
+                }
+
+                _ = bootstrap_timer.tick() => {
+                    // Periodic bootstrap to discover new peers
+                    if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                        warn!("Periodic bootstrap failed: {:?}", e);
+                    }
+                }
+
+                _ = discovery_timer.tick() => {
+                    self.perform_periodic_peer_discovery(&mut swarm);
+                }
+
+                _ = dkg_status_timer.tick() => {
+                    self.log_periodic_dkg_status().await;
+
+                    // Reject user-to-vault intents stuck in Pending/Batched for > 15 minutes
+                    if let Some(ref uim) = self.user_intent_manager {
+                        const STALE_INTENT_MAX_AGE_SECS: u64 = 15 * 60; // 15 minutes
+                        uim.reject_stale_intents(STALE_INTENT_MAX_AGE_SECS).await;
+                    }
+                }
+
+                _ = global_clock_timer.tick() => {
+                    debug!("[CLOCK] Global clock tick triggered");
+                    if let Err(e) = self.handle_global_clock_tick().await {
+                        error!("[CLOCK] Clock task failed: {}", e);
+                    }
+                }
+
+                _ = ban_sweep_timer.tick() => {
+                    // Sweep expired peer bans promptly (every 60s) so unblocked
+                    // peers can reconnect without waiting for the hourly timer.
+                    let ban_duration = Duration::from_secs(300);
+                    let before = self.rejected_peers.len();
+                    self.rejected_peers.retain(|_, banned_at| banned_at.elapsed() < ban_duration);
+                    let expired = before - self.rejected_peers.len();
+                    if expired > 0 {
+                        debug!("[BAN] Swept {} expired peer ban(s)", expired);
+                    }
+
+                    // Prune old entries from processed_batch_rounds to prevent unbounded growth.
+                    // Keep entries from the last 100 rounds relative to the highest seen round.
+                    if !self.processed_batch_rounds.is_empty() {
+                        let max_round = self.processed_batch_rounds.iter().map(|(r, _)| *r).max().unwrap_or(0);
+                        if max_round > 100 {
+                            let cutoff = max_round - 100;
+                            let before_count = self.processed_batch_rounds.len();
+                            self.processed_batch_rounds.retain(|(r, _)| *r >= cutoff);
+                            let pruned = before_count - self.processed_batch_rounds.len();
+                            if pruned > 0 {
+                                debug!("[BATCH_DEDUP] Pruned {} old batch dedup entries (cutoff round {})", pruned, cutoff);
+                            }
+                        }
+                    }
+                }
+
+                _ = reconnect_timer.tick() => {
+                    // Retry failed outbound connections — give up after 24 hours
+                    let max_retry_duration = Duration::from_secs(24 * 3600);
+                    let now = std::time::Instant::now();
+
+                    // Remove addresses older than 24 hours
+                    self.failed_dial_addresses.retain(|addr, first_failure| {
+                        if now.duration_since(*first_failure) > max_retry_duration {
+                            warn!("[RECONNECT] Giving up on {} after 24 hours of retries", addr);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+
+                    // Retry remaining addresses
+                    let addrs_to_retry: Vec<Multiaddr> = self.failed_dial_addresses.keys().cloned().collect();
+                    if !addrs_to_retry.is_empty() {
+                        debug!(
+                            "[RECONNECT] Retrying {} failed address(es)",
+                            addrs_to_retry.len()
+                        );
+                        for addr in addrs_to_retry {
+                            if let Err(e) = swarm.dial(addr.clone()) {
+                                warn!("[RECONNECT] Retry dial failed for {}: {}", addr, e);
+                            }
+                        }
+                    }
+                }
+
+                // Contract sequencer removed - contract transactions are executed directly
+                // Network transaction sequencer removed - will be replaced with pool approach
+            };
+        }
+    }
+
+    /// Dial addresses provided via command line arguments
+    fn dial_command_line_addresses(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() >= 2 {
+            // Parse all addresses from command line arguments
+            let addresses: Vec<Multiaddr> = args[1..]
+                .iter()
+                .filter_map(|arg| match arg.parse::<Multiaddr>() {
+                    Ok(addr) => {
+                        info!("Parsed address: {}", addr);
+                        Some(addr)
+                    }
+                    Err(e) => {
+                        error!("Failed to parse address '{}': {}", arg, e);
+                        None
+                    }
+                })
+                .collect();
+
+            if addresses.is_empty() {
+                warn!("No valid addresses provided to dial");
+            } else {
+                debug!("Dialing {} addresses", addresses.len());
+                for addr in addresses.iter() {
+                    if let Err(e) = swarm.dial(addr.clone()) {
+                        warn!("Failed to dial address {}: {}", addr, e);
+                        self.failed_dial_addresses
+                            .entry(addr.clone())
+                            .or_insert_with(std::time::Instant::now);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dial any configured seed addresses to accelerate mesh convergence
+    fn dial_seed_addresses(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+        let mut dialed = std::collections::HashSet::new();
+
+        for addr in self
+            .bootstrap_addresses
+            .iter()
+            .chain(self.discovery_seeds.iter())
+        {
+            if !dialed.insert(addr.clone()) {
+                continue;
+            }
+
+            debug!("Dialing configured seed: {}", addr);
+            if let Err(e) = swarm.dial(addr.clone()) {
+                warn!("Failed to dial seed {}: {}", addr, e);
+                self.failed_dial_addresses
+                    .entry(addr.clone())
+                    .or_insert_with(std::time::Instant::now);
+            }
+        }
+    }
+
+    /// Log peer list snapshot periodically
+    fn log_peer_list_snapshot(&self) {
+        let peers = self.node_manager.get_active_nodes();
+        let mut entries: Vec<String> = Vec::new();
+        for p in &peers {
+            let idx = match self.peer_discovery.peer_indices.get(p).cloned() {
+                Some(i) => Some(i),
+                None => {
+                    let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                    match self.db.get_string::<usize>(&key) {
+                        Ok(Some(i)) => Some(i),
+                        _ => None,
+                    }
+                }
+            };
+            match idx {
+                Some(i) => entries.push(format!("{p}=>{i}")),
+                None => entries.push(format!("{p}=>?")),
+            }
+        }
+        let display_str = entries.join(", ");
+        // This can be quite verbose on large networks; keep at debug level by default.
+        debug!(
+            "🕒 PeerList snapshot ({} peers): {}",
+            peers.len(),
+            display_str
+        );
+    }
+
+    /// Perform periodic peer discovery
+    fn perform_periodic_peer_discovery(&mut self, swarm: &mut libp2p::Swarm<MpcNetworkBehaviour>) {
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .get_closest_peers(self.local_peer_id);
+
+        // Also search for random peers to populate routing table
+        let random_peer = PeerId::random();
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .get_closest_peers(random_peer);
+
+        // Proactively request indices from peers we lack index for
+        let active = self.node_manager.get_active_nodes();
+        for p in active {
+            let known = self.peer_discovery.peer_indices.contains_key(&p) || {
+                let key = crate::database::key_utils::peer_index_key(&p.to_string());
+                self.db.get_string::<usize>(&key).ok().flatten().is_some()
+            };
+            if !known {
+                swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&p, crate::types::rpc::RPCRequest::GetPeerList);
+            }
+        }
+    }
+
+    /// Log periodic DKG status
+    async fn log_periodic_dkg_status(&self) {
+        // Periodic DKG status check (logging removed to reduce overhead)
+    }
+
+    /// Handle global clock tick - performs HRW node selection every clock tick
+    /// This method has direct access to all network resources:
+    /// - self.db_signing_node: Arc<Mutex<DatabaseSigningNode>> (round/selection service, signing)
+    /// - self.signing_node: Option<SigningNode>
+    /// - self.dkg_node: Option<DKGNode>
+    /// - self.user_intent_manager: Option<UserIntentManager>
+    /// - self.db: Database
+    /// - self.node_manager: Box<dyn NodeMembership> (for getting available nodes)
+    /// - And all other MpcNetworkLayer fields
+    async fn handle_global_clock_tick(&mut self) -> Result<()> {
+        self.clock_tick_count += 1;
+        debug!("[CLOCK] tick #{}", self.clock_tick_count);
+
+        // Get available nodes from node manager and convert to Vec
+        let available_nodes: Vec<libp2p::PeerId> =
+            self.node_manager.get_active_nodes().into_iter().collect();
+
+        // Every 3rd tick, broadcast our active peer list for reconciliation
+        if self.clock_tick_count % 3 == 0 {
+            let peers: Vec<(String, Option<usize>)> = available_nodes
+                .iter()
+                .map(|p| {
+                    let idx = self.peer_discovery.peer_indices.get(p).copied();
+                    (p.to_string(), idx)
+                })
+                .collect();
+
+            let active_list_msg = crate::types::messaging::GossipsubMessage::ActivePeerList {
+                node_id: self.local_peer_id.to_string(),
+                peers,
+                timestamp: chrono::Utc::now().timestamp(),
+            };
+
+            if let Ok(msg_bytes) = serde_json::to_vec(&active_list_msg) {
+                if let Err(e) = self
+                    .message_tx
+                    .send(crate::types::messaging::ChannelMessage::Broadcast {
+                        topic: "peer-discovery".to_string(),
+                        data: msg_bytes,
+                    })
+                    .await
+                {
+                    warn!("[CLOCK] Failed to broadcast ActivePeerList: {}", e);
+                } else {
+                    debug!(
+                        "[CLOCK] Broadcast ActivePeerList with {} peers",
+                        available_nodes.len(),
+                    );
+                }
+            }
+        }
+
+        if available_nodes.is_empty() {
+            warn!("⏰ [CLOCK] No available nodes for selection, skipping");
+            return Ok(());
+        }
+
+        // Trigger nonce pre-generation on first clock tick when network is ready
+        // GATE: Only start nonce generation AFTER initial DKG is complete.
+        // Before DKG completion, nodes are still joining and dkg_signer_count is unknown,
+        // which causes nonces to be created with inconsistent contributor counts across nodes.
+        let initial_dkg_complete = if let Some(dkg_node) = &self.dkg_node {
+            dkg_node.is_initial_dkg_complete().await
+        } else {
+            false
+        };
+
+        if !initial_dkg_complete {
+            debug!("[CLOCK] Skipping nonce pre-generation - initial DKG not yet complete");
+        } else if let Some(arc) = &self.signing_node {
+            let signing_node = arc.lock().await;
+
+            // Only DKG signers initiate nonce pre-generation.
+            // Observer nodes receive finalized nonces via NonceTupleBroadcast.
+            if !signing_node.has_dkg_share().await {
+                // Observer: just ensure NonceManager has correct dkg_signer_count
+                // for nonce pool filtering, but don't start generation
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(count) = dkg_node.get_dkg_signer_count() {
+                        signing_node.update_nonce_dkg_signer_count(count).await;
+                    }
+                }
+            } else {
+                // DKG signer: update NonceManager params and start pre-generation
+                if let Some(dkg_node) = &self.dkg_node {
+                    if let Some(count) = dkg_node.get_dkg_signer_count() {
+                        signing_node.update_nonce_dkg_signer_count(count).await;
+                    }
+                }
+                let current_node_count = self.node_manager.get_total_nodes();
+                if current_node_count > 0 {
+                    signing_node
+                        .update_nonce_manager_total_nodes(current_node_count)
+                        .await;
+                }
+
+                if !signing_node.is_nonce_pool_ready().await {
+                    debug!("[CLOCK] Triggering nonce pre-generation");
+                    if let Err(e) = signing_node.start_nonce_pregeneration().await {
+                        warn!("⚠️ [CLOCK] Failed to start nonce pre-generation: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Every 10 ticks, sweep old round data to keep memory bounded (latest 1000 rounds)
+        if self.clock_tick_count % 10 == 0 {
+            if let Some(arc) = &self.signing_node {
+                let signing_node = arc.lock().await;
+                signing_node.sweep_old_rounds().await;
+            }
+            // Also sweep DB-stored signatures for old rounds
+            if let Some(arc) = &self.db_signing_node {
+                let db_node = arc.lock().await;
+                let signing_storage = db_node.get_signing_storage();
+                // Use the current round to calculate cutoff (keep latest 1000)
+                if let Some(vrf_arc) = &self.signing_node {
+                    let sn = vrf_arc.lock().await;
+                    if let Some(vrf_service) = sn.vrf_service() {
+                        let current_round = vrf_service.get_current_round().await;
+                        if current_round > 1000 {
+                            let _ = signing_storage
+                                .sweep_rounds_before(current_round - 1000)
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!(
+            "[CLOCK] Available nodes for VRF selection: count={}",
+            available_nodes.len(),
+        );
+
+        // Get round/selection service - prefer signing_node, fall back to db_signing_node
+        // This matches the pattern used in rpc_handlers.rs
+        // Try signing_node first
+        if let Some(arc) = &self.signing_node {
+            let mut signing_node = arc.lock().await;
+            // Update signing node with latest available nodes
+            // This is critical for async tasks (like parallel contract update) that read from signing_node state later
+            signing_node.set_available_nodes(available_nodes.clone());
+
+            // Get round and sync result first so we can release vrf_service borrow before replicate_vrf_round_to_consensus (mut borrow)
+            let (sync_result, round) = if let Some(vrf_service) = signing_node.vrf_service() {
+                let sync_result = vrf_service.sync_rounds_before_signing().await;
+                let round = vrf_service.get_next_round().await;
+                (sync_result, round)
+            } else {
+                (Err(anyhow::anyhow!("no round service")), 0u64)
+            };
+
+            match &sync_result {
+                Ok(synced_round) => signing_node.replicate_vrf_round_to_consensus(*synced_round),
+                Err(e) => warn!("⏰ [CLOCK] Failed to sync rounds before selection: {}", e),
+            }
+            signing_node.replicate_vrf_round_to_consensus(round);
+
+            let selection_ok = if let Some(vrf_service) = signing_node.vrf_service() {
+                debug!(
+                    "[CLOCK] Performing selection for round {} with {} nodes",
+                    round,
+                    available_nodes.len()
+                );
+
+                // Perform HRW node selection (selects 1 node) - ONLY ONCE
+                match vrf_service
+                    .perform_node_selection(
+                        &available_nodes,
+                        crate::vrf::VRF_NODE_SELECTION_COUNT,
+                        round,
+                        "global_clock",
+                    )
+                    .await
+                {
+                    Ok(selection_result) => {
+                        debug!(
+                            "[CLOCK] Selection round {} done (selected={}, total={})",
+                            round,
+                            selection_result.selected_nodes.len(),
+                            selection_result.total_nodes,
+                        );
+                        true
+                    }
+                    Err(e) => {
+                        error!("❌ [CLOCK] Selection failed for round {}: {}", round, e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                false
+            };
+
+            // Immediately trigger consensus without waiting for other nodes' VRF
+            // selection broadcasts. HRW is deterministic — all nodes with the same
+            // DKG candidate list compute the same final node independently, so
+            // voting is unnecessary for clock operations.
+            if selection_ok {
+                info!(
+                    "⏰ [CLOCK] Triggering consensus directly for round {} (no vote wait)",
+                    round
+                );
+                match signing_node.start_consensus_for_round(round).await {
+                    Ok(Some(result)) => {
+                        info!(
+                            "✅ [CLOCK] Consensus completed for round {}: final node = {}",
+                            round, result.final_node.0
+                        );
+                    }
+                    Ok(None) => {
+                        debug!("[CLOCK] Consensus returned None for round {}", round);
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ [CLOCK] Direct consensus failed for round {}: {}",
+                            round, e
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

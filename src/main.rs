@@ -1,113 +1,461 @@
-use libp2p::identity::Keypair;
-use mpc_node::node_management::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
+#![recursion_limit = "4096"]
+
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+use dotenv::dotenv;
+use hex::FromHex;
+use libp2p::{Multiaddr, PeerId};
+use mpc_node::node_selection::{DefaultThresholdCalculator, NodeMembership, VrfNodeManager};
 use mpc_node::{
-    commands::CommandProcessor, consensus::ConsensusNode, dkg::DKGNode, network::NetworkLayer,
-    rpc_server, signing::SigningNode,
+    commands::CommandProcessor,
+    consensus::{ConsensusNode, DatabaseConsensusNode},
+    database::{Database, DatabaseConfig, DatabaseModule, DkgStorage},
+    env_defaults,
+    network::transport::types::MpcNetworkLayer,
+    protocols::DKGNode,
+    rpc_server,
+    signing::{DatabaseSigningNode, SigningNode},
+    types::network::init_network_type_from_env,
+    user_intent_manager::UserIntentManager,
 };
 use rand::{thread_rng, Rng};
-#[allow(dead_code)]
-#[allow(unused_imports)]
-#[allow(non_snake_case)]
-#[allow(unused_variables)]
-use std::error::Error;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::info;
 use tracing::level_filters::LevelFilter;
+use tracing::{info, warn};
 use tracing_appender::non_blocking;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let rand_num: u32 = thread_rng().gen_range(1000..9999);
-    let file_appender = tracing_appender::rolling::never("logs", format!("mpcn-{}.log", rand_num));
-    let (writer, _guard) = non_blocking(file_appender);
-    let file_layer = fmt::layer::<_>()
-        .with_writer(writer)
-        .with_target(true)
-        .with_level(true)
-        .with_thread_ids(false)
-        .with_thread_names(false);
+#[derive(Parser, Debug)]
+#[command(name = "mpc-node")]
+#[command(about = "MPC Network Node", long_about = None)]
+struct Cli {
+    /// Generate and save a new peer identity, then exit
+    #[arg(long)]
+    generate: bool,
+    /// Optional bootstrap peers as multiaddrs (positional args)
+    #[arg(value_name = "BOOTSTRAP_PEER")]
+    bootstrap_peers: Vec<String>,
+}
 
-    let stdout_layer = fmt::layer::<_>()
-        .with_writer(std::io::stdout)
-        .with_target(true)
-        .with_level(true)
-        .with_thread_ids(false)
-        .with_thread_names(false);
-    let stderr_layer = fmt::layer::<_>()
-        .with_writer(std::io::stderr)
-        .with_target(true)
-        .with_level(true)
-        .with_thread_ids(false)
-        .with_thread_names(false);
+#[derive(Clone)]
+struct Config {
+    rpc_port: u16,
+    db_config: DatabaseConfig,
+    selection_interval: u64,
+}
 
-    // let x = EnvFilter::new("info");
-    let y = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .parse("")?;
+#[derive(Default)]
+struct ConfigBuilder {
+    rpc_port: Option<u16>,
+    db_config: Option<DatabaseConfig>,
+    selection_interval: Option<u64>,
+}
 
-    let _ = tracing_subscriber::registry()
-        .with(y)
-        .with(file_layer)
-        .with(stdout_layer)
-        .with(stderr_layer)
-        .init();
+impl ConfigBuilder {
+    fn new() -> Self {
+        Self::default()
+    }
 
-    // Generate node identity
-    let local_key = Keypair::generate_ed25519();
-    let local_peer_id = libp2p::PeerId::from(local_key.public());
+    fn with_env(mut self) -> Result<Self> {
+        self.rpc_port = Some(env_defaults::rpc_port());
 
-    // Create VRF-based node manager
-    let threshold_calculator = Box::new(DefaultThresholdCalculator);
-    let node_manager = Box::new(VrfNodeManager::new(
-        local_peer_id,
-        threshold_calculator,
-        10, // selection interval
-    ));
+        self.db_config =
+            Some(DatabaseConfig::from_env().or_else(|_| DatabaseConfig::default().validate())?);
 
-    let total = node_manager.get_total_nodes();
-    let threshold = node_manager.get_threshold();
+        if self.selection_interval.is_none() {
+            self.selection_interval = Some(10);
+        }
 
-    info!("Initial node count: {}, threshold: {}", total, threshold);
+        Ok(self)
+    }
 
-    let mut network = NetworkLayer::new(node_manager).await?;
+    fn build(mut self) -> Result<Config> {
+        if self.rpc_port.is_none() || self.db_config.is_none() {
+            self = self.with_env()?;
+        }
 
-    let signing_node = Arc::new(Mutex::new(SigningNode::new(
-        network.get_local_peer_id().to_string(),
-        threshold,
-        network.get_msg_tx(),
-    )));
+        Ok(Config {
+            rpc_port: self.rpc_port.unwrap_or(env_defaults::DEFAULT_RPC_PORT),
+            db_config: self.db_config.unwrap_or_else(|| {
+                DatabaseConfig::default()
+                    .validate()
+                    .expect("valid default config")
+            }),
+            selection_interval: self.selection_interval.unwrap_or(10),
+        })
+    }
+}
 
-    // let signing_node_clone = signing_node.clone();
-    let dkg_node = DKGNode::new(
-        network.get_local_peer_id().to_string(),
-        threshold,
-        total,
-        network.get_msg_tx(),
+fn load_chain_code() -> Result<[u8; 32]> {
+    let raw = env_defaults::chain_code_hex();
+    let sanitized = raw.trim().trim_start_matches("0x");
+    let chain_code = <[u8; 32]>::from_hex(sanitized)
+        .map_err(|e| anyhow!("invalid CHAIN_CODE_HEX value: {}", e))?;
+    Ok(chain_code)
+}
+
+struct NodeContext {
+    config: Config,
+    keypair: libp2p::identity::Keypair,
+    peer_id: PeerId,
+    chain_code: [u8; 32],
+    /// Extra bootstrap peers passed on the CLI (if any)
+    cli_bootstrap_peers: Vec<Multiaddr>,
+    database_module: Option<DatabaseModule>,
+    database: Option<Arc<Database>>,
+    network: Option<MpcNetworkLayer>,
+    dkg_storage: Option<DkgStorage>,
+    user_intent_manager: Option<Arc<UserIntentManager>>,
+    start_time: Instant,
+}
+
+impl NodeContext {
+    fn new(config: Config, cli_bootstrap: Vec<String>) -> Result<Self> {
+        // Load existing keypair or generate new one
+        let keypair = mpc_node::identity::load_or_generate()
+            .context("Failed to load or generate peer identity")?;
+        let peer_id = PeerId::from(keypair.public());
+        let chain_code = load_chain_code()?;
+
+        // Parse CLI-provided bootstrap peers (if any)
+        let mut cli_bootstrap_peers = Vec::new();
+        for addr_str in cli_bootstrap {
+            match addr_str.parse::<Multiaddr>() {
+                Ok(addr) => cli_bootstrap_peers.push(addr),
+                Err(e) => {
+                    warn!("⚠️ [MAIN] Failed to parse CLI bootstrap peer '{}': {}", addr_str, e);
+                }
+            }
+        }
+
+        // Log whether we loaded existing identity or generated new one
+        if mpc_node::identity::keypair_exists(&mpc_node::identity::default_keypair_path()) {
+            info!("🔑 Loaded existing peer identity: {}", peer_id);
+        } else {
+            info!("🆕 Generated new peer identity: {}", peer_id);
+        }
+
+        Ok(Self {
+            config,
+            keypair,
+            peer_id,
+            chain_code,
+            cli_bootstrap_peers,
+            database_module: None,
+            database: None,
+            network: None,
+            dkg_storage: None,
+            user_intent_manager: None,
+            start_time: Instant::now(),
+        })
+    }
+
+    fn init_logging(&self) -> Result<()> {
+        let rand_num: u32 = thread_rng().gen_range(1000..9999);
+        let file_appender =
+            tracing_appender::rolling::never("logs", format!("mpcn-{rand_num}.log"));
+        let (writer, _guard) = non_blocking(file_appender);
+        let file_layer = fmt::layer::<_>()
+            .with_writer(writer)
+            .with_target(true)
+            .with_level(true)
+            .with_thread_ids(false)
+            .with_thread_names(false);
+
+        let stdout_layer = fmt::layer::<_>()
+            .with_writer(std::io::stdout)
+            .with_target(true)
+            .with_level(true)
+            .with_thread_ids(false)
+            .with_thread_names(false);
+        // Removed stderr_layer — stdout + file is sufficient;
+        // 3-layer writes (file+stdout+stderr) caused redundant I/O overhead.
+
+        let env_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            // Allow overriding via RUST_LOG; fall back to no extra directives.
+            .parse(std::env::var("RUST_LOG").unwrap_or_default())?;
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(file_layer)
+            .with(stdout_layer)
+            .init();
+
+        Ok(())
+    }
+
+    fn database_path_for_peer(&self) -> String {
+        format!(
+            "./data/rocksdb-{}",
+            self.peer_id.to_string().chars().take(8).collect::<String>()
+        )
+    }
+
+    fn init_database(&mut self) -> Result<()> {
+        let mut db_config = self.config.db_config.clone();
+        db_config.path = self.database_path_for_peer();
+        let db_config = db_config
+            .validate()
+            .map_err(|e| anyhow!("Invalid database configuration: {}", e))?;
+
+        let database_module = DatabaseModule::initialize(db_config)?;
+        let database: Arc<Database> = Arc::new(database_module.database());
+        let dkg_storage = database_module.dkg_storage();
+
+        self.database_module = Some(database_module);
+        self.database = Some(database);
+        self.dkg_storage = Some(dkg_storage);
+
+        info!("🗄️ [MAIN] Database initialized successfully");
+        info!("🧩 [MAIN] Database module wired for dependent components");
+
+        Ok(())
+    }
+
+    async fn init_network(&mut self) -> Result<()> {
+        let database = self
+            .database
+            .clone()
+            .context("database must be initialized before network")?;
+        let database_module = self
+            .database_module
+            .clone()
+            .context("database module must be initialized before network")?;
+
+        let threshold_calculator = Box::new(DefaultThresholdCalculator);
+        let node_manager = Box::new(VrfNodeManager::new(
+            self.peer_id,
+            threshold_calculator,
+            self.config.selection_interval,
+        ));
+
+        let total = node_manager.get_total_nodes();
+        let threshold = node_manager.get_threshold();
+
+        info!("Initial node count: {}, threshold: {}", total, threshold);
+
+        let mut network = MpcNetworkLayer::new_with_bootstrap(
+            node_manager,
+            database.as_ref().clone(),
+            self.keypair.clone(),
+            self.cli_bootstrap_peers.clone(),
+        )
+        .await?;
+
+        let db_signing_node = Arc::new(Mutex::new(DatabaseSigningNode::new(
+            network.get_local_peer_id().to_string(),
+            threshold,
+            network.get_msg_tx(),
+            database.as_ref().clone(),
+        )));
+
+        let signing_node = Arc::new(Mutex::new(SigningNode::new(
+            network.get_local_peer_id().to_string(),
+            threshold,
+            network.get_msg_tx(),
+        )));
+
+        // Note: NonceManager initialization moved after set_database() below
+        // because NonceStorage requires a database reference
+
+        let dkg_storage: DkgStorage = database_module.dkg_storage();
+        let chain_code = self.chain_code;
+        let mut dkg_node = DKGNode::new(
+            network.get_local_peer_id().to_string(),
+            threshold,
+            total,
+            network.get_msg_tx(),
+            dkg_storage.clone(),
+            chain_code,
+        );
+
+        if let Err(e) = dkg_node.load_permanent_index().await {
+            warn!("⚠️ Failed to load permanent index: {:?}", e);
+        }
+
+        let _db_consensus_node = DatabaseConsensusNode::new(database.as_ref().clone());
+        let consensus_node = ConsensusNode::new();
+        let command_processor = CommandProcessor::new();
+
+        network.set_dkg_node(dkg_node);
+        network.set_signing_node(signing_node.clone()).await;
+        network.set_db_signing_node(db_signing_node.clone());
+        network.set_consensus_node(consensus_node);
+        network.set_command_processor(command_processor);
+
+        let db_user_intent_manager = Arc::new(UserIntentManager::from_module(
+            database_module.clone(),
+            chain_code,
+        ));
+        info!("🏗️ [MAIN] Created Arc<UserIntentManager>");
+
+        info!(
+            "🔗 [MAIN] Setting database user registry in network layer - Arc pointer: {:p}",
+            Arc::as_ptr(&db_user_intent_manager)
+        );
+        network
+            .set_user_intent_manager(db_user_intent_manager.clone())
+            .await;
+
+        network.set_database(database).await;
+
+        // Initialize nonce manager for random k generation
+        // MUST be called AFTER set_database() since NonceStorage requires database
+        //
+        // dkg_signer_count: for DKG nodes this equals `total` (the initial node count).
+        // For observer nodes that join later, `total` starts at 0 but
+        // dkg_signer_count will be updated from PeerList RPC during node sync.
+        // At init time, use `total` as fallback; the observer will update
+        // dkg_signer_count once it receives the PeerList.
+        let dkg_signer_count = dkg_storage.get_dkg_signer_count()
+            .ok()
+            .flatten()
+            .unwrap_or(total);
+        {
+            let mut sn = signing_node.lock().await;
+            sn.init_nonce_manager(total, dkg_signer_count);
+            // On restart, if this node already holds a DKG secret share, mark the
+            // NonceManager so it can initiate nonce generation.  For fresh nodes
+            // the flag stays false until DKG completes (set in gossipsub_handler).
+            let is_signer = sn.has_dkg_share().await;
+            sn.set_nonce_manager_dkg_signer(is_signer).await;
+        }
+
+        self.user_intent_manager = Some(db_user_intent_manager);
+        self.network = Some(network);
+        self.dkg_storage = Some(dkg_storage);
+
+        info!("📊 [MAIN] Database components initialized:");
+        info!("  📝 DatabaseSigningNode: Available");
+        info!("  🗳️ DatabaseConsensusNode: Available");
+        info!("  👥 UserIntentManager: Available");
+        info!("  🗄️ Database path: {}", self.database_path_for_peer());
+
+        Ok(())
+    }
+
+    async fn spawn_rpc(&self) -> Result<()> {
+        let network = self
+            .network
+            .as_ref()
+            .context("network must be initialized")?;
+        let user_intent_manager = self
+            .user_intent_manager
+            .clone()
+            .context("user intent manager must be initialized")?;
+        let dkg_storage = self
+            .dkg_storage
+            .clone()
+            .context("DKG storage must be initialized")?;
+        let database = self
+            .database
+            .clone()
+            .context("database must be initialized")?;
+
+        let message_tx = network.get_msg_tx();
+        let rpc_port = self.config.rpc_port;
+        let node_id = network.get_local_peer_id().to_string();
+        let start_time = self.start_time;
+
+        tokio::spawn(async move {
+            info!("🚀 Starting RPC server on port {}", rpc_port);
+            info!(
+                "🔗 [MAIN] Passing database user registry to RPC server - Arc pointer: {:p}",
+                Arc::as_ptr(&user_intent_manager)
+            );
+            if let Err(e) = rpc_server::start_http_server(
+                message_tx,
+                rpc_port,
+                user_intent_manager.clone(),
+                dkg_storage,
+                (*database).clone(),
+                node_id,
+                start_time,
+            )
+            .await
+            {
+                info!("❌ RPC server failed: {:?}", e);
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn start_network(&mut self) -> Result<()> {
+        let network = self
+            .network
+            .as_mut()
+            .context("network must be initialized before start")?;
+
+        network.start().await?;
+
+        Ok(())
+    }
+}
+
+// Increase tokio worker threads from default (num_cpus) to 16
+// This allows more parallel processing of RPC requests, message handling, and consensus
+// Critical for handling 20+ parallel user transactions efficiently
+#[tokio::main(worker_threads = 16)]
+async fn main() -> Result<()> {
+    dotenv().ok();
+
+    // Parse CLI arguments
+    let cli = Cli::parse();
+
+    // Handle --generate flag
+    if cli.generate {
+        let identity_path = mpc_node::identity::default_keypair_path();
+
+        // Check if identity already exists
+        if mpc_node::identity::keypair_exists(&identity_path) {
+            // Load and display existing identity
+            let keypair = mpc_node::identity::load_keypair(&identity_path)
+                .context("Failed to load existing peer identity")?;
+            let peer_id = PeerId::from(keypair.public());
+
+            println!("✅ Peer identity already exists");
+            println!("Peer ID: {}", peer_id);
+            println!("Identity location: {}", identity_path);
+        } else {
+            // Generate new identity
+            let keypair = mpc_node::identity::generate_and_save()
+                .context("Failed to generate and save peer identity")?;
+            let peer_id = PeerId::from(keypair.public());
+
+            println!("✅ Generated new peer identity");
+            println!("Peer ID: {}", peer_id);
+            println!("Identity saved to: {}", identity_path);
+        }
+
+        return Ok(());
+    }
+
+    init_network_type_from_env()?;
+    crate::env_defaults::log_env_config();
+
+    let config = ConfigBuilder::new().build()?;
+    let mut context = NodeContext::new(config, cli.bootstrap_peers)?;
+
+    context.init_logging()?;
+
+    // CRITICAL: Database now persists across restarts (no wipe)
+    // This preserves DKG shares, peer indices, and all cryptographic state
+    info!(
+        "📊 [MAIN] Using persistent database at {}",
+        context.database_path_for_peer()
     );
 
-    let consensus_node = ConsensusNode::new();
-    let command_processor = CommandProcessor::new();
+    context.init_database()?;
 
-    network.set_dkg_node(dkg_node);
-    network.set_signing_node(signing_node.lock().await.clone());
-    network.set_consensus_node(consensus_node);
-    network.set_command_processor(command_processor);
-
-    // Start RPC server in a separate task
-    let message_tx = network.get_msg_tx();
-    let rpc_port = 8081; // You can make this configurable
-
-    tokio::spawn(async move {
-        info!("🚀 Starting RPC server on port {}", rpc_port);
-        if let Err(e) = rpc_server::start_http_server(message_tx, rpc_port).await {
-            info!("❌ RPC server failed: {:?}", e);
-        }
-    });
-
-    // Start the network
-    network.start().await?;
+    context.init_network().await?;
+    context.spawn_rpc().await?;
+    context.start_network().await?;
+    // Global clock is now integrated into the network event loop
+    // See: src/network/transport/event_loop.rs -> handle_global_clock_tick()
 
     Ok(())
 }

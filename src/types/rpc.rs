@@ -1,17 +1,23 @@
 // src/mpc_request_response.rs
 
+use crate::protocols::DKGStatus;
+use crate::types::vrf::{VrfRoundSyncRequest, VrfRoundSyncResponse};
+use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p::{
     request_response::{
-        cbor::Behaviour as CborReqRespBehaviour, Codec as  RequestResponseCodec, Config as RequestResponseConfig, ProtocolSupport
-    }, StreamProtocol,
+        cbor::Behaviour as CborReqRespBehaviour, Codec as RequestResponseCodec,
+        Config as RequestResponseConfig, ProtocolSupport,
+    },
+    StreamProtocol,
 };
 use serde::{Deserialize, Serialize};
-use futures::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
+use std::{future::Future, io, pin::Pin};
 use tracing::info;
-use std::{io, pin::Pin, future::Future};
-use crate::dkg::DKGStatus;
 
-use super::{p2p::SerializablePeerId, PeerInfo, SerializablePoint, SerializableScalar};
+use super::{
+    p2p::{PeerInfo, SerializablePeerId},
+    SerializablePoint, SerializableScalar,
+};
 
 pub type MPCCodecRequest = <MPCCodec as libp2p::request_response::Codec>::Request;
 pub type MPCCodecResponse = <MPCCodec as libp2p::request_response::Codec>::Response;
@@ -29,24 +35,33 @@ impl AsRef<str> for MPCProtocol {
 /// RPC request variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCRequest {
-    ScheduleADKG { start_time: u64 },
+    ScheduleADKG {
+        start_time: u64,
+    },
     GetPeerList,
-    Custom { id: String, data: Vec<u8> },
+    Custom {
+        id: String,
+        data: Vec<u8>,
+    },
     GetDKGStatus,
     GetPeerInfo,
     Ping,
-    StartDKG,
-    StartADKG, 
+    RequestFirstNodeStartTime,
+    ShareFirstNodeStartTime {
+        first_node_start_time: u64,
+    },
+    RequestCurrentVrfRound,
+    VrfRoundSync(VrfRoundSyncRequest),
     SendAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-          commitments: Vec<SerializablePoint>,
+        commitments: Vec<SerializablePoint>,
     },
 
     BroadcastCommitments {
         dealer_id: SerializablePeerId,
-          commitments: Vec<SerializablePoint>,
+        commitments: Vec<SerializablePoint>,
     },
 
     SubmitComplaint {
@@ -59,33 +74,160 @@ pub enum RPCRequest {
         from: SerializablePeerId,
         share: SerializableScalar,
     },
+
+    /// Request database snapshot from a peer
+    RequestDatabaseSync {
+        requester_id: SerializablePeerId,
+    },
+
+    /// Request specific batch of database entries
+    RequestDatabaseBatch {
+        batch_index: usize,
+        batch_size: usize,
+    },
+
+    /// Secure unicast share delivery to a specific peer bypassing gossipsub
+    SendDKGShare {
+        from_node_id: String,
+        share_index: usize,
+        share_value: SerializableScalar,
+    },
+
+    /// Deliver critical gossip bytes via P2P RPC (unicast retry path)
+    DeliverCriticalGossip {
+        topic: String,
+        data: Vec<u8>,
+        message_type: String,
+        message_id: String,
+    },
+
+    /// Request available (unconsumed) nonce tuples from a DKG peer.
+    /// Used by late-joining observer nodes that missed the NonceTupleBroadcast.
+    RequestNoncePoolSync,
+
+    /// Request full state sync when a new node joins (users without shares, intents, pending tx, rounds).
+    RequestStateSync {
+        requester_id: SerializablePeerId,
+    },
+
+    /// Request a batch of state sync entries for a given prefix.
+    RequestStateSyncBatch {
+        prefix: String,
+        batch_index: usize,
+        batch_size: usize,
+    },
 }
 
 /// RPC response variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RPCResponse {
-    PeerList{peers : Vec<SerializablePeerId>},
-    Custom { id: String, data: Vec<u8> },
-    DKGStarted {peer_id: SerializablePeerId},
+    PeerList {
+        peers: Vec<SerializablePeerId>,
+        indices: Vec<Option<usize>>,    // index per peer, None if unknown
+        addresses: Vec<Option<String>>, // multiaddr per peer, None if unknown
+        #[serde(default)]
+        dkg_signer_count: Option<usize>, // number of initial DKG signers (for HRW filtering)
+        #[serde(default)]
+        vault_group_key: Option<SerializablePoint>, // vault (liquidity operator) group key for observer nodes
+        #[serde(default)]
+        final_public_key: Option<SerializablePoint>, // network group key for deriving network ETH/BTC addresses
+    },
+    Custom {
+        id: String,
+        data: Vec<u8>,
+    },
+    DKGStarted {
+        peer_id: SerializablePeerId,
+    },
     DKGError(String),
-    DKGStatus {status: DKGStatus},
+    DKGStatus {
+        status: DKGStatus,
+    },
     Error(String),
     PeerInfo(PeerInfo),
     Pong,
     NoResponse,
     Ack,
     Verified,
+    CurrentVrfRoundResponse {
+        current_round: Option<u64>,
+    },
+    VrfRoundSync(VrfRoundSyncResponse),
     ShareAccepted,
     ComplaintAccepted,
-      FinishedADKG {
-          group_public_key: SerializablePoint,
-      },
+    FinishedADKG {
+        group_public_key: SerializablePoint,
+    },
     GotAVSSShare {
         dealer_id: SerializablePeerId,
         receiver_id: SerializablePeerId,
         share: SerializableScalar,
-          commitments: Vec<SerializablePoint>,
-    }
+        commitments: Vec<SerializablePoint>,
+    },
+
+    /// Response to database sync request with metadata
+    DatabaseSyncMetadata {
+        total_entries: usize,
+        recommended_batch_size: usize,
+    },
+
+    /// Response with a batch of database entries
+    DatabaseBatch {
+        batch_index: usize,
+        entries: Vec<DatabaseEntry>,
+        is_last_batch: bool,
+    },
+
+    /// Database sync completed
+    DatabaseSyncComplete,
+
+    /// Acknowledge receipt of a DKG share via unicast
+    DKGShareReceived {
+        from_node_id: String,
+        receiver_node_id: String,
+        share_index: usize,
+        success: bool,
+    },
+
+    /// Acknowledge receipt of critical gossip delivery via unicast
+    CriticalDeliveryAck {
+        message_type: String,
+        message_id: String,
+    },
+
+    /// Response with available (unconsumed) nonce tuples for pool sync.
+    /// Sent by DKG nodes to late-joining observer nodes.
+    NoncePoolSync {
+        tuples: Vec<crate::types::nonce::NonceTuple>,
+    },
+
+    /// State sync metadata: per-prefix counts and pending rounds (no private data).
+    StateSyncMetadata {
+        /// (prefix, count) for each safe prefix to sync
+        prefix_counts: Vec<(String, usize)>,
+        /// Withdraw rounds from peer's PendingStore (in-memory)
+        withdraw_rounds: Vec<u64>,
+        /// Claim-reward rounds from peer's PendingStore (in-memory)
+        claim_reward_rounds: Vec<u64>,
+        /// Peer invalidation pending: (round_string, solver_ids). Used when TransactionBroadcast(peer_invalidation:round) is received.
+        #[serde(default)]
+        peer_invalidation_pending: Vec<(String, Vec<String>)>,
+    },
+
+    /// A batch of state sync entries for one prefix.
+    StateSyncBatch {
+        prefix: String,
+        batch_index: usize,
+        entries: Vec<DatabaseEntry>,
+        is_last_batch: bool,
+    },
+}
+
+/// A single database entry for syncing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseEntry {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 /// CBOR + serde codec for our MPC protocol.
@@ -107,14 +249,14 @@ impl RequestResponseCodec for MPCCodec {
         'life0: 'async_trait,
         'life1: 'async_trait,
         'life2: 'async_trait,
-        T: AsyncRead + Unpin + Send + 'async_trait,  // nonblocking read :contentReference[oaicite:4]{index=4}
+        T: AsyncRead + Unpin + Send + 'async_trait, // nonblocking read :contentReference[oaicite:4]{index=4}
         Self: 'async_trait,
     {
         info!("[MPC REQ-RESP] Read req");
         Box::pin(async move {
             let mut buf = Vec::new();
-            io.read_to_end(&mut buf).await?;      // collect the full request :contentReference[oaicite:5]{index=5}
-            serde_cbor::from_slice(&buf)          // decode CBOR
+            io.read_to_end(&mut buf).await?; // collect the full request :contentReference[oaicite:5]{index=5}
+            serde_cbor::from_slice(&buf) // decode CBOR
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
     }
@@ -128,15 +270,14 @@ impl RequestResponseCodec for MPCCodec {
         'life0: 'async_trait,
         'life1: 'async_trait,
         'life2: 'async_trait,
-        T: AsyncRead + Unpin + Send + 'async_trait,  // nonblocking read :contentReference[oaicite:6]{index=6}
+        T: AsyncRead + Unpin + Send + 'async_trait, // nonblocking read :contentReference[oaicite:6]{index=6}
         Self: 'async_trait,
     {
         info!("[MPC REQ-RESP] Read resp");
         Box::pin(async move {
             let mut buf = Vec::new();
             io.read_to_end(&mut buf).await?;
-            serde_cbor::from_slice(&buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            serde_cbor::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
     }
 
@@ -157,8 +298,8 @@ impl RequestResponseCodec for MPCCodec {
         Box::pin(async move {
             let data = serde_cbor::to_vec(&req)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            io.write_all(&data).await?;             // send bytes
-            io.flush().await                       // flush substream
+            io.write_all(&data).await?; // send bytes
+            io.flush().await // flush substream
         })
     }
     fn write_response<'life0, 'life1, 'life2, 'async_trait, T>(
@@ -185,11 +326,13 @@ impl RequestResponseCodec for MPCCodec {
 }
 
 /// Build a libp2p request‑response behaviour using our MPCCodec + CBOR.
-///
 /// You can then add this to your Swarm.
-/// 
 pub fn build_mpc_behaviour() -> CborReqRespBehaviour<MPCCodecRequest, MPCCodecResponse> {
-    let cfg = RequestResponseConfig::default();
+    // Increased from 180s to 300s to support 50 parallel intents with paced sends and receiver concurrency
+    // This prevents timeouts when the final node is processing many parallel RPCs
+    let cfg =
+        RequestResponseConfig::default().with_request_timeout(std::time::Duration::from_secs(300));
+
     let proto = StreamProtocol::new(MPCProtocol.as_ref());
     let protocols = std::iter::once((proto, ProtocolSupport::Full));
     CborReqRespBehaviour::new(protocols, cfg)

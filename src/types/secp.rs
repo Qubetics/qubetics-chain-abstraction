@@ -1,8 +1,8 @@
-use k256::{AffinePoint, Scalar, EncodedPoint};
-use k256::elliptic_curve::sec1::{ToEncodedPoint, FromEncodedPoint};
 use ff::PrimeField;
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use k256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use k256::{AffinePoint, EncodedPoint, Scalar};
 use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// Wrapper type for serialising `k256::AffinePoint` values.
@@ -103,7 +103,9 @@ impl<'de> Visitor<'de> for ScalarVisitor {
     {
         let mut arr = [0u8; 32];
         for i in 0..32 {
-            arr[i] = seq.next_element()? .ok_or_else(|| de::Error::invalid_length(i, &self))?;
+            arr[i] = seq
+                .next_element()?
+                .ok_or_else(|| de::Error::invalid_length(i, &self))?;
         }
         let scalar = Option::from(Scalar::from_repr(arr.into()))
             .ok_or_else(|| de::Error::custom("invalid Scalar"))?;
@@ -119,4 +121,3 @@ impl<'de> Deserialize<'de> for SerializableScalar {
         deserializer.deserialize_bytes(ScalarVisitor)
     }
 }
-
