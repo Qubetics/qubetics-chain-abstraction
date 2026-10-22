@@ -1,42 +1,45 @@
-#[allow(dead_code)]
-#[allow(unused_imports)]
-#[allow(non_snake_case)]
-#[allow(unused_variables)]
-pub mod adkg_secp256k1;
-pub mod chain;
-pub mod cli;
+#![recursion_limit = "4096"]
+
+pub mod env_defaults;
+pub mod chain_abstraction;
 pub mod commands;
-pub mod config;
 pub mod consensus;
 pub mod contract;
 pub mod database;
+pub mod hrw;
+pub mod identity;
+// Deterministic selection is now integrated into NetworkTransactionSequencer
+// pub mod deterministic_selection;
+pub mod dkg;
 pub mod intent_manager;
 pub mod network;
-pub mod node_management;
+pub mod node_selection;
+pub mod protocols;
 pub mod rpc_server;
 pub mod signing;
 pub mod types;
-pub mod user_registry;
+pub mod user_intent_manager;
 pub mod utils;
 pub mod vrf;
 
-pub use adkg_secp256k1::DKGNode;
-pub use cli::Cli;
-pub use commands::CommandProcessor;
-pub use config::EnvVars;
+pub use commands::{CommandKind, CommandProcessor};
 pub use consensus::{ConsensusNode, DatabaseConsensusNode};
 pub use database::{
-	ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage, RewardStorage,
-	SigningStorage, TransactionStatusStorage, UserStorage,
+    ConsensusStorage, Database, DatabaseConfig, DkgStorage, IntentStorage, SigningStorage,
+    TransactionStatusStorage, UserStorage,
 };
+// Removed deterministic_selection module - functionality integrated into sequencers
+// pub use deterministic_selection::{...};
 pub use intent_manager::prepare_unsigned_eip1559_tx;
-pub use network::NetworkLayer;
-pub use node_management::{
-	BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
-	VrfNodeManager,
+pub use network::transport::types::MpcNetworkLayer;
+pub use node_selection::{
+    BasicNodeManager, DefaultThresholdCalculator, NodeMembership, ThresholdCalculator,
+    VrfNodeManager, VrfNodeManagerConfig,
 };
-pub use signing::{DatabaseSigningNode, ECDSASignature, SigningMessage, SigningNode};
-pub use user_registry::{DatabaseUserRegistry, UserRegistry};
-pub use vrf::{
-	NodeSelectionResult, VrfNodeSelector, VrfOutput, VrfSelectedNodesBroadcast, VrfSelectionMessage,
+pub use protocols::{
+    DKGMessage, DKGNode, DKGStatus, NodeSelectionResult, VrfNodeSelector, VrfOutput,
+    VrfSelectedNodesBroadcast, VrfSelectionFacade, VrfSelectionMessage, VrfService
 };
+pub use signing::{DatabaseSigningNode, SigningNode};
+pub use types::{ECDSASignature, SigningMessage};
+pub use user_intent_manager::{UserIntentManager, UserRegistry};

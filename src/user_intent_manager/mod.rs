@@ -1,0 +1,470 @@
+use chrono::Utc;
+use ff::PrimeField;
+use k256::ProjectivePoint;
+use k256::Scalar;
+use sha2::Digest as _;
+use sha3::Keccak256;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+pub use crate::types::{
+    DepositIntent, IntentRegistry, IntentStatus, IntentTransactionIds, SerializablePoint,
+    SerializableScalar, TransactionStatus, UserRegistration,
+};
+use crate::utils::hmac_helper::{bytes_to_scalar_mod_n, hmac_scalar_mod_n};
+use tracing::info;
+
+pub mod manager;
+pub use manager::UserIntentManager;
+
+/// User registry for managing user registrations and intent tracking
+pub struct UserRegistry {
+    users: Arc<RwLock<HashMap<String, UserRegistration>>>,
+    chain_code: [u8; 32],
+    intent_registry: Arc<RwLock<IntentRegistry>>, // Global intent registry
+}
+
+impl Clone for UserRegistry {
+    fn clone(&self) -> Self {
+        info!(
+            "🔄 [USER_REGISTRY] Clone called - Original Users Arc: {:p}, Intents Arc: {:p}",
+            Arc::as_ptr(&self.users),
+            Arc::as_ptr(&self.intent_registry)
+        );
+
+        let cloned = Self {
+            users: Arc::clone(&self.users),
+            chain_code: self.chain_code,
+            intent_registry: Arc::clone(&self.intent_registry),
+        };
+
+        info!("🔄 [USER_REGISTRY] Clone created - New Users Arc: {:p}, Intents Arc: {:p} (should be same as original)", 
+              Arc::as_ptr(&cloned.users), Arc::as_ptr(&cloned.intent_registry));
+
+        cloned
+    }
+}
+
+impl UserRegistry {
+    /// Create a new user registry
+    pub fn new(chain_code: [u8; 32]) -> Self {
+        let registry = Self {
+            users: Arc::new(RwLock::new(HashMap::new())),
+            chain_code,
+            intent_registry: Arc::new(RwLock::new(IntentRegistry {
+                intents: HashMap::new(),
+            })),
+        };
+
+        info!("🏗️ [USER_REGISTRY] Created new UserRegistry instance - Users Arc: {:p}, Intents Arc: {:p}", 
+              Arc::as_ptr(&registry.users), Arc::as_ptr(&registry.intent_registry));
+
+        registry
+    }
+
+    /// Register a new user
+    pub async fn register_user(
+        &self,
+        tics_address: &str,
+        dkg_secret_share: Option<&Scalar>,
+        node_id: &str,
+    ) -> Result<UserRegistration, String> {
+        info!("👤 [USER_REGISTRY] register_user called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}, Node: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), tics_address, node_id);
+
+        // 1) Normalize to canonical EIP-55
+        let addr_cs = match checksum_from_any(tics_address) {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(format!(
+                    "Invalid tics_address '{tics_address}': {e}"
+                ))
+            }
+        };
+
+        // 2) Dedup on canonical key
+        {
+            let users = self.users.read().await;
+            if users.contains_key(&addr_cs) {
+                return Err("User already registered".to_string());
+            }
+        }
+
+        // 3) Generate user ID and HMAC constant
+        let user_id = Uuid::new_v4().to_string();
+        let hmac_constant = self.generate_hmac_constant(&addr_cs);
+
+        // 4) Create registration
+        let mut registration = UserRegistration {
+            user_id: user_id.clone(),
+            tics_address: addr_cs.clone(),
+            hmac_constant,
+            tweaked_secret_share: None,
+            user_group_key: None,
+            derived_eth_address: None,
+            derived_btc_address: None,
+            created_at: Utc::now(),
+            registered_by_node: node_id.to_string(),
+            intent_hashes: HashMap::new(),
+        };
+
+        // 5) Process DKG share if provided
+        if let Some(share) = dkg_secret_share {
+            let tweaked_share = self.compute_tweaked_share(share, &registration.hmac_constant);
+            registration.tweaked_secret_share = Some(tweaked_share);
+        }
+
+        // 6) Store in registry
+        {
+            let mut users = self.users.write().await;
+            users.insert(addr_cs.clone(), registration.clone());
+        }
+
+        info!("✅ Registered user {} with ID {}", addr_cs, user_id);
+        Ok(registration)
+    }
+
+    /// Get user registration by user ID
+    pub async fn get_user_by_id(&self, user_id: &str) -> Option<UserRegistration> {
+        let users = self.users.read().await;
+        users.get(user_id).cloned()
+    }
+
+    /// Get user registration by TICS address
+    pub async fn get_user_by_address(&self, tics_address: &str) -> Option<UserRegistration> {
+        info!("🔍 [USER_REGISTRY] get_user_by_address called - Registry Users Arc: {:p}, Intents Arc: {:p}, Address: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), tics_address);
+
+        let users = self.users.read().await;
+        let result = users.get(tics_address).cloned();
+
+        info!(
+            "🔍 [USER_REGISTRY] get_user_by_address result - Address: {}, Found: {}",
+            tics_address,
+            result.is_some()
+        );
+
+        result
+    }
+
+    /// Get all registered users
+    pub async fn get_all_users(&self) -> Vec<UserRegistration> {
+        let users = self.users.read().await;
+        users.values().cloned().collect()
+    }
+
+    /// Get the HMAC constant for a user
+    pub async fn get_hmac_constant(&self, tics_address: &str) -> Option<[u8; 32]> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            Some(registration.hmac_constant)
+        } else {
+            None
+        }
+    }
+
+    /// Set user group key and derived addresses
+    pub async fn set_user_group_key(
+        &self,
+        tics_address: &str,
+        group_key: ProjectivePoint,
+    ) -> Result<(), String> {
+        let affine = group_key.to_affine();
+        let serial = SerializablePoint(affine);
+
+        // Derive ETH and BTC addresses from the group key
+        let derived_eth = crate::utils::get_eth_address_from_group_key(group_key);
+        let derived_btc = crate::utils::get_btc_address_from_group_key(group_key)
+            .map_err(|e| e.to_string())?;
+
+        // Log the derived addresses
+        info!(
+            "📬 [USER_REGISTRY] Derived ETH address for {}: {}",
+            tics_address, derived_eth
+        );
+        info!(
+            "📬 [USER_REGISTRY] Derived BTC address for {}: {}",
+            tics_address, derived_btc
+        );
+
+        let mut users = self.users.write().await;
+        if let Some(user) = users
+            .values_mut()
+            .find(|u| u.tics_address == tics_address)
+        {
+            user.user_group_key = Some(serial);
+            user.derived_eth_address = Some(derived_eth);
+            user.derived_btc_address = Some(derived_btc);
+            info!(
+                "✅ Set user group key and derived addresses for {}",
+                tics_address
+            );
+            Ok(())
+        } else {
+            Err("User not found".to_string())
+        }
+    }
+
+    /// Set derived addresses for a user
+    pub async fn set_derived_addresses(
+        &self,
+        tics_address: &str,
+        eth_address: String,
+        btc_address: String,
+    ) -> Result<(), String> {
+        let mut users = self.users.write().await;
+        if let Some(user) = users
+            .values_mut()
+            .find(|u| u.tics_address == tics_address)
+        {
+            user.derived_eth_address = Some(eth_address);
+            user.derived_btc_address = Some(btc_address);
+            info!("✅ Set derived addresses for {}", tics_address);
+            Ok(())
+        } else {
+            Err("User not found".to_string())
+        }
+    }
+
+    /// Store intent hash mapping and the actual intent
+    pub async fn store_intent_hash(
+        &self,
+        intent_hash: Vec<u8>,
+        user_address: &str,
+        deposit_intent: &DepositIntent,
+    ) -> Result<(), String> {
+        let intent_hash_hex = hex::encode(&intent_hash);
+        info!("🔐 [USER_REGISTRY] store_intent_hash called - Registry Users Arc: {:p}, Intents Arc: {:p}, Hash: {}, User: {}", 
+              Arc::as_ptr(&self.users), Arc::as_ptr(&self.intent_registry), intent_hash_hex, user_address);
+
+        let mut users = self.users.write().await;
+        if let Some(user) = users
+            .values_mut()
+            .find(|u| u.tics_address == user_address)
+        {
+            // Convert intent hash to hex string for storage
+
+            // Store intent status in user registry
+            user.intent_hashes
+                .insert(intent_hash_hex.clone(), IntentStatus::Pending);
+
+            // Store actual intent in global registry
+            let mut intent_registry = self.intent_registry.write().await;
+            intent_registry
+                .intents
+                .insert(intent_hash_hex.clone(), deposit_intent.clone());
+
+            info!(
+                "✅ Stored intent hash for user {}: {} -> Pending",
+                user_address, intent_hash_hex
+            );
+            Ok(())
+        } else {
+            Err("User not found".to_string())
+        }
+    }
+
+    /// Get the actual DepositIntent by hash
+    pub async fn get_intent(&self, intent_hash: &str) -> Option<DepositIntent> {
+        let intent_registry = self.intent_registry.read().await;
+        intent_registry.intents.get(intent_hash).cloned()
+    }
+
+    /// Get all intents from global registry
+    pub async fn get_all_intents(&self) -> HashMap<String, DepositIntent> {
+        let intent_registry = self.intent_registry.read().await;
+        intent_registry.intents.clone()
+    }
+
+    /// Get intents by status from global registry
+    pub async fn get_intents_by_status_global(
+        &self,
+        status: IntentStatus,
+    ) -> Vec<(String, DepositIntent)> {
+        let intent_registry = self.intent_registry.read().await;
+        let mut result = Vec::new();
+
+        for (hash, intent) in &intent_registry.intents {
+            // Check if this intent has the specified status for any user
+            let users = self.users.read().await;
+            for user in users.values() {
+                if let Some(user_status) = user.intent_hashes.get(hash) {
+                    if user_status == &status {
+                        result.push((hash.clone(), intent.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Get intent hash information for a user
+    pub async fn get_intent_hashes(
+        &self,
+        tics_address: &str,
+    ) -> Option<HashMap<String, IntentStatus>> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            Some(registration.intent_hashes.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Check if a specific intent hash exists for a user
+    pub async fn has_intent_hash(&self, tics_address: &str, intent_hash: &str) -> bool {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            registration.intent_hashes.contains_key(intent_hash)
+        } else {
+            false
+        }
+    }
+
+    /// Get amount for a specific intent hash
+    pub async fn get_intent_amount(
+        &self,
+        tics_address: &str,
+        intent_hash: &str,
+    ) -> Option<u128> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            registration
+                .intent_hashes
+                .get(intent_hash)
+                .map(|info| match info {
+                    IntentStatus::Pending => 0,
+                    IntentStatus::Batched => 0,
+                    IntentStatus::Processing => 0,
+                    IntentStatus::Solved => 0,
+                    IntentStatus::Rejected => 0,
+                })
+        } else {
+            None
+        }
+    }
+
+    /// Update intent status
+    pub async fn update_intent_status(
+        &self,
+        tics_address: &str,
+        intent_hash: &str,
+        new_status: IntentStatus,
+    ) -> Result<(), String> {
+        let mut users = self.users.write().await;
+        if let Some(user) = users
+            .values_mut()
+            .find(|u| u.tics_address == tics_address)
+        {
+            if let Some(intent_info) = user.intent_hashes.get_mut(intent_hash) {
+                *intent_info = new_status.clone();
+                info!(
+                    "✅ Updated intent status for user {}: {} -> {:?}",
+                    tics_address, intent_hash, new_status
+                );
+                Ok(())
+            } else {
+                Err("Intent hash not found".to_string())
+            }
+        } else {
+            Err("User not found".to_string())
+        }
+    }
+
+    /// Get intent status
+    pub async fn get_intent_status(
+        &self,
+        tics_address: &str,
+        intent_hash: &str,
+    ) -> Option<IntentStatus> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            registration.intent_hashes.get(intent_hash).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Get all intents with a specific status for a user
+    pub async fn get_intents_by_status(
+        &self,
+        tics_address: &str,
+        status: IntentStatus,
+    ) -> Vec<(String, IntentStatus)> {
+        if let Some(registration) = self.get_user_by_address(tics_address).await {
+            registration
+                .intent_hashes
+                .iter()
+                .filter(|(_, info)| **info == status)
+                .map(|(hash, info)| (hash.clone(), info.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Generate HMAC constant for an address
+    /// Uses hmac_scalar_mod_n to safely reduce modulo curve order
+    fn generate_hmac_constant(&self, address: &str) -> [u8; 32] {
+        hmac_scalar_mod_n(address, &self.chain_code).unwrap_or([0u8; 32])
+        // Fallback to zero array if HMAC fails
+    }
+
+    /// Compute tweaked share from DKG share and HMAC constant
+    /// Safely reduces hmac_constant modulo curve order before converting to scalar
+    fn compute_tweaked_share(
+        &self,
+        share: &Scalar,
+        hmac_constant: &[u8; 32],
+    ) -> SerializableScalar {
+        // Reduce modulo curve order to ensure valid scalar (works with both old and new hmac_constants)
+        let hmac_reduced = bytes_to_scalar_mod_n(hmac_constant);
+        // from_repr will always succeed since hmac_reduced is already reduced mod curve order
+        let hmac_scalar = Scalar::from_repr(hmac_reduced.into())
+            .expect("Failed to create scalar from reduced HMAC (should never fail)");
+        let tweaked_scalar = *share + hmac_scalar;
+        SerializableScalar(tweaked_scalar)
+    }
+
+    /// Get the chain code (for debugging/testing purposes)
+    pub fn get_chain_code(&self) -> [u8; 32] {
+        self.chain_code
+    }
+}
+
+pub fn to_checksum_address(addr20: &[u8]) -> String {
+    let hex_lower = hex::encode(addr20); // 40 lowercase hex chars
+    let hash = Keccak256::digest(hex_lower.as_bytes());
+
+    let mut out = String::with_capacity(42);
+    out.push_str("0x");
+    for (i, ch) in hex_lower.chars().enumerate() {
+        if ch.is_ascii_hexdigit() && ch.is_ascii_lowercase() && ch >= 'a' {
+            let byte = hash[i / 2];
+            let nibble = if i % 2 == 0 {
+                (byte >> 4) & 0x0f
+            } else {
+                byte & 0x0f
+            };
+            out.push(if nibble >= 8 {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            });
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub fn checksum_from_any(s: &str) -> anyhow::Result<String> {
+    let no0x = s.trim().strip_prefix("0x").unwrap_or(s.trim());
+    if no0x.len() != 40 {
+        anyhow::bail!("bad address length");
+    }
+    let bytes = hex::decode(no0x)?;
+    if bytes.len() != 20 {
+        anyhow::bail!("bad address bytes");
+    }
+    Ok(to_checksum_address(&bytes))
+}

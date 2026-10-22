@@ -1,11 +1,21 @@
 
 const nodeHexValues = {
-  1: '7A93259C5A9AAF2EEDB8EE7EE0E1E218CF48F0771DE6B8ADDFE616530BDCFDA4', //3rd
-  2: 'BA8BF0D9442A0ADF2F103FB05A24412D57291C20754C91D1AC52CD8B89B2FDB4', //2nd
-  3: '036DFBE3B9982E4C70395F737821C49E0ED6E7941ECAFE5E4E4439AE73EAF6A7', //1st
-  4: '553946BBBAE51976B1344DC83ADA6C686BB00C9F78F33ECB455F17D56AF16AFF',
-  5: 'AFEDD1614810CC5DF2010AAEA24E388DB305AE5BD47CB2DCD1D109739E90197B' //4th  //5th 
+  1: '1DF04E53CC8417FECDFA1D14F429F3BE1AA928F077FF02CC5640829FC6E61C11', //3rd
+  2: 'EE80E35E6F87E070C0DFF2B4814C0034D078B034C0883058C73483E4EF3793AF', //2nd
+  3: 'ECEEEB35FDB6085E2EC576FA19CFCFAC6A35B3A79454EB600F19FE67DF8059D8', //1st
+  4: '193A65DA770E8FC717AAA9E5BDB56224E7E03348F36533E22DF0F22897C06E8C',
+  5: 'F1CD356F4A82DF8A7070C6032CF162FE7A15853151CDD3A6EC4025273975EBF5' //4th  //5th 
 };
+
+
+// const nodeHexValues = {
+//   1: 'D1FBE08821A90F1EA9A73047F9EF3D0A42FEAEA43B226477A6E1D0B2DC1F62D5', //3rd
+//   2: 'B0A91DC24FD31F0E5A5BDBAAF02AC9FFE5B091B23B0846B55CB621E849BC33A6', //2nd
+//   3: '95AEC5E80E1A47B65D1332D01510FC89617A1D1D2E7FD33BA641B438D0E07F9B', //1st
+//   4: '810CD8F95C7E8916B1CD35B768A1D4A6B65B50E515890A0A838487A4718C46B4',
+//   5: '72C356F63AFFE32F5889E460EADD5257E4542D09F023EB21F47E9C2B2BBF88F1' //4th  //5th 
+// };
+
 
 //private-key with four shares = 0x370edecf7c637d6579cf9ac1b7385f4ae73284c1de8a35ea98f10a8243db3733
 //private-key with five shares = 0x370edecf7c637d6579cf9ac1b7385f4ae73284c1de8a35ea98f10a8243db3733
@@ -154,7 +164,8 @@ function getAllCombinations(nodes, k) {
 // Main calculation function with enhanced display
 function performDetailedThresholdCalculation() {
   const nodeIds = [1, 2, 3, 4, 5];
-  const threshold = 3;
+  //0xba7137bcf6668386f67bafcdad1d48cffeac4bf2
+  const threshold = 5;
 
   // Create shares array: [(x, y), ...]
   const shares = nodeIds.map((id) => [BigInt(id), nodeDecimalValues[id]]);
@@ -178,8 +189,8 @@ function performDetailedThresholdCalculation() {
     const calculation = lagrangeInterpolationDetailed(combo);
 
     console.log(`\n🏆 FINAL RECONSTRUCTED SECRET FOR SET ${setName}:`);
-    console.log(`   Decimal: ${calculation.result}`);
-    console.log(`   Hex: 0x${BigInt(calculation.result).toString(16)}`);
+    console.log(`   Decimal: ***MASKED***`);
+    console.log(`   Hex: 0x***MASKED***`);
     console.log('═'.repeat(80));
 
     results.push({
@@ -210,15 +221,15 @@ results.forEach((result, i) => {
 console.log('\n🎯 Verification:');
 if (uniqueSecrets.length === 1) {
   console.log('✅ SUCCESS: All 3-node subsets produce IDENTICAL results!');
-  console.log(`✅ Consistent Secret (Decimal): ${uniqueSecrets[0]}`);
-  console.log(`✅ Consistent Secret (Hex): 0x${BigInt(uniqueSecrets).toString(16)}`);
+  console.log(`✅ Consistent Secret (Decimal): ***MASKED***`);
+  console.log(`✅ Consistent Secret (Hex): 0x***MASKED***`);
   console.log('✅ Your threshold shares are mathematically VALID!');
   console.log('✅ Perfect (3,4)-threshold cryptography implementation!');
 } else {
   console.log('❌ FAILURE: Different subsets produce different results!');
   console.log('❌ Your shares are NOT from the same polynomial!');
   uniqueSecrets.forEach((secret, i) => {
-    console.log(`   Result ${i + 1}: ${secret}`);
+    console.log(`   Result ${i + 1}: ***MASKED***`);
   });
 }
 

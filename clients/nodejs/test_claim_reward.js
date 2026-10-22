@@ -6,20 +6,24 @@
  * with proper signature validation and message formatting.
  */
 
-const https = require('https');
-const http = require('http');
-const crypto = require('crypto');
+import https from 'https';
+import http from 'http';
+import crypto from 'crypto';
+import secp256k1 from 'secp256k1';
+import keccak from 'keccak';
+
 
 // Configuration
-const RPC_BASE_URL = 'http://localhost:8082'; // Default RPC port
+const RPC_BASE_URL = 'http://127.0.0.1:8082'; // Default RPC port
 const CLAIM_REWARD_ENDPOINT = `${RPC_BASE_URL}/claim_reward`;
+const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
-// Test private key - REPLACE THIS WITH YOUR REGISTERED TEST PRIVATE KEY
-const TEST_PRIVATE_KEY = '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+// SOLVER_003 private key
+const TEST_PRIVATE_KEY = '0x536fba61a404115d2503092010f59531c77196c2a203b0a4b873871bbf45b7c1';
 
-// Test addresses - REPLACE THESE WITH YOUR ACTUAL TEST ADDRESSES
-const TEST_ETH_ADDRESS = '0x002aF85c8865DE4604dF07a1105EfEF2b8e0dE05';
-const TEST_BTC_ADDRESS = 'mh12dZHkgTajT1H6t8FkWoNC4KucxByWBA';
+// SOLVER_003 addresses
+const TEST_ETH_ADDRESS = '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';
+const TEST_BTC_ADDRESS = 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
 
 // Colors for console output
 const colors = {
@@ -43,7 +47,8 @@ function makeRequest(url, data, method = 'POST') {
             method: method,
             headers: {
                 'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(data)
+                'Content-Length': Buffer.byteLength(data),
+                'X-API-KEY': "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45" 
             }
         };
 
@@ -76,7 +81,7 @@ function makeRequest(url, data, method = 'POST') {
  */
 async function checkServerStatus() {
     console.log(`${colors.yellow}🔍 Checking RPC server status...${colors.reset}`);
-    
+
     try {
         const response = await makeRequest(`${RPC_BASE_URL}/status`, '', 'GET');
         if (response.status === 200) {
@@ -97,25 +102,23 @@ async function checkServerStatus() {
  * Derive Ethereum address from private key
  */
 function getEthereumAddress(privateKeyHex) {
-    const secp256k1 = require('secp256k1');
-    
+
     // Remove 0x prefix if present
     const privateKey = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex;
     const privateKeyBuffer = Buffer.from(privateKey, 'hex');
-    
+
     // Create public key
     const publicKey = secp256k1.publicKeyCreate(privateKeyBuffer, false); // uncompressed
-    
+
     // Remove the 0x04 prefix (first byte) and convert Uint8Array to Buffer
     const publicKeyWithoutPrefix = Buffer.from(publicKey.slice(1));
-    
+
     // Hash with Keccak256
-    const keccak256 = require('keccak');
-    const hash = keccak256('keccak256').update(publicKeyWithoutPrefix).digest();
-    
+    const hash = keccak('keccak256').update(publicKeyWithoutPrefix).digest();
+
     // Take last 20 bytes as address
     const address = '0x' + hash.slice(-20).toString('hex');
-    
+
     return address;
 }
 
@@ -123,33 +126,32 @@ function getEthereumAddress(privateKeyHex) {
  * Create a proper Ethereum signature using secp256k1
  */
 function createSignature(message, privateKeyHex) {
-    const secp256k1 = require('secp256k1');
-    
+
     // Remove 0x prefix if present
     const privateKey = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex;
     const privateKeyBuffer = Buffer.from(privateKey, 'hex');
-    
+
     // Create personal message prefix (EIP-191)
     const prefix = `\x19Ethereum Signed Message:\n${message.length}`;
     const prefixedMessage = prefix + message;
-    
+
     // Hash the prefixed message with Keccak256 (convert string to Buffer)
-    const keccak256 = require('keccak');
-    const messageHash = keccak256('keccak256').update(Buffer.from(prefixedMessage, 'utf8')).digest();
-    
+    const messageHash = keccak('keccak256').update(Buffer.from(prefixedMessage, 'utf8')).digest();
+
     // Sign the message hash
     const signature = secp256k1.ecdsaSign(messageHash, privateKeyBuffer);
-    
+
     // Use the recovery ID from the signature
-    // Note: secp256k1 returns recid as 0 or 1, which is what we need
+    // secp256k1 returns recid as 0 or 1, but Ethereum expects 27 or 28
     const recoveryId = signature.recid;
-    
+    const v = 27 + recoveryId; // Convert to Ethereum format (27 or 28)
+
     // Format as r||s||v (65 bytes total)
     const r = signature.signature.slice(0, 32);
     const s = signature.signature.slice(32, 64);
-    const v = Buffer.from([recoveryId]);
-    
-    const fullSignature = Buffer.concat([r, s, v]);
+    const vBuffer = Buffer.from([v]);
+
+    const fullSignature = Buffer.concat([r, s, vBuffer]);
     return '0x' + fullSignature.toString('hex');
 }
 
@@ -158,35 +160,36 @@ function createSignature(message, privateKeyHex) {
  */
 async function testClaimRewardEthOnly() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (ETH only)...${colors.reset}`);
-    
+
     // Derive and display the expected address from the private key
     const expectedAddress = getEthereumAddress(TEST_PRIVATE_KEY);
     console.log(`${colors.blue}🔑 Expected address from private key: ${expectedAddress}${colors.reset}`);
-    
+
     const message = "hello";
     const signature = createSignature(message, TEST_PRIVATE_KEY);
-    
+
     console.log(`${colors.yellow}📝 Message: ${message}${colors.reset}`);
     console.log(`${colors.yellow}✍️ Signature: ${signature}${colors.reset}`);
-    console.log(`${colors.yellow}📍 Using test ETH address (destination): ${TEST_ETH_ADDRESS}${colors.reset}`);
-    
+    console.log(`${colors.yellow}📍 Using derived address (must match signer): ${expectedAddress}${colors.reset}`);
+    console.log(`${colors.yellow}💡 Note: Server verifies that recovered address matches provided address${colors.reset}`);
+
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: TEST_ETH_ADDRESS,
+        tics_address: expectedAddress, // Must match the address derived from the private key
         btc_address: null
     };
-    
+
     console.log(`${colors.yellow}📤 Sending request to: ${CLAIM_REWARD_ENDPOINT}${colors.reset}`);
     console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
     console.log(JSON.stringify(payload, null, 2));
-    
+
     try {
         const response = await makeRequest(CLAIM_REWARD_ENDPOINT, JSON.stringify(payload));
         console.log(`${colors.yellow}📥 Response status: ${response.status}${colors.reset}`);
         console.log(`${colors.yellow}📥 Response body:${colors.reset}`);
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         if (response.status === 200) {
             const result = response.data;
             if (result.status === 'success') {
@@ -197,8 +200,11 @@ async function testClaimRewardEthOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -219,27 +225,27 @@ async function testClaimRewardEthOnly() {
  */
 async function testClaimRewardBtcOnly() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (BTC only)...${colors.reset}`);
-    
+
     const message = `Claim reward for Bitcoin address: ${TEST_BTC_ADDRESS}`;
     const signature = createSignature(message, TEST_PRIVATE_KEY);
-    
+
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: null,
+        tics_address: null,
         btc_address: TEST_BTC_ADDRESS
     };
-    
+
     console.log(`${colors.yellow}📤 Sending request to: ${CLAIM_REWARD_ENDPOINT}${colors.reset}`);
     console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
     console.log(JSON.stringify(payload, null, 2));
-    
+
     try {
         const response = await makeRequest(CLAIM_REWARD_ENDPOINT, JSON.stringify(payload));
         console.log(`${colors.yellow}📥 Response status: ${response.status}${colors.reset}`);
         console.log(`${colors.yellow}📥 Response body:${colors.reset}`);
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         if (response.status === 200) {
             const result = response.data;
             if (result.status === 'success') {
@@ -250,8 +256,11 @@ async function testClaimRewardBtcOnly() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -272,27 +281,27 @@ async function testClaimRewardBtcOnly() {
  */
 async function testClaimRewardBoth() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (Both ETH and BTC)...${colors.reset}`);
-    
+
     const message = `Claim reward for Ethereum: ${TEST_ETH_ADDRESS} and Bitcoin: ${TEST_BTC_ADDRESS}`;
     const signature = createSignature(message, TEST_PRIVATE_KEY);
-    
+
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: TEST_ETH_ADDRESS,
+        tics_address: TEST_ETH_ADDRESS,
         btc_address: TEST_BTC_ADDRESS
     };
-    
+
     console.log(`${colors.yellow}📤 Sending request to: ${CLAIM_REWARD_ENDPOINT}${colors.reset}`);
     console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
     console.log(JSON.stringify(payload, null, 2));
-    
+
     try {
         const response = await makeRequest(CLAIM_REWARD_ENDPOINT, JSON.stringify(payload));
         console.log(`${colors.yellow}📥 Response status: ${response.status}${colors.reset}`);
         console.log(`${colors.yellow}📥 Response body:${colors.reset}`);
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         if (response.status === 200) {
             const result = response.data;
             if (result.status === 'success') {
@@ -303,8 +312,11 @@ async function testClaimRewardBoth() {
                 if (result.reward_btc) {
                     console.log(`${colors.green}💰 BTC reward: ${result.reward_btc}${colors.reset}`);
                 }
-                if (result.total_reward) {
-                    console.log(`${colors.green}💰 Total reward: ${result.total_reward}${colors.reset}`);
+                if (result.tics_reward_tx_id) {
+                    console.log(`${colors.green}🧾 TICS reward tx id: ${result.tics_reward_tx_id}${colors.reset}`);
+                }
+                if (result.btc_reward_tx_id) {
+                    console.log(`${colors.green}🧾 BTC reward tx id: ${result.btc_reward_tx_id}${colors.reset}`);
                 }
             } else {
                 console.log(`${colors.red}❌ Claim reward failed: ${result.message || 'Unknown error'}${colors.reset}`);
@@ -325,27 +337,27 @@ async function testClaimRewardBoth() {
  */
 async function testInvalidSignature() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (Invalid signature)...${colors.reset}`);
-    
+
     const message = `Claim reward for Ethereum address: ${TEST_ETH_ADDRESS}`;
     const invalidSignature = '0x' + '0'.repeat(130); // Invalid signature format
-    
+
     const payload = {
         signature: invalidSignature,
         message: message,
-        ethereum_address: TEST_ETH_ADDRESS,
+        tics_address: TEST_ETH_ADDRESS,
         btc_address: null
     };
-    
+
     console.log(`${colors.yellow}📤 Sending request to: ${CLAIM_REWARD_ENDPOINT}${colors.reset}`);
     console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
     console.log(JSON.stringify(payload, null, 2));
-    
+
     try {
         const response = await makeRequest(CLAIM_REWARD_ENDPOINT, JSON.stringify(payload));
         console.log(`${colors.yellow}📥 Response status: ${response.status}${colors.reset}`);
         console.log(`${colors.yellow}📥 Response body:${colors.reset}`);
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         if (response.status === 200) {
             const result = response.data;
             if (result.status === 'error') {
@@ -367,27 +379,27 @@ async function testInvalidSignature() {
  */
 async function testNoAddresses() {
     console.log(`\n${colors.blue}🧪 Testing claim reward (No addresses)...${colors.reset}`);
-    
+
     const message = 'Claim reward with no addresses';
     const signature = createSignature(message, TEST_PRIVATE_KEY);
-    
+
     const payload = {
         signature: signature,
         message: message,
-        ethereum_address: null,
+        tics_address: null,
         btc_address: null
     };
-    
+
     console.log(`${colors.yellow}📤 Sending request to: ${CLAIM_REWARD_ENDPOINT}${colors.reset}`);
     console.log(`${colors.yellow}📋 Payload:${colors.reset}`);
     console.log(JSON.stringify(payload, null, 2));
-    
+
     try {
         const response = await makeRequest(CLAIM_REWARD_ENDPOINT, JSON.stringify(payload));
         console.log(`${colors.yellow}📥 Response status: ${response.status}${colors.reset}`);
         console.log(`${colors.yellow}📥 Response body:${colors.reset}`);
         console.log(JSON.stringify(response.data, null, 2));
-        
+
         if (response.status === 200) {
             const result = response.data;
             if (result.status === 'error') {
@@ -410,22 +422,23 @@ async function testNoAddresses() {
 async function main() {
     console.log(`${colors.blue}🚀 Starting Claim Reward RPC Test Script${colors.reset}`);
     console.log('==================================================');
-    
+
     // Check if server is running
     if (!(await checkServerStatus())) {
         console.log(`\n${colors.red}❌ Cannot proceed - RPC server is not accessible${colors.reset}`);
         console.log(`${colors.yellow}💡 Please start the server first and ensure it's running on port 8082${colors.reset}`);
         process.exit(1);
     }
-    
+
     console.log(`\n${colors.yellow}🔑 Using test private key: ${TEST_PRIVATE_KEY.substring(0, 10)}...${colors.reset}`);
     console.log(`${colors.yellow}📍 Test ETH address: ${TEST_ETH_ADDRESS}${colors.reset}`);
     console.log(`${colors.yellow}📍 Test BTC address: ${TEST_BTC_ADDRESS}${colors.reset}`);
     console.log('\n==================================================');
-    
+
     // Run successful test only
     await testClaimRewardEthOnly();
-    
+    // await testClaimRewardBtcOnly();
+
     console.log('\n==================================================');
     console.log(`${colors.green}🏁 Test script completed!${colors.reset}`);
     console.log(`\n${colors.yellow}💡 Instructions:${colors.reset}`);

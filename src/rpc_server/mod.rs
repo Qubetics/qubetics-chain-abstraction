@@ -1,10 +1,10 @@
+mod errors;
 mod handlers;
-mod middleware;
-mod routes;
+mod rate_limiter;
 mod server;
-mod services;
-mod types;
-mod utils;
+mod service;
+pub mod utils;
 
+pub use errors::{RpcError, TransactionError};
 pub use server::start_http_server;
-pub use types::*;
+pub use service::MpcRpcService;
