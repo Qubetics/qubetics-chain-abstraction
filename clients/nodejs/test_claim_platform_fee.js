@@ -23,7 +23,7 @@ const RPC_BASE_URL = 'http://127.0.0.1:8082';
 const API_KEY = '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // Admin private key — must match ADMIN_PUBLIC_ADDRESS env on the node
-const ADMIN_PRIVATE_KEY = '0xd9cc6693b05830c39ef09c5060c1e5bb7e2c8f02f2f2976941e6d77ca703894d';
+const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY;
 
 // Target addresses for receiving the claimed fees
 const TICS_TARGET_ADDRESS = '0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989';
@@ -312,7 +312,7 @@ async function testWrongSigner() {
     logSection('TEST: Wrong signer (should fail)');
 
     // Use a random private key that doesn't match ADMIN_PUBLIC_ADDRESS
-    const wrongKey = '0x1111111111111111111111111111111111111111111111111111111111111111';
+    const wrongKey = process.env.WRONG_KEY;
     const wrongAddr = getAddress(wrongKey);
 
     const message = `claim_platform_fee:tics:${TICS_CLAIM_AMOUNT}:${TICS_TARGET_ADDRESS}:${Date.now()}`;

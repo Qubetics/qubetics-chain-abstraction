@@ -13,7 +13,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://127.0.0.1:8083';
 const API_KEY = process.env.RPC_API_KEY || process.env.API_KEY || "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // Private key
-const TEST_PRIVKEY = process.env.TEST_PRIVKEY || '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+const TEST_PRIVKEY = process.env.TEST_PRIVKEY;
 
 // Transaction storage file
 const TXN_STORAGE_FILE = path.join(process.cwd(), 'deposit_transactions.json');
