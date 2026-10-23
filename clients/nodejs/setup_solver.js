@@ -91,8 +91,8 @@ const SOLVERS = PEER_IDS.map((peerId, i) => generateSolverConfig(peerId, i));
 // ============================================================
 const RPC_URL = "https://rpc-testnet.qubetics.work"
 const CONTRACT_ADDRESS = "0x7A4710e8ae2e25416256720f75064Ec7A7B62C68";
-const VALIDATOR_PK = "aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a";
-const FUNDING_PK = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
+const VALIDATOR_PK = process.env.VALIDATOR_PK;
+const FUNDING_PK = process.env.FUNDING_PK;
 const FUND_AMOUNT = "10";
 
 if (!RPC_URL || !CONTRACT_ADDRESS) {
