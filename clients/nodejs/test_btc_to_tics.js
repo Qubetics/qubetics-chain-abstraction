@@ -21,36 +21,10 @@ const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282
 const ESTIMATED_FEE_SATS = parseInt(process.env.FEE_SATS || '730', 10);
 
 // Original wallets from sustained_test.js (now re-registered, fetch derived addresses from RPC)
-const ORIGINAL_WALLET_KEYS = [
-  '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
-  '643ed9c2ec98a3f160ade103c253304823a88e2c7025580fb5842392949e02e6',
-  'd71beeece01ddad3ffc93355636fef401c9155b174512256f04951acb72c22ca',
-  '4c3272e01262eb3dce676d43cdbfab8a02cd7637a2218a57f56bb14e447a0ba2',
-  'a0601773688cfd707913036c4939bb3e56828892bff2fdebba3a92d505580d3a',
-  'f52bb588bdbf9a1438e67912036a68b1d1274459f91b443b2255f284ba1009b9',
-  '0da9e4f08510ac824f8fba9734c53fd9a5002550a5f82e228a4b65d91dd43d7b',
-  '8626e04bab4430c9325432ebfae9e449cba58bd3fe7139a5c71174a30e59ef89',
-  '362917bf6e49b862fa602a1b6eb1f9877a1b114e7d123034dcff42bedf7f305f',
-  'b3c42173d7b664dca6c3c7b3548055bcc21c25930c592ef1290bdfa6f1e6d494',
-  'd285dca6b76839d5e44f82011cddd77306dda0045985fbbba881fbbc21e7c245',
-  '8142ee58cd1fa65a7b62a5f4e6ac586710412328d14aadee96269346c37d5d79',
-];
+const ORIGINAL_WALLET_KEYS = (process.env.ORIGINAL_WALLET_KEYS || '').split(',').map((k) => k.trim()).filter(Boolean);
 
 // Aachal wallets (need to fetch derived addresses from RPC)
-const AACHAL_WALLET_KEYS = [
-  'c1102cf908fd6a954d5bc278c9d8905dc2610d5c7488d978d00ce24b90cff369',
-  'a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3',
-  'b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4',
-  'c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5',
-  'd5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6',
-  'e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7',
-  'f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8',
-  'a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9',
-  'b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0',
-  'c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1',
-  'd1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2',
-  'e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3',
-];
+const AACHAL_WALLET_KEYS = (process.env.AACHAL_WALLET_KEYS || '').split(',').map((k) => k.trim()).filter(Boolean);
 
 // Delay between transactions in ms
 const DELAY_MS = parseInt(process.env.DELAY || '35000', 10);

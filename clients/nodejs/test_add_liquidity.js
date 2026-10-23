@@ -20,14 +20,12 @@ const ADD_ENDPOINT = `${RPC_BASE_URL}/solver_add_liquidity`;
 // SOLVER_003 configuration - private key derives to 0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9
 const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_003';
 const TEST_PRIVATE_KEY =
-  process.env.SOLVER_PRIVATE_KEY ??
-  '0xaa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
+  process.env.SOLVER_PRIVATE_KEY;
 
 // // SOLVER_002 configuration:
 // const SOLVER_ID = process.env.SOLVER_ID ?? 'SOLVER_002';
 // const TEST_PRIVATE_KEY =
 //   process.env.SOLVER_PRIVATE_KEY ??
-//   '0x7f34bd23befb5f731023c7dbc8c44447df5dd826271aeeca1e3e98d9fcf6b613';
 
 const DEFAULT_TICS_AMOUNT = process.env.TICS_AMOUNT ?? null;  // null for BTC-only test
 const DEFAULT_BTC_AMOUNT = process.env.BTC_AMOUNT ?? '10000';  // 10000 sats matching our BTC deposit

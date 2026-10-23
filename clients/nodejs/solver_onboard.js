@@ -324,7 +324,6 @@ async function main() {
   console.log("\n" + "=".repeat(80) + "\n");
   
   // ⚠️ CONFIGURE YOUR SOLVER DETAILS HERE
-  // SOLVER_003 config - uses private key 0xaa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a
   const solverId = "SOLVER_003";
   const solverName = "Test_Solver_003";
   const chainIds = [0, 9029];  // 0 = BTC, 9029 = EVM/Qubetics

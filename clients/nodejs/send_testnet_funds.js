@@ -22,7 +22,7 @@ const CONFIG = {
     // targetAddress: 'mskFf9kBMkfyhai2TXqPPh2fFPiiQEnTzX',  // Liquidity Operator BTC address (for add_liquidity)
     targetAddress: 'miCPndoCU3aQd1PJRdMRgymDcZ79X6ctPy',  // Network BTC address (for withdrawals)
     // targetAddress: 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8',  // SOLVER_003 BTC address
-    privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
+    privateKeyWIF: process.env.CONFIG_1_PRIVATE_KEY_WIF,
     rpcEndpoint: 'https://mempool.space/testnet/api',
     amountPerTx: 20000, // satoshis (20000 sats for add_liquidity)
     numberOfTx: 1,

@@ -26,8 +26,7 @@ const http = require('http');
 
 const CONFIG = {
     // REQUIRED: Private key for signing (must match VERIFICATION_ADDRESS in .env)
-    // Example: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-    privateKey: 'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a',
+    privateKey: process.env.CONFIG_1_PRIVATE_KEY,
 
     // RPC endpoint URL
     rpcUrl: 'http://127.0.0.1:8082',

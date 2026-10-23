@@ -16,20 +16,7 @@ const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282
 const DELAY_SECONDS = parseInt(process.env.DELAY || '35', 10);
 
 // Original wallets from sustained_test.js
-const WALLET_PRIVATE_KEYS = [
-  '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e',
-  '643ed9c2ec98a3f160ade103c253304823a88e2c7025580fb5842392949e02e6',
-  'd71beeece01ddad3ffc93355636fef401c9155b174512256f04951acb72c22ca',
-  '4c3272e01262eb3dce676d43cdbfab8a02cd7637a2218a57f56bb14e447a0ba2',
-  'a0601773688cfd707913036c4939bb3e56828892bff2fdebba3a92d505580d3a',
-  'f52bb588bdbf9a1438e67912036a68b1d1274459f91b443b2255f284ba1009b9',
-  '0da9e4f08510ac824f8fba9734c53fd9a5002550a5f82e228a4b65d91dd43d7b',
-  '8626e04bab4430c9325432ebfae9e449cba58bd3fe7139a5c71174a30e59ef89',
-  '362917bf6e49b862fa602a1b6eb1f9877a1b114e7d123034dcff42bedf7f305f',
-  'b3c42173d7b664dca6c3c7b3548055bcc21c25930c592ef1290bdfa6f1e6d494',
-  'd285dca6b76839d5e44f82011cddd77306dda0045985fbbba881fbbc21e7c245',
-  '8142ee58cd1fa65a7b62a5f4e6ac586710412328d14aadee96269346c37d5d79',
-];
+const WALLET_PRIVATE_KEYS = (process.env.WALLET_PRIVATE_KEYS || '').split(',').map((k) => k.trim()).filter(Boolean);
 
 const colors = {
   reset: '\x1b[0m',

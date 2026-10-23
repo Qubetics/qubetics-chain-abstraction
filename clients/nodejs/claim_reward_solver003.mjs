@@ -8,7 +8,7 @@ const CLAIM_REWARD_ENDPOINT = RPC_BASE_URL + '/claim_reward';
 const API_KEY = '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // SOLVER_003 private key
-const TEST_PRIVATE_KEY = 'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
+const TEST_PRIVATE_KEY = process.env.TEST_PRIVATE_KEY;
 // SOLVER_003 BTC address
 const SOLVER_BTC_ADDRESS = 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';
 

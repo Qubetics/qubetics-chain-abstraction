@@ -35,15 +35,13 @@ const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282
 
 // SOLVER_003 configuration - private key derives to 0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9
 const SOLVER_PRIVATE_KEY =
-  process.env.SOLVER_PRIVATE_KEY ??
-  '0xaa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a';
+  process.env.SOLVER_PRIVATE_KEY;
 const ETH_ADDRESS = process.env.ETH_ADDRESS ?? '0xbac113cebd9CB2fBD2a01B5CBC43D0fC0EBed5e9';  // SOLVER_003 ETH address
 const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'tb1qy2hqhhnv645vrfkusy5jga8pppytq3dw6awdn8';  // SOLVER_003 BTC address
 
 // // SOLVER_002 configuration:
 // const SOLVER_PRIVATE_KEY =
 //   process.env.SOLVER_PRIVATE_KEY ??
-//   '0x7f34bd23befb5f731023c7dbc8c44447df5dd826271aeeca1e3e98d9fcf6b613';
 // const ETH_ADDRESS = process.env.ETH_ADDRESS ?? '0xB1Bd33e2021307FE723C6ad795fE7c37Fab60F26';  // SOLVER_002 ETH address
 // const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'tb1q2nd0utgnrseanclhq2tr7hqhqtuc389mmjm2fs';  // SOLVER_002 BTC address
 const AMOUNT_TICS = process.env.AMOUNT_TICS ?? null;
@@ -52,7 +50,6 @@ const AMOUNT_BTC = process.env.AMOUNT_BTC ?? '10000';  // 10000 sats default for
 // // Old arpit1 config:
 // const SOLVER_PRIVATE_KEY =
 //   process.env.SOLVER_PRIVATE_KEY ??
-//   '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
 // const ETH_ADDRESS = process.env.ETH_ADDRESS ?? null;
 // const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'mhF1CH8uxvYLhMzzGGqrxWYi4cWceXMEYB';
 // const AMOUNT_TICS = process.env.AMOUNT_TICS ?? null;

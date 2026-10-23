@@ -8,3 +8,5 @@ node*/*
 /.env
 *.log
 *.md
+private_keys*.json
+*_keys.json

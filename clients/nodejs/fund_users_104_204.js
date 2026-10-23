@@ -11,7 +11,7 @@ dotenv.config({ path: join(__dirname, '../../.env') });
 const provider = new ethers.providers.JsonRpcProvider(process.env.RPC_URL);
 
 // User 1's private key (from test_sequencer_parallel.js)
-const FUNDER_PK = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+const FUNDER_PK = process.env.FUNDER_PK;
 const funderWallet = new ethers.Wallet(FUNDER_PK, provider);
 
 // Amount to send: 200 TICS
