@@ -15,7 +15,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // Configuration
 const RPC_URL = 'https://rpc-testnet.qubetics.work';
-const FUNDING_KEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+const FUNDING_KEY = process.env.FUNDING_KEY;
 const AMOUNT = "1000";
 
 // Load addresses from registered_eth_addresses.json
