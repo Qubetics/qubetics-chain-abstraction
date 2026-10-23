@@ -23,7 +23,7 @@ const RPC_BASE_URL = 'http://124.243.185.174:8082';
 const API_KEY = '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // Admin private key — must match ADMIN_PUBLIC_ADDRESS env on the node
-const ADMIN_PRIVATE_KEY = '7c045b2bd07bd9939320dc92578347f430731f3d6c50c6e55d1b39a4a6896a50';
+const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY;
 
 // Target addresses for receiving the claimed fees
 const TICS_TARGET_ADDRESS = '0x5634Fd6Ef4560f89FdB03858Ff4b1daEEdc29989';
