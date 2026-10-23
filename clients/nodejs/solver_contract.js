@@ -18,7 +18,6 @@ const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
 // Hardcoded fee-payer wallet for all onboard / validate / addLiquidity / role txns.
 // Replace this with your own private key (0x-prefixed) before using in production.
-// const FEE_PAYER_PRIVATE_KEY = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
 const solver1 = new ethers.Wallet(process.env.SOLVER1_PK, provider);
 
 // -------- ABI (ONLY WHAT WE USE) --------
