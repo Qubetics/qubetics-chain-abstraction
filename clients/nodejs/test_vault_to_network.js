@@ -9,7 +9,7 @@ import { Wallet } from 'ethers';
 const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://localhost:8081';
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '415c01d63918df986d1d537f9b5974f383cac3b4fe9edc44f58f09bdfc5f672a';
+const TEST_PRIVKEY = process.env.TEST_PRIVKEY;
 
 // =========================
 // Colors for console output
