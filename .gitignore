@@ -9,3 +9,5 @@ node*/*
 *.log
 *.md
 /Audit-report
+private_keys*.json
+*_keys.json
