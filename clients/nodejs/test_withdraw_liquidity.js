@@ -34,8 +34,7 @@ const WITHDRAW_ENDPOINT = `${RPC_BASE_URL}/withdraw_liquidity`;
 const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 const SOLVER_PRIVATE_KEY =
-  process.env.SOLVER_PRIVATE_KEY ??
-  '0x93cc7fbc4bfd7fcfd83d11c85ba522f8fa1c03ece1a3b5f1782bc164996844d9';
+  process.env.SOLVER_PRIVATE_KEY;
 const ETH_ADDRESS = process.env.ETH_ADDRESS ?? null;
 const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'mhF1CH8uxvYLhMzzGGqrxWYi4cWceXMEYB';
 const AMOUNT_TICS = process.env.AMOUNT_TICS ?? null;
