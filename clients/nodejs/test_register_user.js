@@ -26,8 +26,7 @@ const RPC_BASE_URL = 'http://127.0.0.1:8084';
 const API_KEY = "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // 👉 Private key you provided (hex, no 0x prefix needed)
-const TEST_PRIVKEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
-// const TEST_PRIVKEY = '1e61daf814fae3af13d9ec447f2b2da96a7d307b5c73ec85c275fb9c67ea8f1a';
+const TEST_PRIVKEY = process.env.TEST_PRIVKEY;
 
 let TEST_TX_ID = "0x0942448ca6f6517c05c361e249cdaf9f5e054e6290236c43f6537705ef2a7885";
 
