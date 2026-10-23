@@ -17,7 +17,7 @@ const api = axios.create({
 const CONFIG = {
     network: bitcoin.networks.testnet,
     targetAddress: 'n3fyLg6ZF1hbnWMjzjDj4Yc1vejsPJL4qX',
-    privateKeyWIF: 'cSQR4rCmfeUrwFu6apsMXY3T9jeYYmB16AKZ1dz5zoGRpdocB1P3',
+    privateKeyWIF: process.env.CONFIG_1_PRIVATE_KEY_WIF,
     rpcEndpoint: 'https://mempool.space/testnet/api',
     amountPerTx: 1000, // satoshis
     numberOfTx: 2,
