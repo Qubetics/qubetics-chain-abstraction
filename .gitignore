@@ -15,3 +15,5 @@ new-contracts/
 
 # macOS
 .DS_Store
+private_keys*.json
+*_keys.json
