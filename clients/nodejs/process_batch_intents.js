@@ -12,7 +12,7 @@ dotenv.config({ path: join(__dirname, '../../.env') });
 // -------- CONFIG --------
 const RPC_URL = process.env.SOLVER_CONTRACT_RPC_URL;
 const INTENT_MANAGER_ADDRESS = '0x48E858AF5Ed706Aa72e27D957442491761a5e540';
-const TX_SENDER_PK = '4289ba4c078eb7c639b72f3b253e03fe6420d64a3e2f60b2a6f6046b9e6d5010';
+const TX_SENDER_PK = process.env.TX_SENDER_PK;
 
 if (!RPC_URL) throw new Error("SOLVER_CONTRACT_RPC_URL not set in .env");
 if (!INTENT_MANAGER_ADDRESS) throw new Error("INTENT_MANAGER_CONTRACT_ADDRESS not set in .env");
