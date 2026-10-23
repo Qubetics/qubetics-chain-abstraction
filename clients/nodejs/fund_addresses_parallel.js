@@ -18,20 +18,20 @@ const AMOUNT = process.env.AMOUNT || "70";
 
 // 10 Funding wallets for parallel transfers
 const FUNDING_WALLETS = [
-  { privateKey: "0x53e64f03dc3336ce06749693028a60d01ad0479f75142678344e0556ea59bd46", address: "0x66A4F21e9860345947F979301eeea9E18B042fe8" },
-  { privateKey: "0x42dd603deedf2a729dea718390304b4671ba2225466d346b8c5b06f359d53995", address: "0xB99c840d956B37C4fC8FFDa6AAf0197C5d4967F3" },
-  { privateKey: "0xab6f78e9ab0724a953fba852a1543401956147f039583c5d045b6e5b401a6a0d", address: "0xa62190D7d91C674E45a2dd889b0F3522D5389ba0" },
-  { privateKey: "0x815a7dbbdf1f38f71f76c542582b5c65486bccf2c6884c41cce792be0157044f", address: "0xf4c71F0A2b9425FEE13F70a2D73Fa87918dC7F85" },
-  { privateKey: "0xff8a50d5efd3f8f09c77c3b6145d0b04f5309933dcfc3aa49068e638fddab4cf", address: "0x182cACC0C15Fd91e935e34aBD9C64b1b3F8C02E6" },
-  { privateKey: "0xc4905cf832bb472102948cac2667d381c535ae5f1048a6ddd7805c8f8d3af819", address: "0x1f0D40AB8a0B0fA17FBD25b2374A21B41ED6Fc53" },
-  { privateKey: "0xbe6df6a7402a9200293060ee91eb6262c9e52da39c1bc6409234f04cb859a5be", address: "0x7898790087144F9039b5bB55D608DDF011c1047b" },
-  { privateKey: "0x0fec61c57762b4eea7c4a70ba50a03434219671a19bdff6de55f56cb7ffbe8e1", address: "0x93ef2e14B28d1BaF4D8625705209e375D326fF0f" },
-  { privateKey: "0x2181715bfc16742f2fc71e7576532049d34401f25e55d22752160698eb5f2129", address: "0x02C11316f7212544A3C87F716d7455b6E6bb0253" },
-  { privateKey: "0x5dc6f05dbc7174a338f24fccd4e72f4809194b62b0277d3c3a5d157f8bc7e85a", address: "0x8ce50E03753f78218ECCe0F158874018c92c2d2e" }
+  { privateKey: process.env.FUNDING_WALLETS_1_PRIVATE_KEY, address: "0x66A4F21e9860345947F979301eeea9E18B042fe8" },
+  { privateKey: process.env.FUNDING_WALLETS_2_PRIVATE_KEY, address: "0xB99c840d956B37C4fC8FFDa6AAf0197C5d4967F3" },
+  { privateKey: process.env.FUNDING_WALLETS_3_PRIVATE_KEY, address: "0xa62190D7d91C674E45a2dd889b0F3522D5389ba0" },
+  { privateKey: process.env.FUNDING_WALLETS_4_PRIVATE_KEY, address: "0xf4c71F0A2b9425FEE13F70a2D73Fa87918dC7F85" },
+  { privateKey: process.env.FUNDING_WALLETS_5_PRIVATE_KEY, address: "0x182cACC0C15Fd91e935e34aBD9C64b1b3F8C02E6" },
+  { privateKey: process.env.FUNDING_WALLETS_6_PRIVATE_KEY, address: "0x1f0D40AB8a0B0fA17FBD25b2374A21B41ED6Fc53" },
+  { privateKey: process.env.FUNDING_WALLETS_7_PRIVATE_KEY, address: "0x7898790087144F9039b5bB55D608DDF011c1047b" },
+  { privateKey: process.env.FUNDING_WALLETS_8_PRIVATE_KEY, address: "0x93ef2e14B28d1BaF4D8625705209e375D326fF0f" },
+  { privateKey: process.env.FUNDING_WALLETS_9_PRIVATE_KEY, address: "0x02C11316f7212544A3C87F716d7455b6E6bb0253" },
+  { privateKey: process.env.FUNDING_WALLETS_10_PRIVATE_KEY, address: "0x8ce50E03753f78218ECCe0F158874018c92c2d2e" }
 ];
 
 // Master funding wallet (to fund the 10 parallel wallets)
-const MASTER_FUNDING_KEY = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
+const MASTER_FUNDING_KEY = process.env.MASTER_FUNDING_KEY;
 
 // Load addresses from registered_eth_addresses.json
 const REGISTERED_ADDRESSES_FILE = path.join(__dirname, 'registered_eth_addresses.json');
