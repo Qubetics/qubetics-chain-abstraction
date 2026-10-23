@@ -28,8 +28,8 @@ const NODE2_URL = `http://127.0.0.1:${NODE2_PORT}`;
 const API_KEY = process.env.API_KEY || "2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45";
 
 // Two different private keys for two different users
-const PRIVKEY_1 = '11d281397918948a90ce5ce2a72945ee7929a5a932e5bb3d22664ba98f86755e';
-const PRIVKEY_2 = 'e41af1d4f1413ed18e0200d225fa810287c5d90d3d11d6fc9723f93538718fc1';
+const PRIVKEY_1 = process.env.PRIVKEY_1;
+const PRIVKEY_2 = process.env.PRIVKEY_2;
 
 // =========================
 // Colors for console output
