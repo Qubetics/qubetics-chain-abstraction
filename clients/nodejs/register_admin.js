@@ -10,7 +10,7 @@ const RPC_BASE_URL = process.env.RPC_BASE_URL || 'http://124.243.185.174:8082';
 const API_KEY = process.env.RPC_API_KEY || '2919cd546f2c4338bccb4794a3d6afba2282e5729653fc2c2ff6c5e0e194ar45';
 
 // Admin private key — the corresponding public address must match ADMIN_PUBLIC_ADDRESS on the node
-const ADMIN_PRIVKEY = "7c045b2bd07bd9939320dc92578347f430731f3d6c50c6e55d1b39a4a6896a50";
+const ADMIN_PRIVKEY = process.env.ADMIN_PRIVKEY;
 
 // =========================
 // Colors for console output
