@@ -26,7 +26,7 @@ const http = require('http');
 
 const CONFIG = {
     // REQUIRED: Private key for signing (SOLVER_004)
-    privateKey: 'aa5d2e1f7fc11bbe6f19b12316c7a9acb2d633bba798fc5a3fea547f1cf99b0a',
+    privateKey: process.env.CONFIG_1_PRIVATE_KEY,
 
     // RPC endpoint URL
     rpcUrl: 'http://127.0.0.1:8082',

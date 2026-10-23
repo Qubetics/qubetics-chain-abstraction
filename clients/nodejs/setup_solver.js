@@ -40,7 +40,7 @@ dotenv.config({ path: join(__dirname, '../../.env') });
 const SOLVERS = [
   {
     // Solver 1 — this key's address becomes the solver's on-chain identity
-    privateKey: "a5d6d05532a0f6ee1de3586a2da787429a8b62289d776ca084783c8dc9ffa5a7",
+    privateKey: process.env.SOLVERS_1_PRIVATE_KEY,
     solverId: "12D3KooWJX7Gxkfp7UviibMhfi8VMVFyGpYAgFJm2LBqR3tJ2y9P",
     solverName: "Solver_1",
     chainIds: [0, 9029],
@@ -53,7 +53,6 @@ const SOLVERS = [
   },
   // {
   //   // Solver 2 — use a DIFFERENT private key (different msg.sender = different solver)
-  //   privateKey: "15d5488130680e229fb5edceadec7c9a58b6236b5b5c08e339f89236f3ef59b2",
   //   solverId: "",
   //   solverName: "Solver_2",
   //   chainIds: [0, 9029],
@@ -66,7 +65,6 @@ const SOLVERS = [
   // },
   // {
   //   // Solver 3 — use a DIFFERENT private key
-  //   privateKey: "4289ba4c078eb7c639b72f3b253e03fe6420d64a3e2f60b2a6f6046b9e6d5010",
   //   solverId: "",
   //   solverName: "Solver_3",
   //   chainIds: [0, 9029],

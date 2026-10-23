@@ -28,7 +28,7 @@ const TICS_AMOUNT = 10000; // Amount in TICS (whole units)
 const TICS_DECIMALS = 18;
 
 // Test private key (for testing only - DO NOT use in production)
-const TEST_PRIVATE_KEY = '0x2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89';
+const TEST_PRIVATE_KEY = process.env.TEST_PRIVATE_KEY;
 
 // Colors for console output
 const colors = {
