@@ -92,7 +92,7 @@ const SOLVERS = PEER_IDS.map((peerId, i) => generateSolverConfig(peerId, i));
 const RPC_URL = "https://rpc.qubetics.com"
 const CONTRACT_ADDRESS = "0x28118Ef00aeFA859AC80C35E05335FbCa7167eC8";
 const VALIDATOR_PK = process.env.VALIDATOR_PK;
-const FUNDING_PK = "2f1765e04f0a5c394eb3b07ee38bf210008473f6e679a4f901f554905f7f3f89";
+const FUNDING_PK = process.env.FUNDING_PK;
 const FUND_AMOUNT = "10";
 
 if (!RPC_URL || !CONTRACT_ADDRESS) {
