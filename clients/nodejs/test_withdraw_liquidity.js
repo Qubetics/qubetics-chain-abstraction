@@ -35,8 +35,7 @@ const API_KEY = process.env.RPC_API_KEY ?? '2919cd546f2c4338bccb4794a3d6afba2282
 
 // SOLVER_004's private key
 const SOLVER_PRIVATE_KEY =
-  process.env.SOLVER_PRIVATE_KEY ??
-  '0x4613ea9d929dd281170ebc14bdf96e84cda81d7d9479f11c8a94953ef573b547';
+  process.env.SOLVER_PRIVATE_KEY;
 const ETH_ADDRESS = process.env.ETH_ADDRESS ?? '0x4a21220604a4ccab21b8ae13c85ed615afe1d42c';
 const BTC_ADDRESS = process.env.BTC_ADDRESS ?? 'tb1qgazak34uzm48srpfvmuexemjfux4znvxm8fu42';
 const AMOUNT_TICS = process.env.AMOUNT_TICS ?? '10000000000000000000';
